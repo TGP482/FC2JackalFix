@@ -18,6 +18,7 @@ import pefile
 # name, pattern, offset of the byte(s) the fix actually touches (None = reference only)
 PATTERNS = [
     ("skipintro branch",       "80 BE 64 01 00 00 00 75 1B A1 ? ? ? ? 83 B8 90 00 00 00 00 76 11", 21),
+    ("title screen state cmp", "8B 86 6C 01 00 00 83 E8 01 74 ? 8B 86 68 01 00 00", 8),
     ("fov fFOV setter",        "F3 0F 10 44 24 04 F3 0F 59 05 ? ? ? ? F3 0F 11 41 70 C2 04 00", 0),
     ("fov viewmodel near pass","D9 86 28 02 00 00 D9 1C 24 E8 ? ? ? ? D9 45 14", 9),
     ("settings singleton ptr", "A1 ? ? ? ? 83 B8 B4 00 00 00 00 F3 0F 10 88 B0 00 00 00 8B 88 B8 00 00 00", 1),

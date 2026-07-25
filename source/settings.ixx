@@ -11,6 +11,7 @@ import common;
 export enum Pref
 {
     PREF_SKIPINTRO,
+    PREF_SKIPTITLESCREEN,
     PREF_FIELDOFVIEW,
     PREF_VIEWMODELFIELDOFVIEW,
     PREF_IRONSIGHTFIELDOFVIEW,
@@ -41,6 +42,7 @@ public:
     {
         CIniReader iniReader("");
         mPrefs[PREF_SKIPINTRO] = std::clamp(iniReader.ReadInteger("General", "SkipIntro", 1), 0, 1);
+        mPrefs[PREF_SKIPTITLESCREEN] = std::clamp(iniReader.ReadInteger("General", "SkipTitleScreen", 1), 0, 1);
         mPrefs[PREF_CPUAFFINITY] = std::clamp(iniReader.ReadInteger("General", "CpuAffinity", 0), 0, 64);
         mPrefs[PREF_HIGHPRECISIONTIMER] = std::clamp(iniReader.ReadInteger("General", "HighPrecisionTimer", 1), 0, 1);
         mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
