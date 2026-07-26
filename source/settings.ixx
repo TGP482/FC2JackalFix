@@ -35,6 +35,7 @@ export enum Pref
     PREF_BORDERLESS,
     PREF_CPUAFFINITY,
     PREF_LIMITEDSAVING,
+    PREF_CONSOLEAUTOSAVES,
     PREF_NOBLINKINGITEMS,
     PREF_PREDECESSORTAPES,
     PREF_MACHETES,
@@ -75,6 +76,7 @@ public:
         mPrefs[PREF_SPRINTTOGGLE] = nSprintToggle;
 
         mPrefs[PREF_LIMITEDSAVING] = std::clamp(iniReader.ReadInteger("Gameplay", "LimitedSaving", 0), 0, 1);
+        mPrefs[PREF_CONSOLEAUTOSAVES] = std::clamp(iniReader.ReadInteger("Gameplay", "ConsoleAutosaves", 1), 0, 1);
         mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
 
         auto fMouseLookSensitivity = iniReader.ReadFloat("Gameplay", "MouseLookSensitivity", 1.0f);

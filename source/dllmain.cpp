@@ -29,6 +29,7 @@ import borderless;
 import affinity;
 import largeaddressaware;
 import limitedsaving;
+import saveonmissioncomplete;
 import blinkingitems;
 
 void Init()
