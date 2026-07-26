@@ -87,7 +87,7 @@ workspace "FC2JackalFix"
       "external/injector/safetyhook/src/vmt_hook.cpp",
    }
    files { "external/injector/zydis/Zydis.h", "external/injector/zydis/Zydis.c" }
-   files { "data/bin/scripts/*.ini" }
+   files { "data/bin/plugins/*.ini" }
 
    links { "winmm" } -- timeBeginPeriod, for loadingscreen.ixx
 
@@ -103,10 +103,10 @@ workspace "FC2JackalFix"
       "if exist \"!target!\" copy /y \"!file!\" \"!target!\"",
       ")" }
 
-   function setpaths (gamepath, exepath, scriptspath)
-      scriptspath = scriptspath or "scripts/"
+   function setpaths (gamepath, exepath, pluginspath)
+      pluginspath = pluginspath or "plugins/"
       if (gamepath) then
-         cmdcopy = { "set \"path=" .. gamepath .. scriptspath .. "\"" }
+         cmdcopy = { "set \"path=" .. gamepath .. pluginspath .. "\"" }
          table.insert(cmdcopy, pbcommands)
          postbuildcommands (cmdcopy)
          debugdir (gamepath)
@@ -129,4 +129,4 @@ workspace "FC2JackalFix"
       staticruntime "On"
 
 project "FC2JackalFix"
-   setpaths("E:/Games/SteamLibrary/steamapps/common/Far Cry 2/", "bin/FarCry2.exe", "bin/scripts/")
+   setpaths("E:/Games/SteamLibrary/steamapps/common/Far Cry 2/", "bin/FarCry2.exe", "bin/plugins/")
