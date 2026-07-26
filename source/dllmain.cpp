@@ -19,6 +19,7 @@ import inputdevice;
 import looksensitivity;
 import inputtoggles;
 import controller;
+import vibration;
 import loadingscreen;
 import systemdetection;
 import maxfps;
