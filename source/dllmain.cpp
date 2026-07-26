@@ -15,6 +15,7 @@ import jackaltapes;
 import bonuscontent;
 import menucursor;
 import mousespeed;
+import looksensitivity;
 import loadingscreen;
 import systemdetection;
 import maxfps;

@@ -33,6 +33,8 @@ PATTERNS = [
     ("menu cursor delta X",   "F3 0F 10 86 88 00 00 00 0F 28 E0 F3 0F 59 E2 F3 0F 59 E3 F3 0F 2C CC", 19),
     ("menu cursor delta Y",   "F3 0F 59 C1 F3 0F 59 C3 C1 E8 10 F3 0F 2C D0 66 2B C2", 11),
     ("mouse speed cap",       "F3 0F 10 4F 0C F3 0F 5E C2 F3 0F 59 47 10 F3 0F 59 C4 0F 28 F8 0F 54 FD 0F 2F F9 76", 5),
+    ("look sensitivity spill","F3 0F 10 88 B0 00 00 00 8B 88 B8 00 00 00 F3 0F 10 15 ? ? ? ? F3 0F 11 4C 24 08", 22),
+    ("sprint turn modifier",  "F3 0F 10 80 A4 00 00 00 F3 0F 59 46 14 F3 0F 11 46 14", 8, 2),
     ("render device global",  "8B 0D ? ? ? ? 8B 01 8B 90 EC 00 00 00 FF D2", 0),
     ("d3d9 present call site", "8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0", 0),
 ]
