@@ -94,20 +94,29 @@ workspace "FC2JackalFix"
    characterset ("Unicode")
 
    pbcommands = {
-      "setlocal EnableDelayedExpansion",
-      "set file=$(TargetPath)",
-      "FOR %%i IN (\"%file%\") DO (",
-      "set filename=%%~ni",
-      "set fileextension=%%~xi",
-      "set target=!path!!filename!!fileextension!",
-      "if exist \"!target!\" copy /y \"!file!\" \"!target!\"",
-      ")" }
+      "for %%P in (\"!JFDIR!.\") do set \"JFDIR=%%~fP\"",
+      -- Parentheses keep both SET commands inside the FOR loop body.
+      "for %%S in (\"$(TargetPath)\") do (set \"JFSRC=%%~fS\" & set \"JFNAME=%%~nxS\")",
+      "set \"JFDST=!JFDIR!\\!JFNAME!\"",
+      -- No game install found, skip
+      "if not exist \"!JFDIR!\\\" goto :JFDONE",
+      "if /I \"!JFSRC!\"==\"!JFDST!\" goto :JFDONE",
+      "copy /y \"!JFSRC!\" \"!JFDST!\" >nul",
+      ":JFDONE",
+      "endlocal",
+      "exit /b 0" }
 
    function setpaths (gamepath, exepath, pluginspath)
       pluginspath = pluginspath or "plugins/"
       if (gamepath) then
-         cmdcopy = { "set \"path=" .. gamepath .. pluginspath .. "\"" }
-         table.insert(cmdcopy, pbcommands)
+         -- Keep deployment variables local to this build step
+         local cmdcopy = {
+            "setlocal EnableExtensions EnableDelayedExpansion",
+            "set \"JFDIR=" .. (gamepath .. pluginspath):gsub("([^/\\])$", "%1/") .. "\"",
+         }
+         for _, cmd in ipairs(pbcommands) do
+            table.insert(cmdcopy, cmd)
+         end
          postbuildcommands (cmdcopy)
          debugdir (gamepath)
          if (exepath) then

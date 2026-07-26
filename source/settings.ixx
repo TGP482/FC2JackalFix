@@ -17,7 +17,8 @@ export enum Pref
     PREF_IRONSIGHTFIELDOFVIEW,
     PREF_VEHICLEFIELDOFVIEW,
     PREF_MOUSESPEEDCAP,
-    PREF_LOOKSENSITIVITY,
+    PREF_MOUSELOOKSENSITIVITY,
+    PREF_CONTROLLERLOOKSENSITIVITY,
     PREF_SPRINTTURNMODIFIER,
     PREF_AIMASSIST,
     PREF_HIGHPRECISIONTIMER,
@@ -77,16 +78,14 @@ public:
         mPrefs[PREF_LIMITEDSAVING] = std::clamp(iniReader.ReadInteger("Gameplay", "LimitedSaving", 0), 0, 1);
         mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
 
-        // Rides on top of the in-game sensitivity slider rather than replacing it, so 1.0 is
-        // stock and 0 collapses to the same thing.
-        auto fLookSensitivity = iniReader.ReadFloat("Gameplay", "LookSensitivity", 1.0f);
-        mPrefs[PREF_LOOKSENSITIVITY] = fLookSensitivity <= 0.0f ? 1.0f : std::clamp(fLookSensitivity, 0.01f, 5.0f);
+        auto fMouseLookSensitivity = iniReader.ReadFloat("Gameplay", "MouseLookSensitivity", 1.0f);
+        mPrefs[PREF_MOUSELOOKSENSITIVITY] = fMouseLookSensitivity <= 0.0f ? 1.0f : std::clamp(fMouseLookSensitivity, 0.01f, 5.0f);
 
-        // Absolute replacement for the archetype's fSprintingTurnModifier, so 1.0 is "no
-        // reduction at all" and 0 has to mean "leave the authored value alone" - the same
-        // convention as the two field of view values below.
         auto fSprintTurnModifier = iniReader.ReadFloat("Gameplay", "SprintTurnModifier", 0.0f);
         mPrefs[PREF_SPRINTTURNMODIFIER] = fSprintTurnModifier <= 0.0f ? 0.0f : std::clamp(fSprintTurnModifier, 0.01f, 2.0f);
+
+        auto fControllerLookSensitivity = iniReader.ReadFloat("Controller", "ControllerLookSensitivity", 1.0f);
+        mPrefs[PREF_CONTROLLERLOOKSENSITIVITY] = fControllerLookSensitivity <= 0.0f ? 1.0f : std::clamp(fControllerLookSensitivity, 0.01f, 5.0f);
 
         mPrefs[PREF_AIMASSIST] = std::clamp(iniReader.ReadInteger("Controller", "AimAssist", 1), 0, 1);
 

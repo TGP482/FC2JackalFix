@@ -36,6 +36,7 @@ PATTERNS = [
     ("mouse speed cap",       "F3 0F 10 4F 0C F3 0F 5E C2 F3 0F 59 47 10 F3 0F 59 C4 0F 28 F8 0F 54 FD 0F 2F F9 76", 5),
     ("look sensitivity spill","F3 0F 10 88 B0 00 00 00 8B 88 B8 00 00 00 F3 0F 10 15 ? ? ? ? F3 0F 11 4C 24 08", 22),
     ("sprint turn modifier",  "F3 0F 10 80 A4 00 00 00 F3 0F 59 46 14 F3 0F 11 46 14", 8, 2),
+    ("pad axis emitter",      "0F 28 C8 0F 54 CA F3 0F 10 51 08 56 0F 2F D1 0F 57 C9 57", 12),
     ("aim assist sticky",     "80 BE 5D 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 4C 24 24 51 8B CE E8 ? ? ? ?", 9),
     ("aim assist followEnemy", "80 BE 5C 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 54 24 24 52 8B CE E8 ? ? ? ?", 9),
     ("aim assist shootCorrect","80 BE 5F 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 44 24 24 50 8B CE E8 ? ? ? ?", 9),
