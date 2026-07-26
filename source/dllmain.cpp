@@ -16,6 +16,7 @@ import bonuscontent;
 import menucursor;
 import mousespeed;
 import looksensitivity;
+import controller;
 import loadingscreen;
 import systemdetection;
 import maxfps;

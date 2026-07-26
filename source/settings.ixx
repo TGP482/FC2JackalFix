@@ -19,6 +19,7 @@ export enum Pref
     PREF_MOUSESPEEDCAP,
     PREF_LOOKSENSITIVITY,
     PREF_SPRINTTURNMODIFIER,
+    PREF_AIMASSIST,
     PREF_HIGHPRECISIONTIMER,
     PREF_SKIPSYSTEMDETECTION,
     PREF_LARGEADDRESSAWARE,
@@ -87,6 +88,7 @@ public:
         auto fSprintTurnModifier = iniReader.ReadFloat("Gameplay", "SprintTurnModifier", 0.0f);
         mPrefs[PREF_SPRINTTURNMODIFIER] = fSprintTurnModifier <= 0.0f ? 0.0f : std::clamp(fSprintTurnModifier, 0.01f, 2.0f);
 
+        mPrefs[PREF_AIMASSIST] = std::clamp(iniReader.ReadInteger("Controller", "AimAssist", 1), 0, 1);
 
         mPrefs[PREF_PREDECESSORTAPES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "PredecessorTapesUnlock", 1), 0, 1);
         mPrefs[PREF_MACHETES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "MachetesUnlock", 1), 0, 1);

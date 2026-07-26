@@ -15,7 +15,8 @@ import sys
 
 import pefile
 
-# name, pattern, offset of the byte(s) the fix actually touches (None = reference only)
+# name, pattern, offset of the byte(s) the fix actually touches (None = reference only),
+# and optionally how many matches are expected when it is not exactly one
 PATTERNS = [
     ("skipintro branch",       "80 BE 64 01 00 00 00 75 1B A1 ? ? ? ? 83 B8 90 00 00 00 00 76 11", 21),
     ("title screen state cmp", "8B 86 6C 01 00 00 83 E8 01 74 ? 8B 86 68 01 00 00", 8),
@@ -35,6 +36,10 @@ PATTERNS = [
     ("mouse speed cap",       "F3 0F 10 4F 0C F3 0F 5E C2 F3 0F 59 47 10 F3 0F 59 C4 0F 28 F8 0F 54 FD 0F 2F F9 76", 5),
     ("look sensitivity spill","F3 0F 10 88 B0 00 00 00 8B 88 B8 00 00 00 F3 0F 10 15 ? ? ? ? F3 0F 11 4C 24 08", 22),
     ("sprint turn modifier",  "F3 0F 10 80 A4 00 00 00 F3 0F 59 46 14 F3 0F 11 46 14", 8, 2),
+    ("aim assist sticky",     "80 BE 5D 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 4C 24 24 51 8B CE E8 ? ? ? ?", 9),
+    ("aim assist followEnemy", "80 BE 5C 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 54 24 24 52 8B CE E8 ? ? ? ?", 9),
+    ("aim assist shootCorrect","80 BE 5F 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 44 24 24 50 8B CE E8 ? ? ? ?", 9),
+    ("aim assist ironSight",   "80 BE 5E 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 4C 24 24 51 8B CE E8 ? ? ? ?", 9),
     ("render device global",  "8B 0D ? ? ? ? 8B 01 8B 90 EC 00 00 00 FF D2", 0),
     ("d3d9 present call site", "8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0", 0),
 ]
@@ -73,18 +78,22 @@ def main(path):
           f"vsize {text.Misc_VirtualSize:#x}  relocs {len(relocs)}\n")
 
     failures = 0
-    for name, pattern, patch_off in PATTERNS:
+    for name, pattern, patch_off, *rest in PATTERNS:
+        expected = rest[0] if rest else 1
         hits = [m.start() for m in to_regex(pattern).finditer(data)]
-        status = "OK  " if len(hits) == 1 else "FAIL"
-        if len(hits) != 1:
+        status = "OK  " if len(hits) == expected else "FAIL"
+        if len(hits) != expected:
             failures += 1
 
         line = f"[{status}] {name:26s} matches={len(hits)}"
+        if expected != 1:
+            line += f"/{expected}"
         if hits:
-            va = text_va + hits[0]
-            line += f"  at {va:#x}"
-            if patch_off is not None:
-                line += f"  patch site {va + patch_off:#x}"
+            for hit in hits:
+                va = text_va + hit
+                line += f"  at {va:#x}"
+                if patch_off is not None:
+                    line += f"  patch site {va + patch_off:#x}"
         print(line)
 
         # A relocated byte that is not wildcarded makes the pattern machine-dependent.
@@ -105,7 +114,7 @@ def main(path):
     if failures:
         print(f"{failures} problem(s) found - do not ship against this build as-is.")
     else:
-        print("All patterns unique and relocation-safe.")
+        print("All patterns matched the expected number of times and are relocation-safe.")
     return 1 if failures else 0
 
 
