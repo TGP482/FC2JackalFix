@@ -22,6 +22,7 @@ import aniso;
 import x360gamma;
 import borderless;
 import affinity;
+import largeaddressaware;
 import limitedsaving;
 import blinkingitems;
 

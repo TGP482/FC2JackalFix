@@ -19,6 +19,7 @@ export enum Pref
     PREF_MOUSESPEEDCAP,
     PREF_HIGHPRECISIONTIMER,
     PREF_SKIPSYSTEMDETECTION,
+    PREF_LARGEADDRESSAWARE,
     PREF_MAXFRAMERATE,
     PREF_ANISOTROPICFILTERING,
     PREF_X360GAMMA,
@@ -46,6 +47,7 @@ public:
         mPrefs[PREF_CPUAFFINITY] = std::clamp(iniReader.ReadInteger("General", "CpuAffinity", 0), 0, 64);
         mPrefs[PREF_HIGHPRECISIONTIMER] = std::clamp(iniReader.ReadInteger("General", "HighPrecisionTimer", 1), 0, 1);
         mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
+        mPrefs[PREF_LARGEADDRESSAWARE] = std::clamp(iniReader.ReadInteger("General", "LargeAddressAware", 0), 0, 1);
 
         mPrefs[PREF_BORDERLESS] = std::clamp(iniReader.ReadInteger("Display", "Borderless", 0), 0, 1);
 
