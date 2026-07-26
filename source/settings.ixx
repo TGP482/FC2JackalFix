@@ -20,6 +20,10 @@ export enum Pref
     PREF_MOUSELOOKSENSITIVITY,
     PREF_CONTROLLERLOOKSENSITIVITY,
     PREF_SPRINTTURNMODIFIER,
+    PREF_AIMTOGGLE,
+    PREF_SPRINTTOGGLE,
+    PREF_AIMTOGGLECONTROLLER,
+    PREF_SPRINTTOGGLECONTROLLER,
     PREF_AIMASSIST,
     PREF_HIGHPRECISIONTIMER,
     PREF_SKIPSYSTEMDETECTION,
@@ -66,14 +70,17 @@ public:
         mPrefs[PREF_FIELDOFVIEW] = std::clamp(iniReader.ReadFloat("Gameplay", "FieldOfView", 75.0f), 45.0f, 140.0f);
         mPrefs[PREF_VIEWMODELFIELDOFVIEW] = std::clamp(iniReader.ReadFloat("Gameplay", "ViewmodelFieldOfView", 75.0f), 45.0f, 140.0f);
 
-        // Unlike the two above, these are not live values the fix keeps re-applying - they replace
-        // what the game reads out of its own data archives, so 0 has to mean "leave the authored
-        // value alone" rather than "use some default". Anything else is an absolute angle.
+
         auto fIronsightFieldOfView = iniReader.ReadFloat("Gameplay", "IronsightFieldOfView", 0.0f);
         mPrefs[PREF_IRONSIGHTFIELDOFVIEW] = fIronsightFieldOfView <= 0.0f ? 0.0f : std::clamp(fIronsightFieldOfView, 20.0f, 140.0f);
 
         auto fVehicleFieldOfView = iniReader.ReadFloat("Gameplay", "VehicleFieldOfView", 0.0f);
         mPrefs[PREF_VEHICLEFIELDOFVIEW] = fVehicleFieldOfView <= 0.0f ? 0.0f : std::clamp(fVehicleFieldOfView, 45.0f, 140.0f);
+
+        auto nAimToggle = std::clamp(iniReader.ReadInteger("Gameplay", "AimToggle", 0), 0, 1);
+        auto nSprintToggle = std::clamp(iniReader.ReadInteger("Gameplay", "SprintToggle", 0), 0, 1);
+        mPrefs[PREF_AIMTOGGLE] = nAimToggle;
+        mPrefs[PREF_SPRINTTOGGLE] = nSprintToggle;
 
         mPrefs[PREF_LIMITEDSAVING] = std::clamp(iniReader.ReadInteger("Gameplay", "LimitedSaving", 0), 0, 1);
         mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
@@ -88,6 +95,10 @@ public:
         mPrefs[PREF_CONTROLLERLOOKSENSITIVITY] = fControllerLookSensitivity <= 0.0f ? 1.0f : std::clamp(fControllerLookSensitivity, 0.01f, 5.0f);
 
         mPrefs[PREF_AIMASSIST] = std::clamp(iniReader.ReadInteger("Controller", "AimAssist", 1), 0, 1);
+
+
+        mPrefs[PREF_AIMTOGGLECONTROLLER] = std::clamp(iniReader.ReadInteger("Controller", "AimToggle", nAimToggle), 0, 1);
+        mPrefs[PREF_SPRINTTOGGLECONTROLLER] = std::clamp(iniReader.ReadInteger("Controller", "SprintToggle", nSprintToggle), 0, 1);
 
         mPrefs[PREF_PREDECESSORTAPES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "PredecessorTapesUnlock", 1), 0, 1);
         mPrefs[PREF_MACHETES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "MachetesUnlock", 1), 0, 1);
