@@ -23,7 +23,6 @@ export enum Pref
     PREF_AIMTOGGLE,
     PREF_SPRINTTOGGLE,
     PREF_AIMTOGGLECONTROLLER,
-    PREF_SPRINTTOGGLECONTROLLER,
     PREF_AIMASSIST,
     PREF_VIBRATION,
     PREF_HIGHPRECISIONTIMER,
@@ -101,7 +100,6 @@ public:
         mPrefs[PREF_VIBRATION] = std::clamp(iniReader.ReadInteger("Controller", "Vibration", 1), 0, 1);
 
         mPrefs[PREF_AIMTOGGLECONTROLLER] = std::clamp(iniReader.ReadInteger("Controller", "AimToggle", nAimToggle), 0, 1);
-        mPrefs[PREF_SPRINTTOGGLECONTROLLER] = std::clamp(iniReader.ReadInteger("Controller", "SprintToggle", nSprintToggle), 0, 1);
 
         mPrefs[PREF_PREDECESSORTAPES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "PredecessorTapesUnlock", 1), 0, 1);
         mPrefs[PREF_MACHETES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "MachetesUnlock", 1), 0, 1);

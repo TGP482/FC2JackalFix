@@ -1,8 +1,6 @@
 module;
 
 #include <common.hxx>
-#include <fstream>
-#include <format>
 
 export module inputtoggles;
 
@@ -47,77 +45,15 @@ static constexpr uint8_t nSprintFlag = 0x40;
 static bool bAimToggle = false;
 static bool bAimToggleController = false;
 static bool bSprintToggle = false;
-static bool bSprintToggleController = false;
 
 // A press shorter than this latches the toggle. Anything longer is left alone, so holding the button
 // behaves exactly as it does in the stock game. Comfortably above a deliberate tap and below the
 // shortest press anyone makes when they mean to hold, so there is nothing here worth exposing.
 static constexpr uint64_t nTapTime = 250;
 
-// -------------------------------------------------------------------------------------------------
-// TEMPORARY. The gamepad binds sprint to the SprintLock action rather than the keyboard's press and
-// release pair, which is why a pad has always sprinted on a tap. What the disassembly cannot settle
-// is what a pad sends when the button comes back up: nothing at all, the keyboard's release action,
-// or one of the two other actions that also end a run. This records that and changes no behavior.
-// Remove once the answer is in.
-// -------------------------------------------------------------------------------------------------
-static constexpr uintptr_t nSprintActionRva = 0xF93A70;
-static constexpr uintptr_t nSprintLockActionRva = 0xF93A74;
-static constexpr uintptr_t nSprintUpActionRva = 0xF93A78;
-static constexpr uintptr_t nOtherStopActionRva = 0xF93A7C;
-static constexpr uintptr_t nOtherStopAction2Rva = 0xF93A90;
-
-static constexpr size_t nDiagLineLimit = 800;
-
-static bool bDiagLockPress = false;
-
-static void Diag(const std::string& sLine)
-{
-    static size_t nLines = 0;
-    if (nLines++ >= nDiagLineLimit)
-        return;
-
-    static const auto modulePath = []
-    {
-        static const auto nAnchor = 1;
-        WCHAR buffer[MAX_PATH]{};
-        HMODULE hModule = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCWSTR)&nAnchor, &hModule);
-        GetModuleFileNameW(hModule, buffer, ARRAYSIZE(buffer));
-
-        return std::filesystem::path(buffer);
-    }();
-
-    // Naming the .asi that wrote this makes a stale copy loading from somewhere else obvious, rather
-    // than looking like a fix that did not work.
-    static std::ofstream file = []
-    {
-        std::ofstream stream(std::filesystem::path(modulePath).replace_extension(".log"), std::ios::trunc);
-        stream << "module " << modulePath.string() << std::endl;
-
-        return stream;
-    }();
-
-    file << std::format("{:>7} ", GetTickCount64() % 1000000) << sLine << std::endl;
-}
-
-static uint32_t DiagAction(uintptr_t nRva)
-{
-    return *(uint32_t*)(reinterpret_cast<uintptr_t>(hDunia) + nRva);
-}
-
-static const char* DiagActionName(uint32_t nId)
-{
-    if (nId == DiagAction(nSprintActionRva))      return "Sprint(a70)";
-    if (nId == DiagAction(nSprintLockActionRva))  return "SprintLock(a74)";
-    if (nId == DiagAction(nSprintUpActionRva))    return "SprintUp(a78)";
-    if (nId == DiagAction(nOtherStopActionRva))   return "Stop(a7c)";
-    if (nId == DiagAction(nOtherStopAction2Rva))  return "Stop(a90)";
-
-    return "unknown";
-}
-
+// Sprint is keyboard only. The gamepad binds sprint to the SprintLock action rather than the
+// keyboard's press and release pair, so a pad already sprints on a tap in the stock game and needs
+// nothing from here. Aim has no such stock behavior, so it is toggled on both devices.
 struct ToggleState
 {
     bool bEngaged;
@@ -209,7 +145,6 @@ public:
                 bAimToggle = JackalFixSettings.GetInt(PREF_AIMTOGGLE) != 0;
                 bSprintToggle = JackalFixSettings.GetInt(PREF_SPRINTTOGGLE) != 0;
                 bAimToggleController = JackalFixSettings.GetInt(PREF_AIMTOGGLECONTROLLER) != 0;
-                bSprintToggleController = JackalFixSettings.GetInt(PREF_SPRINTTOGGLECONTROLLER) != 0;
             };
 
             InputTogglesCB();
@@ -265,39 +200,7 @@ public:
             {
                 static auto SprintPressHook = safetyhook::create_mid(sprintPressPattern.get_first(), [](SafetyHookContext&)
                 {
-                    Diag(std::format("sprint down, lock={} pad={}", bDiagLockPress, IsPadActiveDevice()));
-                    bDiagLockPress = false;
-
-                    OnPress(SprintState, IsPadActiveDevice() ? bSprintToggleController : bSprintToggle);
-                });
-            }
-
-            // TEMPORARY. Only the SprintLock action passes through here, so this says which of the
-            // two sprint-down actions the press came from.
-            //
-            // 101447BD  MOV   byte ptr [ESI+0x18],0x1   <- hook
-            // 101447C1  CALL  0x1007E1B0
-            auto sprintLockPattern = dunia_pattern("C6 46 18 01 E8 ? ? ? ? 80 48 04 40 5F 5E 83 C4 10 C2 08 00");
-            if (!sprintLockPattern.empty())
-            {
-                static auto SprintLockDiagHook = safetyhook::create_mid(sprintLockPattern.get_first(), [](SafetyHookContext&)
-                {
-                    bDiagLockPress = true;
-                });
-            }
-
-            // TEMPORARY. Two further actions end a run through this shared call. EAX still holds the
-            // action id, so this says whether a pad release arrives here and which action it is.
-            //
-            // 1014497B  MOV   ECX,ESI                   <- hook
-            // 1014497D  CALL  0x10143650                ; end the run
-            auto sprintStopPattern = dunia_pattern("8B CE E8 ? ? ? ? 8B 17 51 8B C4 89 10 8B 4E 20");
-            if (!sprintStopPattern.empty())
-            {
-                static auto SprintStopDiagHook = safetyhook::create_mid(sprintStopPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    Diag(std::format("run ended by action {} pad={}",
-                                     DiagActionName(static_cast<uint32_t>(regs.eax)), IsPadActiveDevice()));
+                    OnPress(SprintState, !IsPadActiveDevice() && bSprintToggle);
                 });
             }
 
@@ -322,11 +225,7 @@ public:
                     auto bSprinting = nBlock != 0
                         && (*(uint8_t*)(nBlock + nCurrentState + nStateFlags) & nSprintFlag) != 0;
 
-                    auto bSuppress = OnRelease(SprintState, IsPadActiveDevice() ? bSprintToggleController : bSprintToggle,
-                                               bSprinting);
-
-                    Diag(std::format("sprint up action, sprinting={} suppressed={} pad={}",
-                                     bSprinting, bSuppress, IsPadActiveDevice()));
+                    auto bSuppress = OnRelease(SprintState, !IsPadActiveDevice() && bSprintToggle, bSprinting);
 
                     if (bSuppress)
                         regs.eip = nSprintReleaseJoin;
