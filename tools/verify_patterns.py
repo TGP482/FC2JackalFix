@@ -41,6 +41,8 @@ PATTERNS = [
     ("aim assist followEnemy", "80 BE 5C 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 54 24 24 52 8B CE E8 ? ? ? ?", 9),
     ("aim assist shootCorrect","80 BE 5F 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 44 24 24 50 8B CE E8 ? ? ? ?", 9),
     ("aim assist ironSight",   "80 BE 5E 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 4C 24 24 51 8B CE E8 ? ? ? ?", 9),
+    ("render config float prop", "56 8B C1 8B 70 0C 03 74 24 08 8B 4C 24 0C 8B 11 83 C0 04 56 50 8B 82 0C 01 00 00 FF D0 5E C2 08 00", 0),
+    ("render config int prop",   "56 8B C1 8B 70 0C 03 74 24 08 8B 4C 24 0C 8B 11 83 C0 04 56 50 8B 82 14 01 00 00 FF D0 5E C2 08 00", 0),
     ("render device global",  "8B 0D ? ? ? ? 8B 01 8B 90 EC 00 00 00 FF D2", 0),
     ("d3d9 present call site", "8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0", 0),
 ]

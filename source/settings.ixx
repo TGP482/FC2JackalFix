@@ -31,6 +31,9 @@ export enum Pref
     PREF_MAXFRAMERATE,
     PREF_ANISOTROPICFILTERING,
     PREF_X360GAMMA,
+    PREF_ENHANCEDLODS,
+    PREF_ENHANCEDSHADOWRANGE,
+    PREF_SHADOWRESOLUTION,
     PREF_BORDERLESS,
     PREF_CPUAFFINITY,
     PREF_LIMITEDSAVING,
@@ -66,6 +69,11 @@ public:
 
         mPrefs[PREF_ANISOTROPICFILTERING] = std::clamp(iniReader.ReadInteger("Graphics", "AnisotropicFiltering", 16), 0, 16);
         mPrefs[PREF_X360GAMMA] = std::clamp(iniReader.ReadInteger("Graphics", "Xbox360Gamma", 0), 0, 1);
+
+        mPrefs[PREF_ENHANCEDLODS] = std::clamp(iniReader.ReadInteger("Graphics", "EnhancedLODs", 1), 0, 1);
+        mPrefs[PREF_ENHANCEDSHADOWRANGE] = std::clamp(iniReader.ReadInteger("Graphics", "EnhancedShadowRange", 1), 0, 1);
+
+        mPrefs[PREF_SHADOWRESOLUTION] = std::clamp(iniReader.ReadInteger("Graphics", "ShadowResolution", 2048), 128, 2560);
 
         mPrefs[PREF_MOUSESPEEDCAP] = std::clamp(iniReader.ReadInteger("Gameplay", "RemoveMouseSpeedCap", 1), 0, 1);
 

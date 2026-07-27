@@ -11,6 +11,9 @@
 - **Anisotropic Filtering** - forces the selected anisotropic filtering level on all textures
 - **Console Gamma** - restores the Xbox 360's darker gamma with deeper blacks and stronger contrast
 - **Ambient Occlusion** - enables screen space ambient occlusion (SSAO) for darker contact shadows - creases and foliage shading (DirectX 9 renderer only)
+- **Enhanced LODs** - pushes back the distance at which models - terrain detail - trees and clusters drop to lower detail or stop drawing
+- **Enhanced Shadow Range** - longer and softer sun shadows - more vegetation casting them - and static ambient shadows kept much further out
+- **Shadow Resolution** - raises the sun and cascaded shadow map resolution
 
 #### Gameplay
 

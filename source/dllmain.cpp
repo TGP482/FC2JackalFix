@@ -24,6 +24,7 @@ import loadingscreen;
 import systemdetection;
 import maxfps;
 import aniso;
+import renderconfig;
 import x360gamma;
 import borderless;
 import affinity;
