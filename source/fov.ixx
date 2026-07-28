@@ -6,6 +6,7 @@
 module;
 
 #include <common.hxx>
+#include <atomic>
 
 export module fov;
 
@@ -91,6 +92,27 @@ static constexpr float fMagnifiedOpticCutoff = 40.0f;
 // multiple threads.
 static thread_local uint32_t nPendingProperty = 0;
 
+// Map markers (archPlayerMarker, archDiamondMarker, etc.) are 3D
+// entities owned by CCompassObjectives. On foot they render with the map, but
+// in a vehicle the map moves to the world pass while the markers remain in the
+// near pass. Viewmodel scaling makes this mismatch visible.
+static constexpr uintptr_t nCompassInVehicleOffset = 0x28;
+
+static std::atomic<bool> bMarkersInVehicle = false;
+static std::atomic<uint32_t> nMarkersStamp = 0;
+
+// Marker placement stops when the map is closed, so treat the vehicle flag as
+// valid only briefly after the last marker update.
+static constexpr uint32_t nMarkerFreshnessMs = 250;
+
+static bool MapIsInVehicle()
+{
+    if (!bMarkersInVehicle.load(std::memory_order_relaxed))
+        return false;
+
+    return GetTickCount() - nMarkersStamp.load(std::memory_order_relaxed) <= nMarkerFreshnessMs;
+}
+
 class FieldOfView
 {
 public:
@@ -156,8 +178,24 @@ public:
             {
                 static auto ViewmodelFovHook = safetyhook::create_mid(viewmodelPattern.get_first(9), [](SafetyHookContext& regs)
                 {
+                    // In vehicles, keep the near-pass FOV at the world FOV so map markers stay aligned.
+                    if (MapIsInVehicle())
+                        return;
+
                     auto pFov = (float*)regs.esp;
                     *pFov = ScaleFov(*pFov, ViewmodelScaleFor(*pFov, *(float*)(regs.esi + 0x18)));
+                });
+            }
+
+            // Hook at marker placement while ECX is the owning CCompassObjectives.
+            // Read bInVehicle (+0x28) here instead of caching the component pointer.
+            auto compassMarkerPattern = dunia_pattern("55 8B EC 83 E4 F0 81 EC 84 00 00 00 53 56 57 8B 7D 10 8B 77 0C 8B D9");
+            if (!compassMarkerPattern.empty())
+            {
+                static auto CompassMarkerHook = safetyhook::create_mid(compassMarkerPattern.get_first(), [](SafetyHookContext& regs)
+                {
+                    bMarkersInVehicle.store(*(bool*)(regs.ecx + nCompassInVehicleOffset), std::memory_order_relaxed);
+                    nMarkersStamp.store(GetTickCount(), std::memory_order_relaxed);
                 });
             }
 
