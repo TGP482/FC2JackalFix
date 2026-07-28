@@ -35,6 +35,9 @@ import blinkingitems;
 import coloredsigns;
 import glider;
 import truck;
+import entitylibrary;
+import lookback;
+import glassdecals;
 
 void Init()
 {
