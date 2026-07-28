@@ -25,6 +25,7 @@
 - **Limited Saving** - enables console-style saving by removing Save Game from the pause menu and disabling F5/F9 quick save/load
 - **Console Autosaves** - displays the save box after mission completion - matching the console versions
 - **No Blinking Items** - prevents weapons - ammo - health boxes - diamond cases - beds and other interactables from flashing
+- **No Colored Signs** - stops road and safe house signs from tinting themselves red or blue when they belong to an active objective
 
 #### Field of View
 

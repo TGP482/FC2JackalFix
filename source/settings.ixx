@@ -39,6 +39,7 @@ export enum Pref
     PREF_LIMITEDSAVING,
     PREF_CONSOLEAUTOSAVES,
     PREF_NOBLINKINGITEMS,
+    PREF_NOCOLOREDSIGNS,
     PREF_PREDECESSORTAPES,
     PREF_MACHETES,
 
@@ -85,6 +86,7 @@ public:
         mPrefs[PREF_LIMITEDSAVING] = std::clamp(iniReader.ReadInteger("Gameplay", "LimitedSaving", 0), 0, 1);
         mPrefs[PREF_CONSOLEAUTOSAVES] = std::clamp(iniReader.ReadInteger("Gameplay", "ConsoleAutosaves", 1), 0, 1);
         mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
+        mPrefs[PREF_NOCOLOREDSIGNS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoColoredSigns", 0), 0, 1);
 
         auto fMouseLookSensitivity = iniReader.ReadFloat("Gameplay", "MouseLookSensitivity", 1.0f);
         mPrefs[PREF_MOUSELOOKSENSITIVITY] = fMouseLookSensitivity <= 0.0f ? 1.0f : std::clamp(fMouseLookSensitivity, 0.01f, 5.0f);

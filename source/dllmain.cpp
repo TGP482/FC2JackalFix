@@ -32,6 +32,7 @@ import largeaddressaware;
 import limitedsaving;
 import saveonmissioncomplete;
 import blinkingitems;
+import coloredsigns;
 
 void Init()
 {
