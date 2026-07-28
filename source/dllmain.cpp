@@ -33,6 +33,8 @@ import limitedsaving;
 import saveonmissioncomplete;
 import blinkingitems;
 import coloredsigns;
+import glider;
+import truck;
 
 void Init()
 {
