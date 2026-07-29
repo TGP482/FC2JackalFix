@@ -11,13 +11,13 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 ## Features
 
 ### Display
-- **Borderless Windowed** - Runs the game in a borderless window at the desktop resolution using the engine's native borderless mode.
+- **Display Type** - Allows you to change between Fullscreen, Borderless and Windowed modes.
 - **FPS Limiter** - Caps the game's frame rate using the built-in engine limiter.
+- **internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling
 
 #### Graphics
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures instead of using the game's inconsistent defaults.
 - **Console Gamma** - Restores the Xbox 360's darker gamma look with deeper blacks and stronger contrast.
-- **Ambient Occlusion** - Enables screen space ambient occlusion (SSAO) for darker contact shadows, including creases and foliage shading (DirectX 9 renderer only).
 - **Enhanced LODs** - Improves level of detail (LOD) distances for models, terrain, trees, and object clusters, reducing the distance at which they switch to lower detail or stop rendering (Ultra High preset only).
 - **Enhanced Shadow Range** - Extends shadow draw distance, allowing more vegetation to cast shadows and keeping static ambient shadows visible farther away (Ultra High preset only).
 - **Shadow Resolution** - Adjusts the resolution of sun and cascaded shadow maps.
@@ -32,6 +32,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Console Autosaves** - Displays the save box after mission completion, matching the console versions.
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
 - **No Colored Signs** - Prevents road and safe house signs from tinting red or blue when they belong to an active objective.
+- **Lookback** - Included dedicated lookback button
 
 ### Field of View
 - **Field of View** - Adjusts the base gameplay field of view.
@@ -43,7 +44,16 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Controller Look Sensitivity** - Adjusts controller look sensitivity beyond the in-game slider.
 - **Aim Assist** - Enables or disables controller aim assist.
 - **Vibration** - Restores controller vibration support.
-- **Aim Toggle** - Tap the aim button to toggle aiming. Holding the button keeps you aiming until you release it.
+
+### Fixes
+Fixed an issue with hang gliders falling out of the sky when shot
+Fixed an issue gliders bouncing on water
+Fixed an issue with bug truck sounds being silent
+Fixed an issue with the MAC-10 not being heard by enemies while shooting
+Fixed an issue with player not walking slower when using ironsights with the M79
+Fixed an issue where the GPS was misaligned in vehicles
+Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies
+
 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.
