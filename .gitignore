@@ -347,3 +347,4 @@ dxwrapper.zip
 # The release layout mirrors the game folder, so data/bin must survive the [Bb]in/ rule above
 !data/bin/
 !data/bin/**
+/source/jackalfixmenu.ixx
