@@ -41,6 +41,7 @@ import truck;
 import entitylibrary;
 import lookback;
 import glassdecals;
+import fpsfixes;
 
 void Init()
 {
