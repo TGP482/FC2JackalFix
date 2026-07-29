@@ -14,6 +14,7 @@ import fov;
 import jackaltapes;
 import bonuscontent;
 import menucursor;
+import jackalfixmenu;
 import mousespeed;
 import inputdevice;
 import looksensitivity;
