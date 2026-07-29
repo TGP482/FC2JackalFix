@@ -34,7 +34,10 @@ export enum Pref
     PREF_ENHANCEDLODS,
     PREF_ENHANCEDSHADOWRANGE,
     PREF_SHADOWRESOLUTION,
-    PREF_BORDERLESS,
+    PREF_DISPLAYMODE,
+    PREF_INTERNALRESOLUTIONX,
+    PREF_INTERNALRESOLUTIONY,
+    PREF_SCALINGFILTER,
     PREF_CPUAFFINITY,
     PREF_LIMITEDSAVING,
     PREF_CONSOLEAUTOSAVES,
@@ -62,7 +65,29 @@ public:
         mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
         mPrefs[PREF_LARGEADDRESSAWARE] = std::clamp(iniReader.ReadInteger("General", "LargeAddressAware", 0), 0, 1);
 
-        mPrefs[PREF_BORDERLESS] = std::clamp(iniReader.ReadInteger("Display", "Borderless", 0), 0, 1);
+        // 1 fullscreen, 2 borderless, 3 windowed. Clamped rather than defaulted on a bad value,
+        // because every one of the three is a working mode and none of them is a silent no-op.
+        mPrefs[PREF_DISPLAYMODE] = std::clamp(iniReader.ReadInteger("Display", "DisplayMode", 2), 1, 3);
+
+        // Both axes or neither: one on its own is a typo, not a request. The ceiling is the largest
+        // square a D3D9 render target can describe; the floor keeps a mistyped value from producing
+        // a frame too small for the engine's own viewport arithmetic.
+        auto nInternalResolutionX = iniReader.ReadInteger("Display", "InternalResolutionX", 0);
+        auto nInternalResolutionY = iniReader.ReadInteger("Display", "InternalResolutionY", 0);
+        if (nInternalResolutionX < 1 || nInternalResolutionY < 1)
+        {
+            nInternalResolutionX = 0;
+            nInternalResolutionY = 0;
+        }
+        else
+        {
+            nInternalResolutionX = std::clamp(nInternalResolutionX, 320, 16384);
+            nInternalResolutionY = std::clamp(nInternalResolutionY, 240, 16384);
+        }
+        mPrefs[PREF_INTERNALRESOLUTIONX] = nInternalResolutionX;
+        mPrefs[PREF_INTERNALRESOLUTIONY] = nInternalResolutionY;
+
+        mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 2);
 
         // 0 is not uncapped. The engine uses 9999+ to disable the frame limiter.
         auto nMaxFrameRate = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 60), 0, 9999);

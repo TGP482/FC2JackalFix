@@ -27,6 +27,7 @@ import aniso;
 import renderconfig;
 import x360gamma;
 import borderless;
+import internalres;
 import affinity;
 import largeaddressaware;
 import limitedsaving;

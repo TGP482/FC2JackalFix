@@ -15,8 +15,6 @@ import sys
 
 import pefile
 
-# name, pattern, offset of the byte(s) the fix actually touches (None = reference only),
-# and optionally how many matches are expected when it is not exactly one
 PATTERNS = [
     ("skipintro branch",       "80 BE 64 01 00 00 00 75 1B A1 ? ? ? ? 83 B8 90 00 00 00 00 76 11", 21),
     ("title screen state cmp", "8B 86 6C 01 00 00 83 E8 01 74 ? 8B 86 68 01 00 00", 8),
@@ -52,6 +50,18 @@ PATTERNS = [
     ("render config int prop",   "56 8B C1 8B 70 0C 03 74 24 08 8B 4C 24 0C 8B 11 83 C0 04 56 50 8B 82 14 01 00 00 FF D0 5E C2 08 00", 0),
     ("render device global",  "8B 0D ? ? ? ? 8B 01 8B 90 EC 00 00 00 FF D2", 0),
     ("d3d9 present call site", "8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0", 0),
+    ("set resolution entry",   "81 EC 48 02 00 00 53 55 56 57 33 ED 55 8D 84 24 B4 00 00 00", 0),.
+    ("present params write",   "8B 56 1C 89 15 ? ? ? ? 8B 46 20 A3 ? ? ? ? 8A 4D 08 F6 D9", 0x11),
+    ("rt wrapper surface set", "8B 44 24 04 89 41 1C C2 04 00 CC CC CC CC CC CC 56 57 8B F9 33 F6 39 77", 0),
+    ("renderer frame end",     "81 EC 80 00 00 00 53 55 56 8B F1 8B 46 78 8B 48 14 8B 41 1C 8B 10 57 50", 0),
+    ("borderless switch",      "85 C0 8B 84 24 50 04 00 00 0F 95 C1 3B C3 88 4C 24 30", 0),
+    ("display mode flag",      "39 58 28 89 5C 24 78 0F 95 C1 39 58 2C 88 4C 24 30 0F 95 C0 3A CB", 0x0D),
+    ("window sizer entry",     "83 EC 10 8B 44 24 18 56 8B 74 24 18 57 50 56 FF 15 ? ? ? ?", 0),
+    ("setresolution cfg load", "8B AC 24 64 02 00 00 80 7D 08 00 74 24 8B 8C 24 5C 02 00 00", 0),
+    ("windowed resize demand", "2B 7C 24 28 2B 6C 24 2C 89 44 24 18 8B 01 8B 90 34 01 00 00 FF D2 84 C0 75 75 81 E3 00 00 00 80", 0x1A),
+    ("present params tail",    "8B 94 24 7C 02 00 00 8B 84 24 78 02 00 00 8B 8C 24 74 02 00 00", 0),
+    ("maximized showwindow",   "8B 51 08 39 5A 2C 74 0A A1 ? ? ? ? 6A 03 50 EB 09", 0),
+    ("pre-reset release pass", "A1 ? ? ? ? 83 EC 18 53 55 56 8B 35 ? ? ? ? 8D 04 80 57 8D 3C 86 3B F7 8B D9 C6 05 ? ? ? ? 00 74 10", 0),
 ]
 
 
@@ -106,7 +116,6 @@ def main(path):
                     line += f"  patch site {va + patch_off:#x}"
         print(line)
 
-        # A relocated byte that is not wildcarded makes the pattern machine-dependent.
         if hits:
             start_rva = text.VirtualAddress + hits[0]
             width = len(pattern.split())
