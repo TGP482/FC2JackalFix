@@ -25,6 +25,7 @@ export enum Pref
     PREF_AIMTOGGLECONTROLLER,
     PREF_AIMASSIST,
     PREF_VIBRATION,
+    PREF_CONTROLLERPROMPTS,
     PREF_HIGHPRECISIONTIMER,
     PREF_SKIPSYSTEMDETECTION,
     PREF_LARGEADDRESSAWARE,
@@ -133,6 +134,7 @@ public:
 
         mPrefs[PREF_AIMASSIST] = std::clamp(iniReader.ReadInteger("Controller", "AimAssist", 1), 0, 1);
         mPrefs[PREF_VIBRATION] = std::clamp(iniReader.ReadInteger("Controller", "Vibration", 1), 0, 1);
+        mPrefs[PREF_CONTROLLERPROMPTS] = std::clamp(iniReader.ReadInteger("Controller", "ControllerPrompts", 1), 0, 1);
 
         mPrefs[PREF_AIMTOGGLECONTROLLER] = std::clamp(iniReader.ReadInteger("Controller", "AimToggle", nAimToggle), 0, 1);
 
