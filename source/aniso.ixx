@@ -8,11 +8,10 @@ import common;
 import dunia;
 import settings;
 
-// Dunia loads SamplerStates.xml into raw D3D9 sampler descriptors. Updating the parsed descriptors
-// here affects every quality level without replacing game files.
-//
-// Apply anisotropy by rule rather than sampler name. Skip render-target samplers and point-filter
-// samplers since they do not use mipmapped texture filtering.
+// Dunia parses SamplerStates.xml into raw D3D9 sampler descriptors. Patching the parsed
+// descriptors covers every quality level without replacing game files. Selection is by rule
+// rather than sampler name; render-target and point-filter samplers do not use mipmapped
+// filtering and are skipped.
 
 static constexpr uint32_t nFilterNone = 0;
 static constexpr uint32_t nFilterPoint = 1;
@@ -56,8 +55,8 @@ static void ApplyAnisotropy(SamplerDesc* pDesc, uint32_t nDeviceMax)
     if (pDesc->nMinFilter == nFilterPoint || pDesc->nMagFilter == nFilterPoint)
         return;
 
-    // magfilter is deliberately left linear. Anisotropy is a minification filter. Putting it in the
-    // mag slot changes nothing and costs sampler bandwidth, which is why Ubisoft never did.
+    // magfilter stays linear. Anisotropy is a minification filter; in the mag slot it only costs
+    // sampler bandwidth.
     pDesc->nMinFilter = nFilterAnisotropic;
     pDesc->nMaxAnisotropy = nAnisotropicFiltering < nDeviceMax ? nAnisotropicFiltering : nDeviceMax;
 }

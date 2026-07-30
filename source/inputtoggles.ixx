@@ -9,29 +9,24 @@ import dunia;
 import settings;
 import inputdevice;
 
-// Aim down sights and sprint are both "hold the button" in stock Far Cry 2. Both are driven from the
-// movement controller's action dispatcher, which receives a separate action for the button going
-// down and for it coming back up:
+// Aim down sights and sprint are hold-the-button in stock Far Cry 2. The movement controller's
+// action dispatcher gets separate actions for the button going down and coming back up:
 //
 //   ironsight down  OR  byte [state+0x04], 0x08
 //   ironsight up    AND byte [state+0x04], 0xF7
 //   sprint down     OR  byte [state+0x04], 0x40
 //   sprint up       AND byte [state+0x04], 0xBF  and end the run
 //
-// Nothing else in the pawn state touches those bits, so a toggle is just a matter of swallowing the
-// "up" action when the press was short enough to count as a tap.
+// Nothing else in the pawn state touches those bits, so a toggle is just swallowing the "up"
+// action when the press was short enough to count as a tap.
 //
-// The state lives in a block hanging off pawn+0x10. Two halves of it matter, and their names come
-// from the pawn's own property table, which registers SprintLock, selStance and WorldSpeed at
-// offsets that line up with what the movement update reads:
+// State block hangs off pawn+0x10:
 //
-//   +0x140  input state    flags byte at +0x04: bit 0x08 ironsight, bit 0x40 sprint requested
-//   +0x2D0  current state  flags byte at +0x04: bit 0x40 actually sprinting
+//   +0x140  input state    flags byte at +0x04: 0x08 ironsight, 0x40 sprint requested
+//   +0x2D0  current state  flags byte at +0x04: 0x40 actually sprinting
 //
-// The sprint request bit is consumed and cleared by the movement update every frame; a run already
-// under way is carried by the current-state bit instead. That bit is what the engine drops when the
-// run legitimately ends - the player stops pushing forward, strafes too hard, aims, fires, or gets
-// into a vehicle - so watching it gives "tap again once you stop" without enumerating the cases.
+// The request bit is consumed and cleared by the movement update every frame; a run already under
+// way is carried by the current-state bit, which the engine drops whenever the run ends.
 static constexpr uintptr_t nControllerPawn = 0x20;
 static constexpr uintptr_t nPawnStateBlock = 0x10;
 
@@ -46,14 +41,11 @@ static bool bAimToggle = false;
 static bool bAimToggleController = false;
 static bool bSprintToggle = false;
 
-// A press shorter than this latches the toggle. Anything longer is left alone, so holding the button
-// behaves exactly as it does in the stock game. Comfortably above a deliberate tap and below the
-// shortest press anyone makes when they mean to hold, so there is nothing here worth exposing.
+// A press shorter than this latches the toggle. Longer presses behave as stock.
 static constexpr uint64_t nTapTime = 250;
 
-// Sprint is keyboard only. The gamepad binds sprint to the SprintLock action rather than the
-// keyboard's press and release pair, so a pad already sprints on a tap in the stock game and needs
-// nothing from here. Aim has no such stock behavior, so it is toggled on both devices.
+// Sprint is keyboard only. The pad binds sprint to SprintLock instead of a press/release pair, so
+// it already toggles in the stock game. Aim is toggled on both devices.
 struct ToggleState
 {
     bool bEngaged;
@@ -65,8 +57,7 @@ struct ToggleState
 static ToggleState AimState;
 static ToggleState SprintState;
 
-// Resolves the pawn's state block from the movement controller. Every step can be null while the
-// player has no pawn, which happens across loads and cutscenes.
+// Pawn state block from the movement controller. Every step can be null with no pawn.
 static uintptr_t StateBlock(uintptr_t nController)
 {
     if (nController == 0)
@@ -93,16 +84,14 @@ static void OnPress(ToggleState& state, bool bEnabled)
         return;
     }
 
-    // Whether the engine repeats this action while the button is down is not something the
-    // disassembly settles, so ignore repeats and keep the time of the first one.
+    // Unclear from the disassembly whether the action repeats while held, so ignore repeats.
     if (state.bPressActive)
         return;
 
     state.bPressActive = true;
     state.nPressTime = GetTickCount64();
 
-    // A press made while the toggle is latched is always a request to drop it, whether the player
-    // taps or holds, so the outcome is decided here rather than on the release.
+    // A press while latched always drops the toggle, tap or hold, so decide it here.
     state.bPressedWhileEngaged = state.bEngaged;
 }
 
@@ -115,8 +104,7 @@ static bool OnRelease(ToggleState& state, bool bEnabled, bool bMayLatch)
         return false;
     }
 
-    // A release with no press behind it is a repeat of one already dealt with. Keep swallowing it
-    // while latched rather than letting it undo the toggle.
+    // A release with no press behind it is a repeat. Keep swallowing it while latched.
     if (!state.bPressActive)
         return state.bEngaged;
 
@@ -157,7 +145,6 @@ public:
             // Button down. ECX already holds the pawn, left there by the dispatcher's own guard.
             //
             // 101448A1  CMP   EAX,[0x10F93A94]          ; ironsight down
-            // 101448A7  JNZ   0x101448BA
             // 101448A9  CALL  0x1007E1B0                <- hook
             // 101448AE  OR    byte ptr [EAX+0x4],0x8
             auto aimPressPattern = dunia_pattern("E8 ? ? ? ? 80 48 04 08 5F 5E 83 C4 10 C2 08 00");
@@ -169,11 +156,9 @@ public:
                 });
             }
 
-            // Button up. Skipping to the epilogue leaves the ironsight bit set, which is the whole
-            // trick - nothing else in the pawn state clears it.
+            // Button up. Skipping to the epilogue leaves the ironsight bit set.
             //
             // 1014492D  CMP   EAX,[0x10F93A98]          ; ironsight up
-            // 10144933  JNZ   0x10144946
             // 10144935  CALL  0x1007E1B0                <- hook
             // 1014493A  AND   byte ptr [EAX+0x4],0xF7
             // 1014493E  POP   EDI                       <- join
@@ -192,7 +177,6 @@ public:
             }
 
             // 101447B5  CMP   EAX,[0x10F93A74]          ; sprint lock, shares the code below
-            // 101447BD  MOV   byte ptr [ESI+0x18],0x1
             // 101447C1  CALL  0x1007E1B0                <- hook, also reached for [0x10F93A70]
             // 101447C6  OR    byte ptr [EAX+0x4],0x40
             auto sprintPressPattern = dunia_pattern("E8 ? ? ? ? 80 48 04 40 5F 5E 83 C4 10 C2 08 00");
@@ -205,10 +189,8 @@ public:
             }
 
             // 101447D2  CMP   EAX,[0x10F93A78]          ; sprint up
-            // 101447D8  JNZ   0x101447F2
             // 101447DA  CALL  0x1007E1B0                <- hook
             // 101447DF  AND   byte ptr [EAX+0x4],0xBF
-            // 101447E3  MOV   ECX,ESI
             // 101447E5  CALL  0x10143650                ; end the run
             // 101447EA  POP   EDI                       <- join
             auto sprintReleasePattern = dunia_pattern("75 18 E8 ? ? ? ? 80 60 04 BF 8B CE E8 ? ? ? ? 5F 5E 83 C4 10 C2 08 00");
@@ -219,8 +201,7 @@ public:
                 static auto SprintReleaseHook = safetyhook::create_mid(sprintReleasePattern.get_first(2), [](SafetyHookContext& regs)
                 {
                     // Only latch a run that is actually happening. Tapping while standing still
-                    // would otherwise arm a sprint that starts on the next step forward and never
-                    // ends, which is the permanent sprint this is meant to avoid.
+                    // would arm a sprint that starts on the next step and never ends.
                     auto nBlock = StateBlock(regs.esi);
                     auto bSprinting = nBlock != 0
                         && (*(uint8_t*)(nBlock + nCurrentState + nStateFlags) & nSprintFlag) != 0;
@@ -232,16 +213,12 @@ public:
                 });
             }
 
-            // Once a frame the controller checks whether each action still exists in the action map
-            // currently on the stack, and drops the matching state when it does not - that is how
-            // the sights come down on entering a vehicle or a menu. This is not the hold mechanism,
-            // so nothing here is suppressed; it is only used as a per-frame place to notice that the
-            // engine has ended the state on its own and give the button back to the player.
+            // Once a frame the controller drops the state for any action no longer in the action
+            // map on the stack, which is how the sights come down on entering a vehicle or menu.
+            // Nothing is suppressed here; it just notices the engine ended the state itself.
             //
             // 10143B40  TEST  AL,AL                     <- hook, AL = action is bound in this map
-            // 10143B42  JNZ   0x10143B50
             // 10143B44  MOV   ECX,[ESI+0x20]
-            // 10143B47  CALL  0x1007E1B0
             // 10143B4C  AND   byte ptr [EAX+0x4],0xF7
             auto aimScopePattern = dunia_pattern("84 C0 75 0C 8B 4E 20 E8 ? ? ? ? 80 60 04 F7");
             if (!aimScopePattern.empty())

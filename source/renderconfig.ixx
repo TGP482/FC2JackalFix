@@ -10,17 +10,13 @@ import settings;
 
 // engine\settings\DefaultRenderConfig.xml is not parsed attribute by attribute. Every render
 // config class (CRenderShadowConfig, CRenderGeometryConfig, CRenderTerrainConfig,
-// CRenderAmbientConfig) publishes a schema through its vtable: a list of property descriptors,
-// each holding a name, a name hash, and the byte offset of the field inside the object. The
-// loader walks that list and calls the descriptor's serialise method, which resolves
-// object + descriptor->offset and hands the resulting address to the current visitor. For a
-// load, the visitor is the XML reader and writes the parsed attribute straight into the field.
+// CRenderAmbientConfig) publishes a schema of property descriptors through its vtable: name, name
+// hash, byte offset of the field. The loader calls each descriptor's serialise method, which
+// resolves object + descriptor->offset and hands the address to the visitor, the XML reader.
 //
-// There are only two such serialisers for numeric fields - one for float, one for int - and both
-// are shared by every config class in the engine. Hooking those two after they return is enough
-// to see every numeric attribute of every <quality> block, in any section, with the descriptor
-// still in hand. That replaces the edited copy of the XML that would otherwise have to ride in
-// patch.dat, so nothing here depends on the archive being present or on its load order.
+// Only two numeric serialisers exist, float and int, shared by every config class. Hooking both
+// after they return covers every numeric attribute of every <quality> block with the descriptor
+// still in hand, so nothing here depends on patch.dat.
 
 // Property descriptor, as built by the schema registration functions.
 struct RenderProperty
@@ -59,19 +55,18 @@ static constexpr uint32_t nTerrainAffectedByMuzzleFlash = 0x38;
 static constexpr uint32_t nAmbientMaxHemiMapDistance = 0x30;
 static constexpr uint32_t nAmbientSectorCountX = 0x3C;
 
-// The quality id is the key of the map the parsed blocks are stored in, not a field on the block
-// itself, so it is not reachable from the serialiser. Each section is instead recognised by one
-// property whose stock value is unique to the preset the Ultra High profile selects:
-// GeometryQuality and TerrainQuality and ShadowQuality resolve to "ultrahigh", AmbientQuality to
-// "high". Lower presets never carry these values, so they are left at the engine's own settings
-// and the in-game quality slider keeps meaning what it says.
+// The quality id is the key of the map the parsed blocks are stored in, not a field on the block,
+// so the serialiser cannot see it. Each section is recognised instead by one property whose stock
+// value is unique to the preset the Ultra High profile selects: "ultrahigh" for ShadowQuality,
+// GeometryQuality and TerrainQuality, "high" for AmbientQuality. Lower presets never carry these
+// values and are left alone.
 static constexpr int32_t nUltraShadowMapSize = 2048;      // 16, 341, 680, 1364, 1364, 2048, 720, 720
 static constexpr float fUltraMinZoomFactor = 0.10f;       // 0.70, 0.60, 0.45, 0.35, 0.225, 0.10
 static constexpr int32_t nUltraAffectedByMuzzleFlash = 1; // only the ultrahigh terrain block sets it
 static constexpr int32_t nHighSectorCountX = 12;          // 4, 8, 8, 12, 8
 
 // Stock KillLodScale of the ultrahigh geometry block, used to confirm the block alongside
-// MinZoomFactor, which the xenon and ps3 blocks leave out entirely.
+// MinZoomFactor.
 static constexpr float fStockKillLodScale = 1.0f;
 
 // Stock shadow map resolution of the ultrahigh block. Also the default ShadowResolution, so the
@@ -98,12 +93,10 @@ static bool bEnhancedLODs = false;
 static bool bEnhancedShadowRange = false;
 static int32_t nShadowResolution = nStockShadowMapSize;
 
-// The block currently known to be the one this module targets, per section. The schema is walked
-// in registration order, which is not the order the attributes appear in the XML, so the
-// recognising property can land part way through a block: everything before it is rewritten the
-// moment the block is recognised, everything after is rewritten as it arrives. Either way the
-// block is consistent by the time the loader moves on. Thread local because config streams are
-// parsed on more than one thread.
+// The recognised block per section. The schema is walked in registration order, not XML order, so
+// the recognising property can land part way through a block: fields before it are rewritten on
+// recognition, fields after it as they arrive. Thread local because config streams are parsed on
+// more than one thread.
 static thread_local const void* pUltraShadow = nullptr;
 static thread_local const void* pUltraGeometry = nullptr;
 static thread_local const void* pUltraTerrain = nullptr;
@@ -177,8 +170,8 @@ static void ApplyAmbient(uint8_t* pObject)
 }
 
 // Called once per numeric attribute, after the loader has written the parsed value into the field.
-// Both the name and the offset are checked: ShadowMapSize exists in the Shadow section and again
-// in the Ambient section, where it sizes the sector ambient map and means something else entirely.
+// Name and offset are both checked: ShadowMapSize exists in the Shadow section and again in the
+// Ambient section, where it sizes the sector ambient map.
 static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObject)
 {
     if (pProperty == nullptr || pObject == nullptr || pProperty->pszName == nullptr)
@@ -200,7 +193,7 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
 
     case nGeometryMinZoomFactor:
         // MinZoomFactor is the only geometry attribute the xenon and ps3 blocks leave out, so it
-        // is paired with KillLodScale, which the schema reads first, rather than trusted alone.
+        // is paired with KillLodScale, which the schema reads first.
         if (bEnhancedLODs && name == "MinZoomFactor"
             && *(float*)(pObject + nOffset) == fUltraMinZoomFactor
             && *(float*)(pObject + nGeometryKillLodScale) == fStockKillLodScale)
@@ -234,8 +227,8 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
     }
 
     // Fields the schema reads after the block was recognised, which the loader has just put back
-    // to the value in the XML. Only the offsets this module owns are acted on, so a stale block
-    // pointer cannot turn into a write into an unrelated object.
+    // to the value in the XML. Only offsets this module owns are acted on, so a stale block
+    // pointer cannot write into an unrelated object.
     if (pObject == pUltraShadow && IsShadowField(nOffset))
         ApplyShadow(pObject);
     else if (pObject == pUltraGeometry && IsGeometryField(nOffset))
@@ -246,8 +239,7 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
         ApplyAmbient(pObject);
 }
 
-// __thiscall with two stack arguments and a callee cleanup of eight bytes, which is what
-// __fastcall produces here once the unused edx slot is declared.
+// __thiscall with two stack arguments and a callee cleanup of eight bytes.
 static SafetyHookInline SerialiseFloatHook{};
 static SafetyHookInline SerialiseIntHook{};
 
@@ -290,9 +282,8 @@ public:
             SerialiseFloatHook = safetyhook::create_inline(floatPattern.get_first(), SerialiseFloat);
             SerialiseIntHook = safetyhook::create_inline(intPattern.get_first(), SerialiseInt);
 
-            // The render config is read once during startup, so a reload of the ini cannot move
-            // shadows or draw distance without a restart. Nothing is registered on the file watch
-            // for that reason, matching how anisotropic filtering behaves.
+            // The render config is read once during startup, so nothing is registered on the file
+            // watch; a change needs a restart.
         };
     }
 } RenderConfig;

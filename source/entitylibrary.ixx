@@ -1,8 +1,7 @@
 /*
-  Four entity library bug fixes from Boggalog's Far Cry 2 Patched, in code.
-
-  Credit to Boggalog for identifying all four and for the values used here. His versions are data
-  edits to generated/entitylibrarypatchoverride.fcb inside patch.dat:
+  Four entity library bug fixes from Boggalog's Far Cry 2 Patched. Credit to him for identifying
+  all four and for the values used here. His versions are data edits to
+  generated/entitylibrarypatchoverride.fcb inside patch.dat:
 
     "Fixed the MAC-10 being silent"
         WeaponProperties.Secondary.MAC10 and .Mikes_Rusty
@@ -21,35 +20,21 @@
         FOVMultipliers: fPreCombatMultiplier 4 -> 0.75, fCombatMultiplier 4 -> 1,
                         fPostCombatMultiplier 4 -> 1.25
 
-  Two of them are worth a sentence on what the numbers mean. The MAC-10's muzzle stim is the noise
-  the shot broadcasts to AI, and every other level-8 weapon in the game - AK47, G3KA4, M16, SPAS12,
-  USAS12, Star45, Uzi - carries radius 75. The MAC-10 alone has 3, which is inside the muzzle, so
-  nobody ever hears it: a transcription slip rather than a design choice. And the assassination
-  target's 4/4/4 field-of-view multipliers are the set the game gives snipers and mortar crews;
-  0.75/1/1.25 is what every ordinary merc gets.
+  The MAC-10's muzzle stim is the noise the shot broadcasts to AI; every other level-8 weapon
+  carries radius 75 and 3 is inside the muzzle. The 4/4/4 field-of-view multipliers are the set the
+  game gives snipers and mortar crews, 0.75/1/1.25 the one an ordinary merc gets.
 
-  ---------------------------------------------------------------------------------------------
-  Why this is one module and one hook
+  One hook, because two of the six floats cannot be recognised by value: fMoveSpeedFactor is 1.0 on
+  134 other weapon entries and the 4/4/4/2/0.5/6/0.15 multiplier set is shared by 28 enemy
+  archetypes. The fix needs prototype names, which the property system never sees. All six also go
+  through float descriptor vtable 0x10E98014, serialiser 0x10957940, which renderconfig.ixx hooks.
 
-  All four are values on named prototypes, and two of them cannot be recognised by value alone:
-  fMoveSpeedFactor is 1.0 on 134 other weapon entries, and the 4/4/4/2/0.5/6/0.15 multiplier set
-  is shared by 28 enemy archetypes - which is precisely the bug. So the fix needs to know which
-  prototype it is looking at, and that rules out intercepting the property system, which sees
-  offsets and values but never names.
+  Each .fcb is parsed into a DOM of nodes kept for the session; components are read out of it on
+  demand when an entity spawns. So editing the DOM edits the archive after load.
 
-  It also rules out the obvious hook. Every one of these six floats goes through the generic float
-  property descriptor vtable 0x10E98014, whose serialiser is 0x10957940 - the same function
-  renderconfig.ixx already hooks. Hooking it twice is not safe.
+  FUN_105492E0 is the per-file prototype indexer, called once per entity library .fcb immediately
+  after the file's root node joins the library:
 
-  The way through is that Far Cry 2 does not bake the entity library into per-prototype structs at
-  load. It parses each .fcb into a DOM of nodes and keeps it for the session; components are read
-  out of that DOM on demand when an entity spawns. So editing the DOM is editing the archive, just
-  after it has been read rather than before.
-
-  FUN_105492E0 is where to do it. It is the per-file prototype indexer, called once per entity
-  library .fcb immediately after the file's root node joins the library:
-
-    if (!initialised) { g_hidName = { "hidName", 0xB9295CC7 }; }
     root = *ppRoot
     for each child of root:                         ; one per EntityLibrary
       for each child of that:                       ; one per EntityPrototype
@@ -57,55 +42,32 @@
         if (ent && ent->GetProperty(&g_hidName, &pszName))
           map[hash(pszName)] = proto
 
-  Every prototype in the file passes through it with its hidName in hand, which is exactly the
-  identity the two ambiguous fixes need.
+  Every prototype in the file passes through it with its hidName in hand.
 
-  ---------------------------------------------------------------------------------------------
-  The node model, and the mistake that is worth writing down
-
-  There are two node classes, not one, and they are easy to conflate because they publish the same
-  interface with the same vtable slot layout.
-
-    The wrapper is a 0x10 byte heap object - vtable, refcount, inner pointer, parent - and it is
-    what the library holds and what the hook is handed. Every one of its accessors begins by
-    hopping to the inner node it owns:
+  Two node classes publish the same interface with the same vtable slot layout. The wrapper is a
+  0x10 byte heap object (vtable, refcount, inner pointer, parent), is what the library holds and
+  what the hook is handed, and each of its accessors hops to the inner node first:
 
         10233FB0  GetChildCount   MOV EAX,[ECX+8] / MOV EAX,[EAX+0xC]
         10233FC0  GetChild        MOV ECX,[ECX+8] / MOV EAX,[ECX+EAX*4+0x18] / ADD EAX,ECX
-        10233FD0  GetChildByName  MOV ECX,[ECX+8] / JMP ...
         102348B0  GetProperty     MOV ECX,[ECX+8] / ... / CALL FindProperty
 
-    The inner node is the actual DOM node, and there is a complete parallel family of accessors
-    for it - 10233E10, 102349D0, 10234A00 and the rest - byte-identical to the wrapper's except
-    that they operate on this directly, with no hop:
+  The inner node is the DOM node itself, with a parallel family of accessors (10233E10, 102349D0,
+  10234A00) that operate on this directly with no hop:
 
         10233E10  GetChild        MOV EAX,[ESP+4] / MOV EAX,[ECX+EAX*4+0x18] / ADD EAX,ECX
 
-  The trap is that GetChild returns an inner node whichever class you call it on. So the root is a
-  wrapper and everything below it is an inner node, and code that assumes one layout for the whole
-  tree is wrong from the first child down.
+  GetChild returns an inner node whichever class it is called on, so the root is a wrapper and
+  everything below it is an inner node. Reading the property block as node+8 everywhere is right
+  for the root only; on a descendant it hands FindProperty four bytes of .fcb payload as its cursor
+  and faults at Dunia+0x23433A. So everything here dispatches through the node's own vtable.
 
-  An earlier version of this module did exactly that: it read the property block itself as node+8
-  for every node. That is right for the root and wrong for all of its descendants, where the
-  property block is the node itself. The result was FindProperty being handed four bytes of .fcb
-  payload as its cursor and dereferencing it - an access violation at Dunia+0x23433A, on the
-  MOV ECX,[EAX] two instructions into the scan, with the bad cursor read from the phantom node+0x14.
+  Slot +0xD8 hands back a pointer into the loaded .fcb buffer for a named property whatever its
+  type, which is why hidName and a float both come out of it. All six edits are float to float, so
+  nothing moves.
 
-  The fix is to stop reaching into node internals at all. Everything here now goes through the
-  node's own vtable, read from the node at runtime, which dispatches to whichever family is
-  correct for that node. FUN_105492E0 itself is the proof that this works for both: it calls
-  GetChildByName and GetProperty on inner nodes and GetChild on the wrapper root, all through the
-  same slot numbers.
-
-  Slot +0xD8 is the one that matters. It hands back a pointer straight into the loaded .fcb buffer
-  for a named property, whatever the property's type - the engine's "get string" is nothing more
-  than this pointer handed back uninterpreted, which is why hidName and a float both come out of
-  it. That pointer is the write target, and since all six edits are float to float nothing moves.
-
-  Belt and braces: the whole walk runs inside a structured exception handler. This is a data
-  patching pass over a format that is only partly understood, on a code path where being wrong
-  used to mean the game does not start. If anything here is still mistaken, the fixes silently do
-  not apply and the game runs.
+  The whole walk runs under SEH: if anything here is still wrong the fixes silently do not apply
+  and the game still starts.
 */
 
 module;
@@ -117,8 +79,7 @@ export module entitylibrary;
 import common;
 import dunia;
 
-// Only the vtable pointer can be assumed, and only because both node classes begin with one. Every
-// other field differs between the wrapper and the inner node, so nothing else is declared.
+// Only the vtable pointer is common to both node classes; every other field differs.
 struct FCBNode
 {
     void** ppVTable;
@@ -130,8 +91,8 @@ static constexpr size_t nNodeGetChild = 0x18 / sizeof(void*);
 static constexpr size_t nNodeGetChildByName = 0x20 / sizeof(void*);
 static constexpr size_t nNodeGetProperty = 0xD8 / sizeof(void*);
 
-// The {const char* name; uint32_t hash} pair every node accessor takes. FUN_105492E0 builds two of
-// these on its own stack, which is where the Entity hash below comes from.
+// The {name, hash} pair every node accessor takes. FUN_105492E0 builds two of these on its own
+// stack, which is where the Entity and hidName hashes below come from.
 struct NameKey
 {
     const char* pszName;
@@ -148,15 +109,13 @@ static NameKey KeyPreCombatMultiplier = { "fPreCombatMultiplier", 0 };
 static NameKey KeyCombatMultiplier = { "fCombatMultiplier", 0 };
 static NameKey KeyPostCombatMultiplier = { "fPostCombatMultiplier", 0 };
 
-// NameHash::Set, the engine's own hash and the same call the schema builders make, so a hash
-// computed here matches the archive by construction rather than by a table that could drift.
+// NameHash::Set, the engine's own hash, so hashes computed here match the archive by construction.
 // __thiscall with three stack arguments.
 using NameHash_t = void(__fastcall*)(uint32_t* pOut, void* pEdx, const char* pszName, int32_t, int32_t);
 
 static NameHash_t NameHash = nullptr;
 
-// Stock values, used as a guard so a prototype that has already been corrected - by a repacked
-// archive, or by this module on an earlier .fcb - is left alone rather than shifted twice.
+// Stock values double as a guard against shifting an already-corrected prototype twice.
 static constexpr float fStockMuzzleRadius = 3.0f;
 static constexpr float fFixedMuzzleRadius = 75.0f;
 static constexpr float fStockIronsightMoveSpeed = 1.0f;
@@ -177,8 +136,7 @@ enum class Prototype
     AssassinationTarget,  // field of view multipliers
 };
 
-// The archive's hidName strings are not length prefixed once they come back as a raw pointer, so
-// the comparison is bounded rather than trusting a terminator that a malformed file might omit.
+// hidName comes back as a raw pointer with no length, so the compare is bounded.
 static constexpr size_t nMaxNameLength = 128;
 
 static bool NameIs(const char* pszName, const char* pszExpected)
@@ -205,8 +163,8 @@ static bool NameIs(const char* pszName, const char* pszExpected)
 
 static Prototype ClassifyPrototype(const char* pszHidName)
 {
-    // Only the singleplayer prototypes, matching Boggalog's edits. The .Multi variants carry the
-    // same stock MAC-10 radius but he left them alone, so they are left alone here too.
+    // Singleplayer only, matching Boggalog's edits. The .Multi variants carry the same stock
+    // MAC-10 radius but he left them alone.
     if (NameIs(pszHidName, "WeaponProperties.Secondary.MAC10")
         || NameIs(pszHidName, "WeaponProperties.Secondary.MAC10.Mikes_Rusty"))
         return Prototype::MAC10;
@@ -224,8 +182,6 @@ static Prototype ClassifyPrototype(const char* pszHidName)
     return Prototype::None;
 }
 
-// Every accessor below dispatches through the node's own vtable, which is what makes the wrapper
-// and the inner node interchangeable here.
 static uint32_t GetChildCount(FCBNode* pNode)
 {
     return reinterpret_cast<uint32_t(__fastcall*)(FCBNode*, void*)>(pNode->ppVTable[nNodeGetChildCount])(pNode, nullptr);
@@ -241,7 +197,7 @@ static FCBNode* GetChildByName(FCBNode* pNode, const NameKey& key)
     return reinterpret_cast<FCBNode*(__fastcall*)(FCBNode*, void*, const NameKey*)>(pNode->ppVTable[nNodeGetChildByName])(pNode, nullptr, &key);
 }
 
-// A property addressed in place in the loaded .fcb buffer, or null if this node does not carry it.
+// Pointer into the loaded .fcb buffer, or null if this node does not carry the property.
 static void* GetProperty(FCBNode* pNode, const NameKey& key)
 {
     void* pValue = nullptr;
@@ -249,9 +205,7 @@ static void* GetProperty(FCBNode* pNode, const NameKey& key)
     return pfnGet(pNode, nullptr, &key, &pValue) != 0 ? pValue : nullptr;
 }
 
-// Rewrites only if the value is still the one the archive shipped. The comparison doubles as a
-// type check: every key used here names a float in the schema, and a property that was not one
-// would not hold the exact stock value being looked for.
+// Rewrites only if the value is still the one the archive shipped, which doubles as a type check.
 static bool SetFloat(FCBNode* pNode, const NameKey& key, float fStock, float fFixed)
 {
     auto* pValue = static_cast<float*>(GetProperty(pNode, key));
@@ -267,16 +221,13 @@ static void ApplyToNode(Prototype ePrototype, FCBNode* pNode)
     switch (ePrototype)
     {
     case Prototype::MAC10:
-        // The prototype holds exactly one stim at radius 3 - the muzzle one. Its other stim, the
-        // impact, is at 15, so no further qualification is needed inside this prototype.
+        // Only one stim in this prototype sits at radius 3, the muzzle one. The impact stim is 15.
         SetFloat(pNode, KeyRadius, fStockMuzzleRadius, fFixedMuzzleRadius);
         break;
 
     case Prototype::M79:
-        // fMoveSpeedFactor appears twice in a weapon prototype: once on the IronSight block at
-        // field offset 0xD8 and once at the weapon root at 0xD4, both shipped at 1.0. Only the
-        // ironsight one is meant to change, so the node is qualified by bCanIronsight, which only
-        // the IronSight block carries.
+        // fMoveSpeedFactor appears twice at 1.0: IronSight block +0xD8 and weapon root +0xD4.
+        // bCanIronsight only exists on the IronSight block, so it picks the right node.
         if (GetProperty(pNode, KeyCanIronsight) != nullptr)
             SetFloat(pNode, KeyMoveSpeedFactor, fStockIronsightMoveSpeed, fFixedIronsightMoveSpeed);
         break;
@@ -299,9 +250,7 @@ static void ApplyToNode(Prototype ePrototype, FCBNode* pNode)
     }
 }
 
-// Components nest a handful of levels deep - component list, component, named group, array entry -
-// so the walk is bounded rather than open ended. Eight is comfortably past anything in the library
-// and stops a malformed file turning into a stack overflow.
+// Components nest about four levels, so eight is past anything in the library.
 static constexpr int nMaxDepth = 8;
 
 static void ApplyToSubtree(Prototype ePrototype, FCBNode* pNode, int nDepth)
@@ -316,9 +265,8 @@ static void ApplyToSubtree(Prototype ePrototype, FCBNode* pNode, int nDepth)
         ApplyToSubtree(ePrototype, GetChild(pNode, i), nDepth + 1);
 }
 
-// The same two-level walk FUN_105492E0 performs - libraries, then prototypes - reading each
-// prototype's hidName the way the engine reads it. pRoot is the wrapper; everything GetChild
-// hands back below it is an inner node, which is why nothing here touches a node's fields.
+// The same two-level walk FUN_105492E0 performs: libraries, then prototypes. pRoot is the wrapper,
+// everything GetChild hands back below it is an inner node.
 static void PatchLibrary(FCBNode* pRoot)
 {
     if (pRoot == nullptr || pRoot->ppVTable == nullptr)
@@ -354,13 +302,10 @@ static SafetyHookInline IndexLibraryHook{};
 
 static void __fastcall IndexLibrary(void* pLibrary, void* pEdx, FCBNode** ppRoot)
 {
-    // The original first, so the library's own name index is built from the values it expects. The
-    // patch only moves floats, so nothing it does can invalidate that index.
+    // Original first, so the name index is built before anything moves.
     IndexLibraryHook.fastcall(pLibrary, pEdx, ppRoot);
 
-    // Nothing in the walk allocates or holds anything that needs unwinding, so the handler is free
-    // to swallow whatever it catches. A fix that does not apply is a bug; a fix that stops the game
-    // starting is worse.
+    // Nothing in the walk needs unwinding, so the handler can swallow whatever it catches.
     __try
     {
         if (ppRoot != nullptr)
@@ -382,9 +327,8 @@ public:
             // displacement wildcarded.
             auto hashPattern = dunia_pattern("8B 44 24 04 85 C0 56 8B F1 74 29 80 38 00 74 24 80 7C 24 0C 00 50 74 0E E8 ? ? ? ? 83 C4 04 89 06 5E C2 0C 00");
 
-            // The per-file prototype indexer. Entry through the one-time init guard; the four
-            // bytes of the guard's address are wildcarded, and the pattern stops before the
-            // second reference to it.
+            // The per-file prototype indexer. Entry through the one-time init guard, with the
+            // four bytes of the guard's address wildcarded.
             auto indexPattern = dunia_pattern("55 8B EC 83 E4 F8 83 EC 3C F6 05 ? ? ? ? 01 53 56 57 89 4C 24 1C 75 1B");
 
             if (hashPattern.empty() || indexPattern.empty())
@@ -400,17 +344,15 @@ public:
             NameHash(&KeyCombatMultiplier.nHash, nullptr, KeyCombatMultiplier.pszName, 0, 0);
             NameHash(&KeyPostCombatMultiplier.nHash, nullptr, KeyPostCombatMultiplier.pszName, 0, 0);
 
-            // hidName and Entity are the two hashes FUN_105492E0 hardcodes rather than derives, so
-            // hashing one of them here is a cheap check that this is the same hash the archive was
-            // built with before any of the others are trusted.
+            // hidName is one of the two hashes FUN_105492E0 hardcodes, so rehashing it checks
+            // NameHash against the archive before the others are trusted.
             uint32_t nCheck = 0;
             NameHash(&nCheck, nullptr, KeyHidName.pszName, 0, 0);
             if (nCheck != KeyHidName.nHash)
                 return;
 
-            // The entity library is read once during startup, so nothing here is registered on the
-            // ini watch - and these are bug fixes rather than preferences, so there is nothing to
-            // toggle either.
+            // The entity library is read once during startup, so nothing is registered on the ini
+            // watch.
             IndexLibraryHook = safetyhook::create_inline(indexPattern.get_first(), IndexLibrary);
         };
     }

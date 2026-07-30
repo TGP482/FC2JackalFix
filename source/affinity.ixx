@@ -28,8 +28,7 @@ static void ApplyAffinity()
 
     if (nProcessors <= 0)
     {
-        // Restore rather than leave the last mask in place, so clearing the ini key while the game
-        // runs actually gives the processors back.
+        // Restore the original mask so clearing the ini key mid-run gives the processors back.
         if (bMaskApplied)
         {
             SetProcessAffinityMask(GetCurrentProcess(), nOriginalMask);

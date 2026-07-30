@@ -71,8 +71,7 @@ public:
                 });
             }
 
-            // Scales the loaded GameProfile sensitivity value while preserving the
-            // in-game slider value.
+            // Scales the loaded GameProfile sensitivity, leaving the in-game slider value alone.
             auto sensitivityPattern = dunia_pattern("F3 0F 10 88 B0 00 00 00 8B 88 B8 00 00 00 F3 0F 10 15 ? ? ? ? F3 0F 11 4C 24 08");
             if (!sensitivityPattern.empty())
             {
@@ -82,8 +81,7 @@ public:
                 });
             }
 
-            // Overrides the sprint yaw modifier at both application sites. A value of 0
-            // preserves the archetype's original value.
+            // Overrides the sprint yaw modifier at both application sites. 0 keeps the archetype's.
             auto sprintTurnPattern = dunia_pattern("F3 0F 10 80 A4 00 00 00 F3 0F 59 46 14 F3 0F 11 46 14");
             if (sprintTurnPattern.size() == nSprintTurnSites)
             {

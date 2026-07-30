@@ -8,11 +8,9 @@ import common;
 import dunia;
 import settings;
 
-// PC save-anywhere features are not controlled by a runtime setting. The pause menu save entry
-// and quicksave bindings require separate interventions.
-//
-// The pause menu references CSaveGamePage through its descriptor pointer (0x108541A8), so
-// removing the class name alone does not disable the entry.
+// No runtime setting gates PC save-anywhere, so the pause menu entry and the quicksave bindings
+// need separate patches. The menu reaches CSaveGamePage through its descriptor pointer
+// (0x108541A8), so removing the class name does not disable the entry.
 
 static bool bLimitedSaving = false;
 
@@ -30,8 +28,8 @@ public:
                 bLimitedSaving = JackalFixSettings.GetInt(PREF_LIMITEDSAVING) != 0;
             };
 
-            // Pause menu entries are built from the same block shape. Skipping the save entry block leaves its
-            // item index at -1, which the engine already handles at 0x10857728.
+            // All pause menu entries share this block shape. Skipping the save block leaves its item
+            // index at -1, which the engine already handles at 0x10857728.
             auto pattern = dunia_pattern(
                 "53 6A 7C E8 ? ? ? ? 8B F8 83 C4 08 3B FB 74 23 39 1D ? ? ? ? 75 07 33 C9 E8 ? ? ? ? "
                 "6A 01 53 68 ? ? ? ? 56 8B CF E8 ? ? ? ? 8B F8 EB 02 33 FF 68 ? ? ? ? 8D 4C 24 20 "
@@ -48,8 +46,7 @@ public:
                 if (!pLabel || _stricmp(pLabel, "PAUSE_SAVEGAME") != 0)
                     continue;
 
-                // Set the entry index to -1 and skip the block. Both references are internal, so the patch is
-                // position-independent.
+                // Both references are internal, so the patch is position-independent.
                 static raw_mem fnPauseSaveEntry(match.get<void>(0), {
                     0xC7, 0x86, 0xEC, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
                     0xE9, 0x86, 0x00, 0x00, 0x00,
@@ -73,8 +70,8 @@ public:
                 break;
             }
 
-            // F5/F9 bindings are defined in XML, not the DLL. Clearing the signal during parsing makes the
-            // binding behave like one without a signal, matching a removed XML entry.
+            // F5/F9 bindings live in XML. Clearing the signal during parsing leaves the binding
+            // signalless, matching a removed XML entry.
             pattern = dunia_pattern("83 EC 38 53 55 56 57 8B 7C 24 4C 8B E9 8B 0F 8B 01 8B 90 88 00 00 00 68 ? ? ? ? FF D2 8B F0");
             if (pattern.empty())
                 return;

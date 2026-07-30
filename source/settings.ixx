@@ -74,13 +74,10 @@ public:
         mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
         mPrefs[PREF_LARGEADDRESSAWARE] = std::clamp(iniReader.ReadInteger("General", "LargeAddressAware", 0), 0, 1);
 
-        // 1 fullscreen, 2 borderless, 3 windowed. Clamped rather than defaulted on a bad value,
-        // because every one of the three is a working mode and none of them is a silent no-op.
+        // 1 fullscreen, 2 borderless, 3 windowed.
         mPrefs[PREF_DISPLAYMODE] = std::clamp(iniReader.ReadInteger("Display", "DisplayMode", 2), 1, 3);
 
-        // Both axes or neither: one on its own is a typo, not a request. The ceiling is the largest
-        // square a D3D9 render target can describe; the floor keeps a mistyped value from producing
-        // a frame too small for the engine's own viewport arithmetic.
+        // Both axes or neither. Ceiling is the largest square a D3D9 render target can describe.
         auto nInternalResolutionX = iniReader.ReadInteger("Display", "InternalResolutionX", 0);
         auto nInternalResolutionY = iniReader.ReadInteger("Display", "InternalResolutionY", 0);
         if (nInternalResolutionX < 1 || nInternalResolutionY < 1)

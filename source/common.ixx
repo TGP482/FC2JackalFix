@@ -1,11 +1,10 @@
 module;
 
 #include <common.hxx>
-// Included textually rather than imported as a header unit (`import <stacktrace>;`).
-// A header unit gets its own copy of the <iosfwd>/<istream> machinery, which collides with
-// the textual copy common.hxx pulls in via IniReader -> mINI -> <fstream>/<sstream>. MSVC
-// then leaves std::basic_istream<char>::sentry declared but undefined, and the first
-// operator>> instantiation fails with C2079 on sentry's `_Ok`.
+// Textual include rather than `import <stacktrace>;`: a header unit gets its own copy of the
+// <iosfwd>/<istream> machinery, which collides with the one common.hxx pulls in via IniReader
+// -> mINI -> <fstream>/<sstream>. MSVC then leaves std::basic_istream<char>::sentry declared
+// but undefined, and the first operator>> instantiation fails with C2079 on sentry's `_Ok`.
 #include <stacktrace>
 
 export module common;
@@ -41,7 +40,7 @@ public:
         static Event<> InitEvent;
         return InitEvent;
     }
-    // Fires once Dunia.dll is mapped, which is where every patch target lives.
+    // Fires once Dunia.dll is mapped, where every patch target lives.
     static Event<>& onDuniaInitEvent()
     {
         static Event<> DuniaInitEvent;
@@ -154,8 +153,8 @@ export inline bool IsModuleUAL(HMODULE mod)
     return GetProcAddress(mod, "IsUltimateASILoader") != NULL;
 }
 
-// Walks the call stack looking for Ultimate ASI Loader, so the same binary can either be
-// loaded as a plugin by UAL or self-initialize under any other loader.
+// Walks the call stack for Ultimate ASI Loader, so the same binary works as a UAL plugin or
+// self-initializes under any other loader.
 export bool IsUALPresent()
 {
     for (const auto& entry : std::stacktrace::current())
@@ -257,8 +256,7 @@ public:
     static inline std::once_flag flag;
 };
 
-// Tries each pattern in turn and returns the first that resolves, for keeping a fix
-// alive across game versions without duplicating the patch body.
+// Returns the first pattern that resolves, so one patch body covers several game versions.
 export template <size_t count = 1, typename... Args>
 hook::pattern find_pattern(Args... args)
 {

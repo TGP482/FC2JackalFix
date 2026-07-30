@@ -8,9 +8,8 @@ import common;
 import dunia;
 import settings;
 
-// MaxFps is already supported through -RenderProfile_MaxFps. Append the switch to the existing
-// command line instead of patching the engine. The value is not persisted and an explicit user
-// argument takes priority.
+// The engine already handles -RenderProfile_MaxFps, so append the switch to the command line
+// instead of patching. An explicit user argument takes priority.
 
 static const char* const szRunGameExport = "?RunGame@@YA_NPAUHINSTANCE__@@PBD@Z";
 static const char* const szMaxFpsSwitch = "-RenderProfile_MaxFps";

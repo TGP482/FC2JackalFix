@@ -13,9 +13,8 @@ import common;
 import dunia;
 import settings;
 
-// Both of these were gated behind Ubisoft services that no longer exist, so the checks can never
-// succeed on a modern install no matter what the player does. Forcing them is the only way to reach
-// content that shipped on the disc.
+// Both unlocks are gated behind Ubisoft services that no longer exist, so the checks can never
+// succeed. Force them.
 class BonusContent
 {
 public:
@@ -23,8 +22,8 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // Predecessor tape missions. The wrapper reports success only when the online
-            // entitlement lookup PrivilegesClient::GetPrivilege(1000) comes back positive.
+            // Predecessor tape missions. The wrapper reports success only when the entitlement
+            // lookup PrivilegesClient::GetPrivilege(1000) comes back positive.
             {
                 auto pattern = dunia_pattern("8B 49 0C 85 C9 74 16 8B 44 24 04 50 E8 ? ? ? ? 84 C0 74 08 B8 01 00 00 00 C2 04 00");
                 if (!pattern.empty())
@@ -48,8 +47,8 @@ public:
                 }
             }
 
-            // The two extra machete skins, which were unlocked by a MachetesKey value that a
-            // promotion used to write into HKCU\Software\Ubisoft\Far Cry 2.
+            // Two extra machete skins, unlocked by the MachetesKey value a promotion wrote into
+            // HKCU\Software\Ubisoft\Far Cry 2.
             {
                 auto pattern = dunia_pattern("75 02 B3 01 8B 54 24 08 52 FF 15 ? ? ? ? 8A C3 5B 83 C4 10 C3");
                 if (!pattern.empty())

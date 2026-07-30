@@ -1,93 +1,48 @@
 /*
-  Restoring the in-game controller button prompts the PC build never asks for.
+  Restores the gameplay HUD controller button prompts. The menu nav bar is a separate system. A fix
+  for it was written and tested, then reverted because the menus are wanted as they ship, so the
+  notes below are a record and nothing here acts on them.
 
-  Scope: the gameplay HUD prompts only. The menu nav bar is a second, entirely separate system; it
-  is diagnosed below because the diagnosis was expensive and should not have to be repeated, but
-  nothing here touches it and the menus are left exactly as the PC build ships them.
+  Neither system is disabled in code. There is no platform check and no pad-connected flag; Dunia
+  never works out whether a pad is present at all. CInputDriverGamepad::Poll throws away
+  XInputGetState's return code, ERROR_DEVICE_NOT_CONNECTED is compared nowhere in the image, and
+  the only XInput imports are XInputGetState and XInputSetState. FUN_105362E0 already resolves
+  ui/360.mgb into a valid sprite on stock PC.
 
-  Neither system was ever "disabled" - both were left intact in code and hollowed out in data.
-
-  ---------------------------------------------------------------------------------------------
-  THE CODE IS INTACT
-
-  There is no platform check, no "pad connected" flag and no "show controller UI" toggle anywhere
-  in the prompt path. Dunia never even works out whether a pad is plugged in: CInputDriverGamepad
-  ::Poll calls XInputGetState and throws the return code away, ERROR_DEVICE_NOT_CONNECTED is never
-  compared against anywhere in the image, and the only XInput imports are XInputGetState and
-  XInputSetState. The glyph loader FUN_105362E0 is called unconditionally by all three of its
-  callers, and it works: at runtime it resolves ui/360.mgb, resolves "360_a", and hands back a
-  valid sprite. All of that happens on stock PC today.
-
-  ---------------------------------------------------------------------------------------------
-  MENUS: not implemented here, but here is why, so nobody re-derives it
-
-  Two faults, both found and both fixable. The fix was written and tested, then removed because
-  the menus are wanted as they ship. Notes only; no code below acts on any of this.
-
-  The .mgb.desc files carry a <configuration> block the engine parses at page build time, and a
-  nav bar prompt is authored like this, verbatim from the shipped PC hud.mgb.desc:
-
-      <b_prompt1 text="Generic;OK" show="1"
-                 icon_xenon="UI\360.mgb;360_a"
-                 icon_ps3="UI\ps3.mgb;ps3_cross" />
-
-  FUN_101D26D0 builds attribute names as <base> + a platform suffix, and the suffix constant is
-  the literal "_pc". Across every .mgb.desc the game ships: 300 icon_xenon, 300 icon_ps3, 140
-  show_pc - and zero icon_pc and zero bare icon. So the icon lookup misses on every prompt, every
-  time. Pointing that one lookup at "_xenon" fixes it; show_pc has 140 real uses and has to be
-  left alone.
-
-  That alone changes nothing on screen, because of a second and larger problem. FUN_10189BA0 only
-  pushes the sprite into the widget after finding a child named "i_placeholder", and that lookup
-  returns null every time with every earlier stage healthy. Walking the child vector by hand
-  explains it - a b_promptN button has exactly three children:
+  The menus fail twice. FUN_101D26D0 builds icon attribute names with the literal "_pc" suffix,
+  and across every shipped .mgb.desc there are 300 icon_xenon, 300 icon_ps3, 140 show_pc, zero
+  icon_pc and zero bare icon, so the lookup misses on every prompt. Pointing that one lookup at
+  "_xenon" fixes it. Do not touch show_pc, which has 140 real uses. Second, FUN_10189BA0 pushes
+  the sprite in only after finding a child named "i_placeholder", the glyph Image the PC art pass
+  deleted. What survives is three other children:
 
       "action"         crc 0x47CC8C92   magma::Placeholder   invisible, draws nothing
       "i_background"   crc 0x7A8A6532   magma::Image         the pill behind the label
       "t_button_text"  crc 0x49D78B9C   magma::Text          the label
 
-  The PC art pass deleted the glyph Image, so the engine has been faithfully loading a 360 sprite
-  into nowhere ever since. What survived is "action", a magma::Placeholder - it renders nothing
-  but is still a Widget, so it still carries a state with a rect, and that is the console build's
-  glyph anchor. In the shipped data its rect reads back empty, so a square off the pill's own
-  height, 24x24, is the working fallback.
+  "action" is the console build's glyph anchor. A Placeholder draws nothing but is still a Widget,
+  so it carries a state with a rect; in shipped data that rect reads back empty, so a square off
+  the pill's own height, 24x24, is the working fallback. The reverted fix borrowed i_background as
+  the carrier, hooked FUN_10189BA0 (CNavBarPrompt::SetIcon, attached flag at +0x51, element at
+  +0x08) and swapped the suffix operand at rebuild time from CNavBarModule::SetLayout.
 
-  The fix borrowed i_background as the carrier, hooked FUN_10189BA0 (CNavBarPrompt::SetIcon,
-  attached flag at +0x51, element at +0x08) and swapped the suffix operand at rebuild time from
-  CNavBarModule::SetLayout.
-
-  ---------------------------------------------------------------------------------------------
-  GAMEPLAY HUD: the container is there and nothing ever fills it
-
-  Different mechanism entirely. hud.mgb.desc declares four button slots:
+  The gameplay HUD fails differently. hud.mgb.desc declares four button slots:
 
       <Interact_prompt   path="a_interact_object/a_interact_icon_anim/a_prompt_interact"   text="t_button" />
       <Inventory_prompt  path="a_inventory_object/a_inventory_icons_anim/a_prompt_interact" text="t_button" />
       <Reload_prompt     path="a_ammo_object/a_reload_icon_object/a_reload_icon_anims"      text="t_button" />
       <Swap_prompt       path="a_weapon_switch_object/a_weapon_switch/a_swap_icon"          text="t_button" />
 
-  The strings Interact_prompt, Inventory_prompt, Reload_prompt, Swap_prompt and t_button do not
-  exist anywhere in Dunia.dll. Those entries fall through a generic loop in CHud::BuildFromLayout
-  that reads only the "path" attribute, resolves the widget, and appends it to a vector at
-  HUD+0x338 whose sole consumer is a bulk hide. The text attribute is never read. So the slots are
-  resolved once, hidden once, and forgotten - they render as empty containers.
+  None of those names, nor t_button, exist as strings in Dunia.dll. They fall through a generic
+  loop in CHud::BuildFromLayout that reads only "path" and appends the widget to a vector at
+  HUD+0x338 whose sole consumer is a bulk hide. Console fills them by token substitution (xex
+  0x8296D130, 0x82973D50) and the PC hud.mgb has no a_prompt_interact container, so the group
+  FUN_1086B670 shows on a prompt is on screen and empty.
 
-  On console the same slots are filled by token substitution, {use} / {reload} / {heal} into
-  t_button (xex 0x8296D130 and 0x82973D50). That code path does not exist in PC Dunia at all, and
-  the a_prompt_interact container itself was deleted from the PC hud.mgb, so there is nothing to
-  fill even if it did.
+  Buttons come from the shipped console action map: use -> pad:a and pad:y, reload -> pad:x,
+  tryuseied -> pad:right_trigger, heal -> pad:left_shoulder. Console interacts with Y.
 
-  The containers do become visible: FUN_1086B670 shows the parent group when a prompt fires and
-  Area::SetVisible propagates into every child. So the group is on screen and empty, and all that
-  is missing is content. This module builds a widget through magma's own factory and puts a glyph
-  in it, which is why it composes with other mods instead of replacing the archive.
-
-  Button assignment comes from the shipped console action map rather than being invented:
-  use -> pad:a and pad:y, reload -> pad:x, tryuseied -> pad:right_trigger, heal ->
-  pad:left_shoulder. Console interacts with Y, so that is what "use" resolves to here.
-
-  ---------------------------------------------------------------------------------------------
-  MAGMA, briefly, because every offset below depends on it
+  magma layout, which every offset below depends on:
 
       Widget + 0x08          -> State
       Widget + 0x0C          -> component lock mask, bit set = engine must not write
@@ -98,14 +53,13 @@
       State  + 0x24/26/28/2A -> int16 left / right / top / bottom
       Image  + 0x20          -> sprite
 
-  Type identity is exact vtable equality - magma::Image has no subclasses, its ObjectTypeInfo
-  vtable has exactly one xref - so no engine calls are needed to walk or to write.
+  Type identity is exact vtable equality. magma::Image has no subclasses and its ObjectTypeInfo
+  vtable has exactly one xref, so no engine call is needed to identify one.
 
-  A rect written into State+0x24 does not survive a frame on its own. Every tick the container
-  walk evaluates the node's keyframes and RectState::blend writes the rect back from the .mgb
-  unless the matching bit is set in Widget+0x0C. 0xF00 pins the rectangle, 0xE0 pins rotation and
-  pivot, and 0x0F800000 pins the vertex colours. Everything else is left blending, so the prompts
-  still fade in and out with the rest of the HUD.
+  A rect written into State+0x24 does not survive a frame: RectState::blend rewrites it from the
+  .mgb every tick unless the matching bit is set in Widget+0x0C. 0xF00 pins the rectangle, 0xE0
+  rotation and pivot, 0x0F800000 the vertex colours. Everything else keeps blending, so the
+  prompts still fade with the HUD.
 */
 
 module;
@@ -147,15 +101,13 @@ static constexpr ptrdiff_t nStateRotation = 0x18;
 static constexpr ptrdiff_t nStatePivotX = 0x1C;
 static constexpr ptrdiff_t nStatePivotY = 0x1E;
 
-// The four vertex colours, which is where a borrowed carrier's tint and alpha live. The ink blot
-// is drawn faint, so a glyph inheriting its colours comes out barely visible.
+// The four vertex colours. The ink blot is faint, so a glyph inheriting them is barely visible.
 static constexpr ptrdiff_t nStateColour = 0x44;
 static constexpr int nColourCount = 4;
 static constexpr uint32_t nOpaqueWhite = 0xFFFFFFFF;
 
 // Component mask bits, from RotationState::blend and RectState::blend. Set means "do not blend".
-// 5, 6, 7 are the rotation angle and its pivot; 8 to 11 are left, right, top and bottom;
-// 23 to 27 are the vertex colours.
+// 5-7 rotation angle and pivot, 8-11 left/right/top/bottom, 23-27 vertex colours.
 static constexpr uint32_t nRotationLockBits = 0x000000E0;
 static constexpr uint32_t nRectLockBits = 0x00000F00;
 static constexpr uint32_t nColourLockBits = 0x0F800000;
@@ -213,7 +165,6 @@ static void WriteRect(uint8_t* pState, const Rect& rect)
 }
 
 // FUN_10AA7150 is bit exact zlib CRC-32: reflected 0xEDB88320, init and final complement.
-// Reimplemented rather than called, so nothing here needs an engine entry point.
 static uint32_t NameId(std::string_view sName)
 {
     static constexpr uint32_t nPolynomial = 0xEDB88320;
@@ -238,8 +189,8 @@ static uint32_t NameId(std::string_view sName)
     return ~nCrc;
 }
 
-// Runs a callback over an Area's direct children. Bounded, because a corrupt or unexpected
-// object should cost nothing rather than walk off into the heap.
+// Walks an Area's direct children. The 64 cap is a sanity bound on a vector that may be garbage,
+// not a format limit, so raising it buys nothing.
 template <typename F>
 static void ForEachChild(uint8_t* pArea, F&& fn)
 {
@@ -282,10 +233,8 @@ static uint8_t* GetSubArea(uint8_t* pDrawable)
     return *reinterpret_cast<uint8_t**>(pDrawable + nWidgetChildArea);
 }
 
-// The paths in hud.mgb.desc do not map onto the runtime tree one for one - the engine's own
-// resolver descends through widget instances rather than child names, so a middle component like
-// a_prompt_interact simply is not there to be found. Searching the subtree for the leaf is both
-// simpler and more honest about what is actually known.
+// The engine's own resolver descends through widget instances rather than child names, so a
+// middle component like a_prompt_interact is not in the runtime tree. Search for the leaf.
 static uint8_t* FindNamedDeep(uint8_t* pArea, uint32_t nWanted, int nMaxDepth = 4, int nDepth = 0)
 {
     if (!pArea || nDepth > nMaxDepth)
@@ -307,8 +256,6 @@ static uint8_t* FindNamedDeep(uint8_t* pArea, uint32_t nWanted, int nMaxDepth = 
     return pFound;
 }
 
-// Same walk, but hands back the Area the match was found in, which is what is needed to add a
-// sibling next to it.
 static uint8_t* FindNamedDeepParent(uint8_t* pArea, uint32_t nWanted, uint8_t** ppParent, int nMaxDepth = 8, int nDepth = 0)
 {
     if (!pArea || nDepth > nMaxDepth)
@@ -336,8 +283,8 @@ static uint8_t* FindNamedDeepParent(uint8_t* pArea, uint32_t nWanted, uint8_t** 
     return pFound;
 }
 
-// Depth first, first match wins. Callers pass a subtree they have already narrowed down, so
-// grabbing the first Image cannot wander into an unrelated icon.
+// Depth first, first match wins. Callers pass a subtree they have already narrowed down, so the
+// first Image cannot turn out to be an unrelated icon.
 static uint8_t* FindImage(uint8_t* pArea, int nDepth = 0)
 {
     if (!pArea || nDepth > 4)
@@ -375,8 +322,7 @@ struct SavedImage
     uint32_t nLockMask = 0;
     bool bHeld = false;
 
-    // Where the glyph currently sits. Placement is re-evaluated every update rather than latched
-    // on the first one, so this is what the new result is compared against - see ComputeGlyphRect.
+    // Where the glyph currently sits. Compared against each new ComputeGlyphRect result.
     Rect placed;
     bool bPlaced = false;
 };
@@ -393,53 +339,33 @@ static bool ShouldShowGlyphs()
 // --------------------------------------------------------------------------------------------
 
 /*
-  On console the interact prompt is hand + ink blot + button, because the a_prompt_interact
-  container and its t_button child exist in the console hud.mgb. The PC hud.mgb had that whole
-  container deleted, so a_interact_icon holds two Images and three things to draw.
+  The PC hud.mgb has the a_prompt_interact container and its t_button child deleted, so there is
+  no widget to put a glyph in. Ask magma's factory for one instead of editing the archive:
 
-  The way out is not to edit the archive, it is to ask the engine for another widget. magma builds
-  its tree through an ordinary factory, and every step of it is a normal callable function:
-
-      Factory::CreateElementForType(ti)  0xABF0E0  makes the Element *and* its drawable, and -
-                                                   this is the part that matters - hands the
-                                                   drawable a properly constructed State. Calling
-                                                   the raw Image factory instead leaves State as
-                                                   uninitialised heap, which the first draw
-                                                   dereferences.
+      Factory::CreateElementForType(ti)  0xABF0E0  Element plus drawable, with a constructed
+                                                   State. The raw Image factory leaves State as
+                                                   uninitialised heap.
       Factory::CreateKeyframe(ti)        0xABEE80
       Element::AddKeyframe(kf)           0xAB1C10
       Area::AddElement(e)                vtable +0x48, read at runtime
       Area::SetTime(0,0,0)               0xA973E0  forces one evaluation
 
-  Ownership is single and clean, no refcounts: the Area destructor deletes its Elements, an
-  Element deletes its drawable and its keyframes. So an Element built through the factory is freed
-  exactly once, by the Area, on document unload. Allocating one with our own CRT instead would
-  hand a foreign pointer to magma's pool free - hence the factory, never malloc.
+  The Area destructor frees the Element and its drawable, so one from our own CRT would hand a
+  foreign pointer to magma's pool free.
 
-  The keyframe is not optional and the reason is subtle. An Element with an empty keyframe vector
-  is safe but invisible: the evaluator sets its keyframe index to 0xFFF meaning "none", and the
-  draw gate refuses to draw anything with that index. One keyframe satisfies the gate. Its
-  contents do not matter, because the rect, rotation and colour components are then pinned through
-  the lock mask so nothing can blend over what is written.
+  The keyframe is not optional: an empty keyframe vector gets index 0xFFF ("none") and the draw
+  gate refuses to draw it. Contents do not matter, the components are pinned afterwards.
 
-  These are raw offsets rather than patterns, which is not this project's usual style. There is no
-  choice: every one of them is an absolute the code only ever reaches through a global, and there
-  is no instruction sequence to anchor on. They are all offsets from the image base, so a rebase
-  is still handled.
+  These are raw offsets rather than patterns because each is an absolute the code only reaches
+  through a global. All are image base relative, so a rebase is still handled.
 */
 
 /*
-  A backdrop behind the button was tried and dropped. The texture the console uses is not in the
-  PC archive at all, so the attempt was to tint a white one that is - halftone_splatter or
-  circle_glow out of ui/common.mgb - through the vertex colours. It reads as a smudge rather than
-  the painted blot the console has, and looked worse than nothing.
-
-  Recorded because the plumbing was the interesting part and works: a sprite in another document
-  is two ordinary calls, FUN_105355B0 __thiscall(ECX = [0x11645C3C], std::string*) -> Document*
-  and FUN_105361A0 __stdcall(Document*, const char*) -> Sprite*, and the engine string the first
-  wants is only a header that can be built on the stack (+0x04 buffer, +0x14 size, +0x18 capacity;
-  under 16 characters never allocates). If the real texture ever becomes available, that is how to
-  reach it.
+  There is no backdrop behind the button. The console texture is not in the PC archive and tinting
+  a white one reads as a smudge. Reaching a sprite in another document, if one ever turns up, is
+  FUN_105355B0 __thiscall(ECX = [0x11645C3C], std::string*) -> Document* then
+  FUN_105361A0 __stdcall(Document*, const char*) -> Sprite*. The first wants a std::string header
+  built on the stack (+0x04 buffer, +0x14 size, +0x18 capacity; under 16 chars never allocates).
 */
 
 static constexpr ptrdiff_t nFactoryGlobalRva = 0x1664768;
@@ -460,8 +386,7 @@ using AddKeyframe_t = void(__thiscall*)(uint8_t*, uint8_t*);
 using AreaAddElement_t = void(__thiscall*)(uint8_t*, uint8_t*);
 using AreaSetTime_t = void(__thiscall*)(uint8_t*, int32_t, int32_t, int32_t);
 
-// One per Area, because the widget outlives the prompt and rebuilding it every frame would leak
-// until the document unloaded.
+// One per Area: rebuilding every frame would leak until the document unloads.
 static std::map<std::pair<uint8_t*, uint32_t>, uint8_t*> mBuiltSlots;
 
 static uint8_t* BuildImageChild(uint8_t* pArea, uint32_t nName)
@@ -520,19 +445,15 @@ static uint8_t* BuildImageChild(uint8_t* pArea, uint32_t nName)
 using GetPadButtonImage_t = uintptr_t(__stdcall*)(int32_t);
 static GetPadButtonImage_t GetPadButtonImage = nullptr;
 
-// A dead end worth recording so nobody tries it twice: ui\textures\360\ ships a second set of
-// glyphs, 360_a_shop next to 360_a and the same for b, x, y, lb and rb. They are not an in-world
-// variant - they are flat monochrome outlines for the weapon shop, and using them over the world
-// just gives a grey button. The single coloured set is the right one everywhere; the "orange"
-// look of the console interact prompt is simply Y being yellow.
+// The second glyph set in ui\textures\360\ (360_a_shop and friends) is a dead end: flat monochrome
+// outlines for the weapon shop. The "orange" console interact prompt is just Y being yellow.
 
 static constexpr ptrdiff_t nHudPromptName = 0x04;
 static constexpr ptrdiff_t nHudPromptRefCount = 0x08;
 static constexpr ptrdiff_t nHudPromptArea = 0x0C;
 static constexpr ptrdiff_t nHudPromptUpdateCall = 14;
 
-// CHud fields. The prompt vector is what the update loop holds, so the HUD itself is that minus
-// its offset, and the widget root hangs off the HUD.
+// CHud fields. The update loop holds the prompt vector, and the widget root hangs off the HUD.
 static constexpr ptrdiff_t nHudPromptVector = 0x244;
 static constexpr ptrdiff_t nHudRootArea = 0x11C;
 
@@ -542,15 +463,8 @@ static constexpr int32_t nPadY = 3;
 static constexpr int32_t nPadRT = 5;
 static constexpr int32_t nPadLB = 6;
 
-// One HUD prompt: which button it should show, and where the glyph goes.
-//
-// szAbove is the icon the glyph sits above, and it is the important one - it names both the
-// sibling the new widget is added next to and the rect everything is measured from. szSlot is the
-// fallback carrier if the widget cannot be built, which costs the ink blot its own sprite.
-//
-// The buttons come from the shipped console action map - reload -> pad:x, tryuseied ->
-// pad:right_trigger, heal -> pad:left_shoulder. The one the map cannot settle is "use", which is
-// bound to pad:a and pad:y both; on console it is Y that interacts, so that is what these use.
+// One HUD prompt. szAbove names both the sibling the new widget is added next to and the rect
+// everything is measured from. szSlot is the fallback carrier if the widget cannot be built.
 struct HudPrompt
 {
     const char* szName;
@@ -561,10 +475,7 @@ struct HudPrompt
     const char* szDesigned; // the slot hud.mgb.desc names, if it turns out to exist
 };
 
-// The glyph is a square above the icon it belongs to, which is where the 360 build puts it, and
-// it is sized from that icon rather than being a fixed number of pixels - the prompts are not all
-// the same size, so a constant that suits the interact hand is wrong for everything else. These
-// two are the knobs worth turning if it ever looks off.
+// The glyph is a square above its icon, as on 360, sized from that icon since the prompts vary.
 static constexpr int nGlyphScalePercent = 85;
 static constexpr int nGlyphGapPercent = 20;
 
@@ -601,32 +512,17 @@ static const HudPrompt* FindHudPrompt(uint32_t nName)
 
 static constexpr int nObjectSearchDepth = 8;
 
-/*
-  Where the glyph goes, worked out from the icon it belongs above.
-
-  Re-run on every update rather than latched the first time the prompt is seen, and that is not an
-  optimisation left on the table - it is the fix for a real bug. The icon animates in: on the frame
-  the prompt first appears its rect is still part way through the pop-in keyframes, so a square
-  derived from it then is far too small, and because the rect is immediately pinned through the
-  lock mask it stayed too small for the life of that widget. On a fresh boot the repair prompt came
-  up tiny and only corrected itself once the widget was rebuilt at a moment the icon happened to be
-  at full size.
-
-  Recomputing means the glyph tracks the icon frame by frame, which is what the console build gets
-  for free - there the button is a child of the same animation group. The cost is a shallow subtree
-  walk per visible prompt, and the rect is only written when it has actually changed.
-*/
+// Re-run every update, not latched on first sight: the icon animates in, so a square derived from
+// its first frame is far too small and the lock mask then pins it there for the widget's life.
 static bool ComputeGlyphRect(uint8_t* pPromptArea, const HudPrompt& prompt, const SavedImage& saved, Rect& out)
 {
-    // The carrier is only borrowed - it is the ink blot backdrop, not a glyph slot, so its own
-    // geometry means nothing here. The icon named by szAbove is the reference.
+    // The borrowed carrier is the ink blot, so its geometry means nothing. Measure from szAbove.
     auto refRect = ReadRect(GetState(prompt.szAbove ? FindNamedDeep(pPromptArea, NameId(prompt.szAbove)) : nullptr));
     if (refRect.Valid())
     {
         auto nRefHeight = refRect.nBottom - refRect.nTop;
 
-        // Still at the very start of the pop-in. Nothing worth placing yet, and the next update
-        // will have something bigger to work from.
+        // Still at the start of the pop-in; the next update has something bigger to work from.
         auto nSide = nRefHeight * nGlyphScalePercent / 100;
         if (nSide < 1)
             return false;
@@ -641,15 +537,11 @@ static bool ComputeGlyphRect(uint8_t* pPromptArea, const HudPrompt& prompt, cons
         return true;
     }
 
-    // No reference this frame. If the glyph has already been placed, keep it where it is - a
-    // missing reference is a transient, and dropping the square back into the fallback position
-    // every time the icon blinks out would be worse than doing nothing.
+    // No reference this frame. Transient, so keep an existing placement rather than falling back.
     if (saved.bPlaced)
         return false;
 
-    // Nothing to hang it off at all, so just stop the square sprite being stretched across
-    // whatever rectangle the carrier happens to have. Provisional: the first frame that does
-    // produce a reference overrides it.
+    // Nothing to hang it off. Provisional; the first frame with a reference overrides it.
     auto nWidth = saved.rect.nRight - saved.rect.nLeft;
     auto nHeight = saved.rect.nBottom - saved.rect.nTop;
     if (nWidth <= 0 || nHeight <= 0)
@@ -672,11 +564,8 @@ static void ApplyHudGlyph(uint8_t* pHudRoot, uint8_t* pPromptArea, const HudProm
     uint8_t* pImage = nullptr;
     auto bBorrowed = true;
 
-    // First choice: the slot hud.mgb.desc actually names. Searching from the prompt's own group
-    // downwards would never see it if the art puts it beside that group rather than inside it, so
-    // this starts at the HUD root and finds the prompt's container first. If it turns up, it is a
-    // purpose built slot with its own geometry and its own backdrop, and nothing has to be
-    // borrowed or built.
+    // First choice: the slot hud.mgb.desc names, which has its own geometry and backdrop. Searched
+    // from the HUD root, since the art can put it beside the prompt's group rather than inside.
     uint8_t* pObject = nullptr;
     if (pHudRoot && prompt.szObject)
         pObject = GetSubArea(FindNamedDeep(pHudRoot, NameId(prompt.szObject), nObjectSearchDepth));
@@ -694,9 +583,7 @@ static void ApplyHudGlyph(uint8_t* pHudRoot, uint8_t* pPromptArea, const HudProm
         }
     }
 
-    // Second choice, and the one that actually applies on stock PC data: build the widget the
-    // assets are missing, as a sibling of the icon the glyph belongs above. Costs nothing on
-    // screen - the ink blot keeps its own job.
+    // Second choice, and the one stock PC data hits: build the widget as a sibling of szAbove.
     if (!pImage && prompt.szAbove)
     {
         uint8_t* pSiblingArea = nullptr;
@@ -704,16 +591,13 @@ static void ApplyHudGlyph(uint8_t* pHudRoot, uint8_t* pPromptArea, const HudProm
         {
             static const auto nSlotName = NameId("i_jackalfix_glyph");
 
-            // Deliberately still treated as needing placement: a widget straight from the factory
-            // has no geometry at all, so it goes through exactly the same positioning as a
-            // borrowed carrier. Zeroing rotation and forcing opaque colours is a no-op on a fresh
-            // state, which is the point - one code path, no special cases.
+            // Still treated as borrowed: a fresh widget has no geometry, so it takes the same
+            // placement path, and zeroing rotation and forcing opaque colours is a no-op on it.
             pImage = BuildImageChild(pSiblingArea, nSlotName);
         }
     }
 
-    // Last resort, if building fails: borrow the ink blot, which costs its sprite but is the only
-    // Image going spare.
+    // Last resort if building fails: borrow the ink blot, the only spare Image.
     if (!pImage)
     {
         for (auto szSlot : prompt.szSlot)
@@ -738,8 +622,7 @@ static void ApplyHudGlyph(uint8_t* pHudRoot, uint8_t* pPromptArea, const HudProm
 
     if (ShouldShowGlyphs())
     {
-        // Asked for once per widget lifetime rather than once per frame - the loader builds
-        // std::strings and walks the document list, which is not something to do at 60Hz.
+        // Once per widget lifetime: the loader builds std::strings and walks the document list.
         if (!saved.bHeld)
         {
             auto nSprite = GetPadButtonImage ? GetPadButtonImage(prompt.nButton) : 0;
@@ -762,22 +645,18 @@ static void ApplyHudGlyph(uint8_t* pHudRoot, uint8_t* pPromptArea, const HudProm
             for (int i = 0; i < nColourCount; ++i)
                 saved.nColours[i] = *reinterpret_cast<uint32_t*>(pState + nStateColour + i * 4);
 
-            // A purpose built slot already has the right geometry and tint; only a borrowed or a
-            // freshly built one needs correcting.
+            // A purpose built slot already has the right geometry and tint.
             if (!bBorrowed)
             {
                 *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = saved.nGlyph;
                 return;
             }
 
-            // The ink blot is drawn at an angle for its hand-made look, and a borrowed carrier
-            // brings that rotation with it.
+            // The ink blot is drawn at an angle, and a borrowed carrier brings that rotation.
             *reinterpret_cast<float*>(pState + nStateRotation) = 0.0f;
             *reinterpret_cast<int16_t*>(pState + nStatePivotX) = 0;
             *reinterpret_cast<int16_t*>(pState + nStatePivotY) = 0;
 
-            // The blot is also drawn faint, and a glyph wearing its vertex colours is nearly
-            // invisible.
             for (int i = 0; i < nColourCount; ++i)
                 *reinterpret_cast<uint32_t*>(pState + nStateColour + i * 4) = nOpaqueWhite;
 
@@ -785,14 +664,8 @@ static void ApplyHudGlyph(uint8_t* pHudRoot, uint8_t* pPromptArea, const HudProm
                 saved.nLockMask | nRectLockBits | nRotationLockBits | nColourLockBits;
         }
 
-        // Placement, every update, so the glyph follows the icon through its pop-in instead of
-        // being stuck at whatever size the first frame happened to show.
-        //
-        // The bPlaced test is not redundant with the comparison. Switching to mouse and keyboard
-        // while a prompt is on screen hands the carrier's own rect back to the engine, so on the
-        // way back to the pad the rect has to be written again even though the geometry works out
-        // identical - which it does, because the icon has not moved. Comparing alone would see no
-        // change and leave the glyph wearing the carrier's rectangle.
+        // bPlaced is not redundant with the comparison: switching to mouse and keyboard restores
+        // the carrier's rect, so on the way back to the pad an identical rect must be rewritten.
         if (bBorrowed)
         {
             Rect placed;
@@ -824,8 +697,7 @@ static void ApplyHudGlyph(uint8_t* pHudRoot, uint8_t* pPromptArea, const HudProm
         *reinterpret_cast<uint32_t*>(pImage + nWidgetLockMask) = saved.nLockMask;
         saved.bHeld = false;
 
-        // The engine owns the rect again, so the next time the pad comes back the placement is
-        // worked out from scratch rather than compared against a stale one.
+        // The engine owns the rect again, so the next placement starts from scratch.
         saved.bPlaced = false;
         saved.placed = Rect();
     }
@@ -840,10 +712,8 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // FUN_105362E0, the 360 glyph loader. The HUD has to ask for a sprite rather than
-            // being handed one, so this is resolved rather than hooked. Anchored on the two null
-            // checks inside it, because its prologue is std::string boilerplate shared with
-            // unrelated functions.
+            // FUN_105362E0, the 360 glyph loader. Anchored on the two null checks inside it; its
+            // prologue is std::string boilerplate shared with unrelated functions.
             //
             //   3B F3        CMP  ESI,EBX          ; ESI = the resolved ui/360.mgb document
             //   74 3F        JZ   return 0
@@ -858,8 +728,7 @@ public:
                 GetPadButtonImage = reinterpret_cast<GetPadButtonImage_t>(pMatch - nGlyphLoaderEntry);
             }
 
-            // CHudPromptMgr::Update's per prompt loop. Hooking the call rather than the callee
-            // keeps the pattern short and hands over ECX already pointing at the prompt.
+            // CHudPromptMgr::Update's per prompt loop. Hooking the call hands ECX over as the prompt.
             //
             //   8B FF           MOV  EDI,EDI          ; hot patch pad, and a useful anchor
             //   D9 44 24 10     FLD  dword [ESP+0x10] ; dt
@@ -877,8 +746,7 @@ public:
                     if (!pPrompt)
                         return;
 
-                    // Refcount zero means this prompt is not up, and its group is hidden. Acting
-                    // on it would only fight the parse time hide.
+                    // Refcount zero means the prompt is not up and its group is hidden.
                     if (*reinterpret_cast<uint32_t*>(pPrompt + nHudPromptRefCount) == 0)
                         return;
 
@@ -886,8 +754,7 @@ public:
                     if (!pEntry)
                         return;
 
-                    // ESI is the prompt vector, which lives inside CHud, so the HUD and its
-                    // widget root come for free without a second hook.
+                    // ESI is the prompt vector inside CHud, so the HUD root comes free here.
                     auto pHud = reinterpret_cast<uint8_t*>(regs.esi) - nHudPromptVector;
                     auto pHudRoot = *reinterpret_cast<uint8_t**>(pHud + nHudRootArea);
 

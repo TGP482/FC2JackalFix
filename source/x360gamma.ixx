@@ -19,8 +19,6 @@ import settings;
 
 
 
-// Hook the renderer once per frame to discover the active D3D device, then
-// hook the underlying D3D entry points through its vtable.
 struct IShaderBlob : public IUnknown
 {
     virtual void* STDMETHODCALLTYPE GetBufferPointer() = 0;
@@ -41,7 +39,6 @@ static void SafeRelease(T*& ptr)
     if (ptr) { ptr->Release(); ptr = nullptr; }
 }
 
-// Render-thread diagnostics.
 static void Log(const char* szFormat, ...)
 {
     char szBuffer[512] = "FC2JackalFix: Xbox360Gamma - ";
@@ -70,7 +67,7 @@ static bool bD3D9ResetHooked = false;
 static bool bD3D10Hooked = false;
 static void** ppRenderDevice = nullptr;
 
-// Shared Xbox 360 gamma curve used by both shaders.
+// Shared by both shaders.
 static constexpr const char* szGammaCurve = R"(
 float X360GammaApprox(float x)
 {
@@ -92,7 +89,7 @@ float X360GammaApprox(float x)
 // ---------------------------------------------------------------------------------------------
 // D3D9
 //
-// D3D9 uses a simple ps_2_0 fullscreen pass with fixed-function vertex processing.
+// ps_2_0 fullscreen pass with fixed-function vertex processing.
 static constexpr const char* szPixelShader9 = R"(
 sampler2D InputTex : register(s0);
 
@@ -123,7 +120,7 @@ class CGammaD3D9
     static inline UINT nHeight = 0;
     static inline D3DFORMAT eFormat = D3DFMT_UNKNOWN;
 
-    // Dunia imports d3dx9_38. Other names support installs with different D3DX versions.
+    // Dunia imports d3dx9_38; the other names cover installs with a different D3DX version.
     static bool CompileShader()
     {
         if (!vBytecode.empty())
@@ -202,8 +199,8 @@ class CGammaD3D9
             return false;
         }
 
-        // The copy texture is never multisampled. StretchRect resolves MSAA backbuffers,
-        // so the filter must remain D3DTEXF_NONE.
+        // Never multisampled. StretchRect resolves MSAA backbuffers, so the filter must stay
+        // D3DTEXF_NONE.
         if (FAILED(pDevice->CreateTexture(nWidth, nHeight, 1, D3DUSAGE_RENDERTARGET, eFormat,
                                           D3DPOOL_DEFAULT, &pCopyTex, nullptr)))
         {
@@ -228,8 +225,8 @@ class CGammaD3D9
     }
 
 public:
-    // Called before Reset and during shutdown. D3DPOOL_DEFAULT resources must be
-    // released before Reset succeeds.
+    // Called before Reset and at shutdown. D3DPOOL_DEFAULT resources must be released or Reset
+    // fails.
     static void Release()
     {
         SafeRelease(pStateBlock);
@@ -297,18 +294,17 @@ public:
         pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         pDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
         pDevice->SetRenderState(D3DRS_FOGENABLE, FALSE);
-        // Keep clipping enabled. The fullscreen quad does not require clipping to be disabled.
         pDevice->SetRenderState(D3DRS_CLIPPING, TRUE);
         pDevice->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0000000F);
         pDevice->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
-        // Disabled intentionally. The curve operates on the game's output values directly.
+        // Off: the curve operates on the game's output values directly.
         pDevice->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
 
         for (DWORD i = 1; i < 8; ++i)
             pDevice->SetTexture(i, nullptr);
 
         pDevice->SetTexture(0, pCopyTex);
-        // Point sampling, because this is a 1:1 blit and anything else would soften the frame.
+        // 1:1 blit, so point sampling.
         pDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
         pDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
         pDevice->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
@@ -492,7 +488,7 @@ class CGammaD3D10
         samplerDesc.ComparisonFunc = D3D10_COMPARISON_NEVER;
         samplerDesc.MaxLOD = D3D10_FLOAT32_MAX;
 
-        // Blending is off, but D3D10 still validates the blend factors, so they get real values.
+        // Blending is off, but D3D10 still validates the blend factors.
         D3D10_BLEND_DESC blendDesc{};
         blendDesc.SrcBlend = D3D10_BLEND_ONE;
         blendDesc.DestBlend = D3D10_BLEND_ZERO;
@@ -729,7 +725,6 @@ static SafetyHookInline shSwapChainResizeBuffers{};
 
 static HRESULT __stdcall Device9Reset(IDirect3DDevice9* pDevice, D3DPRESENT_PARAMETERS* pParameters)
 {
-    // D3DPOOL_DEFAULT resources have to be released before the reset, or the reset fails.
     CGammaD3D9::Release();
     return shDevice9Reset.unsafe_stdcall<HRESULT>(pDevice, pParameters);
 }
@@ -752,8 +747,7 @@ static void* GetVTableEntry(void* pObject, size_t nIndex)
     return (*reinterpret_cast<void***>(pObject))[nIndex];
 }
 
-// D3D9 present hook provides the device directly. Reset is hooked to release
-// D3DPOOL_DEFAULT resources before device resets.
+// The D3D9 present hook gives the device directly. Reset is hooked from here on the first call.
 static void OnPresentD3D9(void* pRenderDevice)
 {
     auto* pDevice = *reinterpret_cast<IDirect3DDevice9**>(reinterpret_cast<uintptr_t>(pRenderDevice) + nRenderDeviceInterface);
@@ -770,8 +764,8 @@ static void OnPresentD3D9(void* pRenderDevice)
     CGammaD3D9::Render(pDevice);
 }
 
-// DX10 initialization waits for the swap chain, which is created after the device.
-// Returns true once initialization has been attempted.
+// Waits for the swap chain, which is created after the device. Returns true once initialization
+// has been attempted.
 static bool InstallD3D10Hooks(void* pRenderDevice)
 {
     auto* pInterface = *reinterpret_cast<IUnknown**>(reinterpret_cast<uintptr_t>(pRenderDevice) + nRenderDeviceInterface);
@@ -829,7 +823,7 @@ public:
                 Xbox360GammaCB();
             };
 
-            // Hook the engine's Present call site to get the D3D9 device directly.
+            // The engine's Present call site; ESI holds the render device.
             auto d3d9Present = dunia_pattern("8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0");
             if (d3d9Present.empty())
                 Log("D3D9 present pattern did not match - DX9 renderer unsupported on this build");

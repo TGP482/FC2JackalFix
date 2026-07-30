@@ -146,8 +146,8 @@ static bool WriteFileBytes(const std::filesystem::path& path, const std::vector<
     return bResult;
 }
 
-// Windows won't let the running executable be overwritten, but it will let it be renamed out of
-// the way, so the replacement is built alongside it and swapped in.
+// Windows will not let the running executable be overwritten, but it will let it be renamed out
+// of the way, so build the replacement alongside it and swap.
 static bool SwapExecutable(const std::filesystem::path& exePath, const std::vector<uint8_t>& image)
 {
     auto stagingPath = exePath;
@@ -178,7 +178,7 @@ static bool SwapExecutable(const std::filesystem::path& exePath, const std::vect
     return true;
 }
 
-// Restore only if the backup matches the patched executable after ignoring our changes.
+// True when the backup matches the current executable once our own changes are ignored.
 static bool BackupMatches(std::vector<uint8_t> backup, std::vector<uint8_t> current)
 {
     if (backup.size() != current.size())
@@ -233,8 +233,7 @@ static void ApplyLargeAddressAware()
     if (!pNtHeaders)
         return;
 
-    // The current process may still use the old image after patching the file.
-    // The next launch will load the new version.
+    // The file can already match while the running process still has the old image.
     if (IsLargeAddressAware(pNtHeaders) == bWanted)
         return;
 
@@ -268,7 +267,7 @@ static void ApplyLargeAddressAware()
     }
     else
     {
-        // Only restore files backed up by this patch. Do not overwrite user changes.
+        // Only restore a backup this patch made, so user changes are not overwritten.
         std::vector<uint8_t> backup;
         if (!ReadFileBytes(backupPath, backup))
             return;

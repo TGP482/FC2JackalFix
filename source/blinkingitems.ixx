@@ -1,15 +1,9 @@
 /*
   Credit to https://github.com/FoxAhead/Far-Cry-2-Multi-Fixer for identifying the feature.
-  The implementation here is not his: his No Blinking Items option writes 0x2E over the first byte
-  of the strings "Mesh_Highlight" (0x10E49D08), "archBlink" (0x10E115B8) and
-  "gadgets.ObjectiveIcons.SaveDisk" (0x10E933B3), so the three name lookups miss. That works, but it
-  corrupts shared .rdata for the life of the process, cannot be undone, and in the highlight case
-  only empties the effect handle - the extra draw call still goes out, now with the base shader
-  flags, which is overdraw the renderer never asked for.
-
-  This module goes at the code instead: the effect lookup and the branch that emits the highlight
-  draw, and the paths by which a marker is handed a blinking icon archetype. Nothing shared is
-  modified and every piece is reversible.
+  His version writes 0x2E over the first byte of "Mesh_Highlight" (0x10E49D08), "archBlink"
+  (0x10E115B8) and "gadgets.ObjectiveIcons.SaveDisk" (0x10E933B3) so the name lookups miss, which
+  corrupts shared .rdata for the process lifetime and still emits the highlight draw call. This
+  module patches the code paths instead, and every piece is reversible.
 */
 
 module;
@@ -22,15 +16,13 @@ import common;
 import dunia;
 import settings;
 
-// Read once at Dunia init and refreshed on ini change. The hooks below stay installed either way
-// and consult this, because a mid-hook is not worth uninstalling for a boolean.
+// The hooks below stay installed either way and consult this.
 static bool bNoBlinkingItems = false;
 
-// A marker carries ten archetype slots at this+0x10, 0x1C bytes apart, registered by name in
+// A marker carries ten archetype slots at this+0x10, stride 0x1C, registered by name in
 // FUN_1004EFC0: 0 archMapEnabled, 1 archMapAvailable, 2 archMapDir, 3 archCompass, 4 archCompassDir,
 // 5 archBlink, 6 archBlinkCompass, 7 archCompassVehicle, 8 archCompassDirVehicle,
-// 9 archBlinkCompassVehicle. The three blink slots hold the alternate icon a marker flips to; leave
-// them unset and the marker just draws its steady icon.
+// 9 archBlinkCompassVehicle. Leave the blink slots unset and the marker draws only its steady icon.
 static constexpr uint32_t BLINK_SLOT_MAP = 5;
 static constexpr uint32_t BLINK_SLOT_COMPASS = 6;
 static constexpr uint32_t BLINK_SLOT_COMPASS_VEHICLE = 9;
@@ -40,9 +32,8 @@ static bool IsBlinkSlot(uintptr_t slot)
     return slot == BLINK_SLOT_MAP || slot == BLINK_SLOT_COMPASS || slot == BLINK_SLOT_COMPASS_VEHICLE;
 }
 
-// The property descriptor keeps its name pointer at +4, right after the vtable, so the data-driven
-// path can be filtered by name rather than by slot index. That matters: the accessor it goes
-// through is shared by every archetype-reference property in the engine, not just the marker's.
+// The property descriptor keeps its name pointer at +4, after the vtable. Filter the data-driven
+// path by name, since its accessor serves every archetype-reference property in the engine.
 static bool IsBlinkArchetypeProperty(const char* name)
 {
     return name != nullptr
@@ -65,30 +56,14 @@ public:
                 bNoBlinkingItems = JackalFixSettings.GetInt(PREF_NOBLINKINGITEMS) != 0;
             };
 
-            // Half one, the pulsing outline on anything you can pick up or use - dropped weapons,
-            // ammo and health boxes, diamond cases, beds. Two interventions, because the branch
-            // gate below turned out to cover fewer objects in practice than the effect itself does.
+            // Half one, the pulsing outline on pickups. Two interventions, since the branch gate
+            // below covers fewer objects than the effect itself.
             //
-            // The mesh renderer's constructor (FUN_103C9830) resolves the highlight effect and its
-            // special-pickup permutation into two of its own fields:
-            //
-            //   MOV  ECX, [effect manager]
-            //   PUSH "Mesh_Highlight"
-            //   CALL FUN_10433500                ; -> EAX = effect id (1-based), 0 = not found
-            //   ...
-            //   MOV  [ESI+0x6C], EDX             ; high half
-            //   MOV  [ESI+0x68], EAX             ; Mesh_Highlight
-            //   CALL FUN_10433DB0                ; SPECIALPICKUP permutation within that effect
-            //   MOV  [ESI+0x50], EAX
-            //   MOV  [ESI+0x54], EDX
-            //
-            // Zeroing the id the lookup returns leaves all four fields at 0 - and FUN_10433DB0
-            // returns 0 for effect 0, so the permutation follows for free. Every consumer of the
-            // highlight effect, wherever it lives, then has nothing to draw with. That is the same
-            // end state FoxAhead reaches by corrupting the name, reached from the register instead,
-            // so no shared string is touched and the game's effect table is left consistent.
-            //
-            // Read at renderer construction, which happens once, so this half needs a restart.
+            // The mesh renderer's constructor (FUN_103C9830) calls FUN_10433500("Mesh_Highlight")
+            // into [ESI+0x68]/[ESI+0x6C], then FUN_10433DB0 for the SPECIALPICKUP permutation into
+            // [ESI+0x50]/[ESI+0x54]. Zeroing the returned effect id (1-based, 0 = not found) leaves
+            // all four at 0, since FUN_10433DB0 returns 0 for effect 0. Runs once at construction,
+            // so this half needs a restart.
             {
                 auto pattern = dunia_pattern("E8 ? ? ? ? 53 8B CA 68 ? ? ? ? 89 56 6C 51 8B D0 89 46 68");
                 if (!pattern.empty())
@@ -104,17 +79,14 @@ public:
                 }
             }
 
-            // Second, the branch that emits the highlight draw at all. With the effect zeroed above
-            // the clone would still be built and submitted, just with nothing to render it; the gate
-            // skips that work outright:
+            // Second, the branch that emits the highlight draw at all, which the zeroed effect
+            // above does not stop:
             //
-            //   TEST byte ptr [EDX+0x9C], 4      ; entity flags: "this one is highlighted"
+            //   TEST byte ptr [EDX+0x9C], 4      ; entity flags: highlighted
             //   JZ   skip
-            //   <clone the draw command already built for this mesh, re-submit with the highlight
-            //    effect, OR'd with SPECIALPICKUP when the material's SpecialPickup bool is set>
             //
-            // Clearing the immediate turns TEST into a comparison against zero, which always sets
-            // ZF, so the JZ always takes. This half does re-read the ini live.
+            // Clearing the immediate makes TEST always set ZF, so the JZ always takes. This half
+            // re-reads the ini live.
             {
                 auto pattern = dunia_pattern("8B 44 24 40 8B 4C 24 44 8B 54 24 18 89 43 10 89 4B 14 F6 82 9C 00 00 00 04 0F 84");
                 if (!pattern.empty())
@@ -138,23 +110,12 @@ public:
                 }
             }
 
-            // Half two, the save disk icon on the map and GPS.
-            //
-            // Its marker is built in code rather than from data (FUN_10698DA0), and it assigns its
-            // blink pair through CMarker::SetArchetypeByName(slot, name) with slots 5 and 6. That
-            // function already refuses out-of-range slots:
-            //
-            //   MOV EAX, [ESP+4]     ; slot
-            //   CMP EAX, 9
-            //   PUSH ESI
-            //   MOV ESI, ECX
-            //   JA  done             ; nothing assigned, nothing dirtied
-            //
-            // Pushing a blink slot past 9 hands the request to the engine's own reject path, which
-            // leaves the slot empty and skips the Dirty/DirtyTime writes at this+0x175 / +0x178 as
-            // well - exactly the state of a marker that was never given a blink icon. The hook sits
-            // on the CMP, by which point the load above has already put the slot in EAX, and the
-            // CMP itself runs from the trampoline afterwards against the value we leave there.
+            // Half two, the save disk icon on the map and GPS. Its marker is built in code
+            // (FUN_10698DA0), assigning slots 5 and 6 through CMarker::SetArchetypeByName, which
+            // already rejects slots above 9 (CMP EAX,9 / JA done). Pushing a blink slot past 9
+            // takes that reject path, which also skips the Dirty/DirtyTime writes at this+0x175 /
+            // +0x178. Hook is on the CMP, after the slot load, so the CMP runs from the trampoline
+            // against the value left in EAX.
             {
                 auto pattern = dunia_pattern("8B 44 24 04 83 F8 09 56 8B F1 77 38 8B 4C 24 0C 6A FF");
                 if (!pattern.empty())
@@ -170,23 +131,18 @@ public:
                 }
             }
 
-            // Half three, every other blinking marker - objectives, safe houses, the compass ones -
-            // which get their blink archetype from the data files through the property system
-            // rather than in code.
+            // Half three, every other blinking marker, which gets its blink archetype from the
+            // data files through the property system.
             //
             // The archetype-slot property descriptor (vtable 0x10E99A04) has two accessors in its
-            // first two vtable slots, byte-identical apart from which visitor method they dispatch
-            // to - +0x68 in one, +0xDC in the other. Both read the index from this+0x10 and the
-            // group offset from this+0xC, compute object + offset + index*0x1C, and hand that
-            // address to the visitor. Which of the two carries a value in and which carries it out
-            // is not settled, so both are suppressed for the blink names. That is symmetric either
-            // way: the slot keeps the empty state the marker was constructed with.
+            // first two vtable slots, identical apart from the visitor they dispatch to, +0x68 and
+            // +0xDC. Both hand object + this+0xC + index*0x1C to the visitor, with the index from
+            // this+0x10. Which one carries the value in and which out is unsettled, so both are
+            // suppressed for the blink names; either way the slot keeps its empty state.
             //
-            // The filter is the descriptor's name pointer at +4, not the index, because these two
-            // functions serve every archetype-reference property in the engine and an index of 5 is
-            // meaningless without knowing whose table it indexes. Redirecting EIP to the function's
-            // own RET 8 is safe from the entry hook: nothing has been pushed yet, so the return
-            // address and both stack arguments are exactly where that RET expects them.
+            // Filtered on the descriptor name at +4, not the index, since both serve every
+            // archetype-reference property. Redirecting EIP to the function's own RET 8 is safe
+            // from the entry hook: nothing has been pushed yet.
             {
                 // Visitor slot +0x68. Three-byte dispatch, so RET 8 lands at +0x2C.
                 auto pattern = dunia_pattern("8B C1 8B 50 10 8B 4C 24 08 56 8B 31 57 8D 3C D5 00 00 00 00 2B FA 8B 50 0C 8D 14 BA 03 54 24 0C 83 C0 04 52 50 8B 46 68 FF D0 5F 5E C2 08 00");
@@ -206,8 +162,8 @@ public:
                     });
                 }
 
-                // Visitor slot +0xDC. The larger displacement makes the dispatch three bytes longer,
-                // so RET 8 lands at +0x2F.
+                // Visitor slot +0xDC. Larger displacement, so the dispatch is three bytes longer
+                // and RET 8 lands at +0x2F.
                 pattern = dunia_pattern("8B C1 8B 50 10 8B 4C 24 08 56 8B 31 57 8D 3C D5 00 00 00 00 2B FA 8B 50 0C 8D 14 BA 03 54 24 0C 83 C0 04 52 50 8B 86 DC 00 00 00 FF D0 5F 5E C2 08 00");
                 if (!pattern.empty())
                 {

@@ -18,8 +18,8 @@ static constexpr size_t nAimAssistSites = 4;
 static constexpr ptrdiff_t nHelperBlockStart = 9;
 static constexpr ptrdiff_t nHelperBlockEnd = 0x1E;
 
-// Separate patterns because the helper blocks are not identical.
-// Each uses a different scratch register, so one wildcarded pattern is not reliable.
+// One pattern per site. The blocks differ in scratch register, so a single wildcarded
+// pattern is not reliable.
 static constexpr std::array<std::string_view, nAimAssistSites> sAimAssistPatterns =
 {
     "80 BE 5D 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 4C 24 24 51 8B CE E8 ? ? ? ?", // stickyHelper
@@ -30,8 +30,7 @@ static constexpr std::array<std::string_view, nAimAssistSites> sAimAssistPattern
 
 static uintptr_t nHelperJoin[nAimAssistSites] = {};
 
-// Skip the helper instead of clearing its enable flag, which is reused elsewhere.
-// This preserves the game's behavior and allows live INI changes.
+// Skip the helper rather than clear its enable flag, which is reused elsewhere.
 template <size_t nSite>
 static void SkipAimAssistHelper(SafetyHookContext& regs)
 {
@@ -39,7 +38,7 @@ static void SkipAimAssistHelper(SafetyHookContext& regs)
         regs.eip = nHelperJoin[nSite];
 }
 
-// Each helper is hooked independently, so one pattern failure does not disable the whole feature.
+// Hooked independently so one pattern failure does not lose the other three.
 template <size_t nSite>
 static void InstallAimAssistSkip()
 {

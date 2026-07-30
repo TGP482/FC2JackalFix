@@ -7,57 +7,27 @@ module;
 #include <cstdint>
 #include <d3d9.h>
 
-// An internal render resolution independent of the window, the display mode and the backbuffer,
-// for supersampling above what the monitor can show or rendering below it and scaling back up.
+// Internal render resolution independent of the window, display mode and backbuffer.
 //
-// Dunia has exactly one number for "how big is the frame" and it is welded to the swapchain.
-// FUN_10423400 (SetResolution) takes a width and a height, stores them at renderer+0x1C/+0x20,
-// derives the aspect ratio into renderer+0x24, and copies the same pair straight into the global
-// D3DPRESENT_PARAMETERS as BackBufferWidth/BackBufferHeight. Everything downstream follows the
-// stored pair: the viewport is a fraction of it, and every scene render target is allocated from
-// the viewport. The two quantities are written four instructions apart from the same registers,
-// which is why they cannot diverge on their own - and why one choke point is enough to split them.
+// FUN_10423400 (SetResolution) stores a width/height pair at renderer+0x1C/+0x20, derives the
+// aspect into renderer+0x24, and copies the same pair into the global D3DPRESENT_PARAMETERS as
+// BackBufferWidth/BackBufferHeight. Split: renderer+0x1C/+0x20 becomes the internal resolution,
+// which the viewport, scene targets, shared depth buffer and final PostFxBlit all size off.
+// BackBufferWidth/Height stays the real output size: the window's client area when windowed or
+// borderless, the adapter mode when fullscreen.
 //
-// The split is:
+// That leaves the backbuffer the wrong size, so it is substituted. The engine reaches it through a
+// 0x20-byte wrapper whose only setter is FUN_1040F190 and which caches no dimensions: vtable+0x10
+// calls the surface's GetDesc live. The frame function resolves that target onto the real
+// backbuffer before the engine's screenshot block and Present. The resolve exists because D3D9's
+// own stretch of a mismatched backbuffer at Present is a point sample. It picks its own filter, and
+// halves through scratch targets above 2:1 because a bilinear tap is an exact 2x2 box average only
+// at exactly half size. Scale is uniform, so a mismatched shape gets bars.
 //
-//   renderer+0x1C / +0x20   the internal resolution. The engine sizes its viewport, its scene
-//                           targets, its shared depth buffer and its final PostFxBlit from this,
-//                           so the entire render chain moves together and not one viewport
-//                           anywhere needs rescaling.
-//   BackBufferWidth/Height  the real output resolution: the window's client area when windowed or
-//                           borderless, the adapter mode when fullscreen.
-//
-// That leaves the backbuffer the wrong size for what the engine draws into it, so the backbuffer
-// is substituted. The engine never touches an IDirect3DSurface9* for the backbuffer directly - it
-// goes through a 0x20-byte wrapper whose only setter is FUN_1040F190, three instructions long, and
-// which caches no dimensions at all: vtable+0x10 is a live GetSize that calls the surface's
-// GetDesc on every call. Install a different surface and every size query answers consistently,
-// with no shadow fields to keep in sync. So the setter hands the engine an internal-res render
-// target instead, and the frame function resolves that target onto the real backbuffer just before
-// the engine's screenshot block and Present.
-//
-// Not letting D3D9 stretch a mismatched backbuffer at Present instead is deliberate. It does
-// scale - Microsoft documents that much - but the documentation specifies no filter and in
-// practice it is a point sample, every second pixel discarded going down. Supersampling through it
-// is worse than not supersampling at all. This resolve picks its own filter and halves through
-// scratch targets for ratios above 2:1, so a bilinear tap is always an exact 2x2 box average.
-//
-// All three display modes work. Exclusive fullscreen needs nothing special: the fullscreen branch
-// of SetResolution already leaves renderer+0x90 clear, and the resolution arriving there has
-// already been rounded to a real adapter mode by the boot path, so the backbuffer stays a mode the
-// driver will accept - which matters, because CreateDevice's failure path at 0x104252D9 is an
-// infinite retry loop rather than an error.
-//
-// The scale is uniform on both axes. An internal resolution shaped differently from the output -
-// 4:3 on a 16:9 display, say - is fitted and centred with black bars rather than stretched, and the
-// engine is told to compose for a screen the shape of the internal frame, so the geometry it draws
-// is the geometry it would draw running natively at that resolution.
-//
-// Two consequences worth knowing. The HUD and menus are drawn by the engine into the same target
-// as the scene, so they are resampled with it - sharper than native when supersampling, softer
-// when rendering below the output resolution. And the engine's own screenshot key captures after
-// the resolve but sizes its capture from renderer+0x1C/+0x20, so its screenshots come out at the
-// internal resolution with the game's hardcoded point filter; external capture is unaffected.
+// Exclusive fullscreen needs nothing special: that branch of SetResolution already leaves
+// renderer+0x90 clear, and the resolution reaching it has been rounded to a real adapter mode by
+// the boot path. The engine's screenshot key sizes from renderer+0x1C/+0x20, so its shots come out
+// at the internal resolution.
 
 export module internalres;
 
@@ -81,7 +51,7 @@ enum ScalingFilter
     FILTER_CATMULLROM = 2,
 };
 
-static int32_t nRequestedW = 0;         // from the ini; 0 leaves the game entirely alone
+static int32_t nRequestedW = 0;         // from the ini; 0 disables
 static int32_t nRequestedH = 0;
 static int32_t nFilter = FILTER_BILINEAR;
 
@@ -90,29 +60,26 @@ static uint32_t nInternalH = 0;
 static uint32_t nOutputW = 0;           // what the swapchain actually presents
 static uint32_t nOutputH = 0;
 
-// The fullscreen byte is read once, at the present-parameter write, and answers two questions at
-// the same time: which of SetResolution's three branches computed the aspect ratio, and whether the
-// device is about to be windowed. That only works because DisplayMode settles the byte before the
-// branch reads it - the old Borderless option cleared it after the branch instead, which made the
-// two readings disagree and left a windowed device carrying a fullscreen aspect.
+// The fullscreen byte is read once, at the present-parameter write, and answers two questions:
+// which of SetResolution's three branches computed the aspect, and whether the device is about to
+// be windowed. Only works because DisplayMode settles the byte before the branch reads it. The old
+// Borderless option cleared it after the branch instead, which made the two readings disagree and
+// left a windowed device carrying a fullscreen aspect. Ordering shared with borderless.ixx.
 
-// The last surface the device confirmed as its own backbuffer. Only a fast path - the identity is
-// re-established from the device whenever an unfamiliar surface turns up - so a device that is
-// destroyed and recreated rather than reset needs no special handling.
+// Last surface the device confirmed as its backbuffer. Fast path; re-established from the device
+// whenever an unfamiliar surface turns up.
 static IDirect3DSurface9* pKnownBackBuffer = nullptr;
 static bool bSubstituted = false;
 
-// The two present-parameter globals, reached through the pattern's own operands. ASLR moves them,
-// so a hardcoded address would be wrong the moment the module rebases.
+// The two present-parameter globals, read out of the pattern's own operands since ASLR moves them.
 static uint32_t* pBackBufferWidth = nullptr;
 static uint32_t* pBackBufferHeight = nullptr;
 
 // ---------------------------------------------------------------------------------------------
 // The resolve pass
 
-// A Catmull-Rom kernel for the final pass. It only earns its instruction count when scaling up:
-// on the way down the halving chain has already box-filtered everything, and bilinear on the
-// remainder is both cheaper and closer to correct.
+// Catmull-Rom kernel for the final pass. Only used scaling up; going down, the halving chain has
+// already box-filtered.
 static constexpr const char* szCatmullRomPS = R"(
 sampler2D SrcTex : register(s0);
 float4 SrcSize : register(c0);   // xy = 1 / source size, zw = source size
@@ -167,7 +134,7 @@ class CResolver
     struct ScreenVertex { float x, y, z, rhw, u, v; };
     static constexpr DWORD nScreenFVF = D3DFVF_XYZRHW | D3DFVF_TEX1;
 
-    // Four halvings covers 16x per axis, far past anything a GPU will render Far Cry 2 at.
+    // Four halvings covers 16x per axis.
     static constexpr size_t nMaxChain = 4;
 
     struct Target
@@ -217,8 +184,8 @@ class CResolver
 
     static inline IDirect3DStateBlock9* pStateBlock = nullptr;
     static inline IDirect3DPixelShader9* pCatmullRom = nullptr;
-    // Kept separately from the shader object so a device that is reset - or destroyed and rebuilt -
-    // costs a CreatePixelShader rather than another compile.
+    // Shaders survive Reset but not a device that is destroyed and rebuilt, so the bytecode is
+    // kept apart from the shader object and coming back costs only a CreatePixelShader.
     static inline std::vector<uint8_t> vBytecode;
     static inline bool bCompileFailed = false;
 
@@ -254,8 +221,7 @@ class CResolver
         if (!pCompile)
             return false;
 
-        // Nine dependent fetches and the weight math fit ps_3_0 comfortably and ps_2_0 only just,
-        // so the higher profile is tried first rather than the other way round.
+        // Nine dependent fetches plus the weight math fit ps_3_0 comfortably and ps_2_0 only just.
         for (auto* szProfile : { "ps_3_0", "ps_2_0" })
         {
             IShaderBlob* pShader = nullptr;
@@ -293,28 +259,24 @@ class CResolver
         return false;
     }
 
-    // One textured quad from pSrc into a rect of pDst. The rect is the whole target for every
-    // stage of the halving chain and, for the final pass, the aspect-preserving fit inside the
-    // backbuffer - so bars are the only thing that ever separates the two.
+    // One textured quad from pSrc into a rect of pDst: the whole target for the halving chain,
+    // the aspect-preserving fit for the final pass.
     static bool Blit(IDirect3DDevice9* pDevice, IDirect3DSurface9* pDst, UINT nTargetW, UINT nTargetH,
                      int32_t nDstX, int32_t nDstY, UINT nDstW, UINT nDstH,
                      IDirect3DTexture9* pSrc, UINT nSrcW, UINT nSrcH, int32_t eFilter)
     {
-        // Depth goes first every time. D3D9 rejects a render target smaller than the depth-stencil
-        // currently bound to it, and while supersampling the engine's depth buffer is larger than
-        // every target in this chain.
+        // Depth first. D3D9 rejects a render target smaller than the bound depth-stencil, and the
+        // engine's is larger than every target here while supersampling.
         pDevice->SetDepthStencilSurface(nullptr);
 
         if (FAILED(pDevice->SetRenderTarget(0, pDst)))
             return false;
 
-        // The viewport is the whole target, not the fitted rect, so the clear below reaches the
-        // bars. The quad is positioned instead.
+        // Viewport is the whole target so the clear reaches the bars. The quad is positioned.
         const D3DVIEWPORT9 viewport = { 0, 0, nTargetW, nTargetH, 0.0f, 1.0f };
         pDevice->SetViewport(&viewport);
 
-        // Only when there is something outside the image. The swapchain is D3DSWAPEFFECT_DISCARD,
-        // so the bars hold whatever the driver last left there unless they are written every frame.
+        // Swapchain is D3DSWAPEFFECT_DISCARD, so bars hold stale driver contents unless rewritten.
         if (nDstX != 0 || nDstY != 0 || nDstW != nTargetW || nDstH != nTargetH)
             pDevice->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0);
 
@@ -330,9 +292,8 @@ class CResolver
         pDevice->SetRenderState(D3DRS_CLIPPING, TRUE);
         pDevice->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0000000F);
         pDevice->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
-        // The frame arriving here is already in whatever space the game finished in - the engine's
-        // own generic surface copy never writes sRGB either - so converting on the way out would
-        // shift every pixel.
+        // The frame is already in the space the game finished in; converting would shift every
+        // pixel.
         pDevice->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
 
         for (DWORD i = 1; i < 8; ++i)
@@ -353,10 +314,9 @@ class CResolver
         pDevice->SetIndices(nullptr);
         pDevice->SetFVF(nScreenFVF);
 
-        // Three states the engine may have left set that a state block only restores afterwards
-        // rather than neutralising first, and that between them account for most of the ways a
-        // fullscreen quad comes out wrong. Wrapping makes the 0-to-1 texcoord take the short way
-        // round; the other two are vertex-stage states, so they bite the shader path as well.
+        // A state block restores these afterwards but does not neutralise them first. Wrapping
+        // makes the 0-to-1 texcoord take the short way round; the other two are vertex-stage
+        // states, so they bite the shader path as well.
         pDevice->SetRenderState(D3DRS_WRAP0, 0);
         pDevice->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
         pDevice->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
@@ -414,9 +374,8 @@ public:
         return Substitute.Ensure(pDevice, w, h, fmt);
     }
 
-    // Called at the top of the frame function, before the engine's screenshot block and Present.
-    // Present is outside the scene bracket - DAT_11609D78 has no write anywhere inside 0x10424150
-    // - which is what makes it legal to insert draw work here.
+    // Top of the frame function, before the engine's screenshot block and Present. Present is
+    // outside the scene bracket: nothing writes DAT_11609D78 inside 0x10424150.
     static void Resolve(IDirect3DDevice9* pDevice)
     {
         if (!pDevice || !Substitute.pSurf)
@@ -426,17 +385,12 @@ public:
         if (FAILED(pDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) || !pBackBuffer)
             return;
 
-        // Sizes matching is not a reason to skip the copy: whatever the engine drew is in the
-        // substitute and nothing else is going to put it in front of the player.
+        // No early-out on matching sizes: the substitute holds the only copy of the frame.
         D3DSURFACE_DESC desc{};
         pBackBuffer->GetDesc(&desc);
 
-        // The largest rect of the backbuffer that still has the internal frame's shape, centred.
-        // A 4:3 internal resolution on a 16:9 display gets pillarbox bars rather than a stretch, so
-        // the scale is uniform on both axes and a circle in the game stays a circle. Integer
-        // arithmetic throughout: the rounding decides a pixel of bar width, nothing more. Derived
-        // from the substitute rather than from the chain's output, because the halving stages round
-        // and the frame's true shape is the one the engine rendered.
+        // Largest rect of the backbuffer with the internal frame's shape, centred. Sized from the
+        // substitute, since the halving stages round.
         UINT nFitW = desc.Width;
         UINT nFitH = desc.Height;
         {
@@ -452,14 +406,11 @@ public:
         const auto nFitX = static_cast<int32_t>((desc.Width - nFitW) / 2);
         const auto nFitY = static_cast<int32_t>((desc.Height - nFitH) / 2);
 
-        // Once the substitute is installed, nothing else in the process puts a frame in front of
-        // the player, so no path out of here may leave the backbuffer untouched. StretchRect is
-        // the fallback: whatever the driver's filter turns out to be, a scaled frame beats a black
-        // one, and it needs no device state at all.
+        // No path out of here may leave the backbuffer untouched, and StretchRect needs no state.
         if (!pStateBlock && FAILED(pDevice->CreateStateBlock(D3DSBT_ALL, &pStateBlock)))
         {
-            // ColorFill rather than Clear, because this path is here precisely because no device
-            // state can be saved and restored, and ColorFill needs none.
+            // ColorFill rather than Clear: this path exists because no device state can be saved
+            // and restored, and ColorFill needs none.
             if (nFitW != desc.Width || nFitH != desc.Height)
                 pDevice->ColorFill(pBackBuffer, nullptr, D3DCOLOR_ARGB(255, 0, 0, 0));
 
@@ -484,15 +435,12 @@ public:
         UINT nSrcH = Substitute.nHeight;
 
         // A bilinear tap is an exact 2x2 box average only at exactly half size, so anything beyond
-        // 2:1 is halved through scratch targets first. Four taps cannot represent a sixteen-texel
-        // footprint, and a single stretch across that gap is what makes naive supersampling look
-        // no better than none. The target is the fitted rect, not the backbuffer: with bars, the
-        // reduction the final pass has to cover is the one that ends at the rect.
+        // 2:1 halves through scratch targets first. Aimed at the fitted rect rather than the whole
+        // backbuffer.
         for (size_t stage = 0; stage < nMaxChain; ++stage)
         {
-            // Either axis still being at least 2:1 is reason enough to halve. Requiring both would
-            // let a frame that is far oversampled horizontally and not at all vertically skip the
-            // chain entirely and take the whole reduction on four taps.
+            // Either axis at 2:1 is enough; requiring both would leave a frame oversampled on one
+            // axis taking the whole reduction on four taps.
             if (nSrcW < nFitW * 2 && nSrcH < nFitH * 2)
                 break;
 
@@ -502,8 +450,7 @@ public:
             if (!Chain[stage].Ensure(pDevice, dw, dh, Substitute.eFormat))
                 break;
 
-            // A stage that did not run leaves its target holding the previous frame, so the chain
-            // stops here rather than sampling it.
+            // A stage that did not run still holds the previous frame, so stop before sampling it.
             if (!Blit(pDevice, Chain[stage].pSurf, dw, dh, 0, 0, dw, dh, pSrc, nSrcW, nSrcH, FILTER_BILINEAR))
                 break;
 
@@ -518,9 +465,8 @@ public:
         if (bOpenedScene)
             pDevice->EndScene();
 
-        // Both or neither. Slot 0 can never be unbound, so a failed GetRenderTarget would leave the
-        // output-sized backbuffer bound - and binding the engine's larger depth buffer against it
-        // would be rejected, costing the rest of the frame its depth.
+        // Both or neither. Slot 0 can never be unbound, so a failed GetRenderTarget leaves the
+        // output-sized backbuffer bound and the engine's larger depth buffer rejected.
         if (pOldTarget)
         {
             pDevice->SetRenderTarget(0, pOldTarget);
@@ -534,24 +480,19 @@ public:
         SafeRelease(pBackBuffer);
     }
 
-    // Runs at the entry of the engine's pre-reset release pass, the one point where the ordering
-    // is guaranteed. Every D3DPOOL_DEFAULT resource has to be gone before Reset, and the device's
-    // own render-target binding holds a reference to the substitute: left bound, Reset returns
-    // D3DERR_INVALIDCALL, the device never comes back, and the screen stays black for good after
-    // the first alt-tab or video-options change.
+    // Entry of the engine's pre-reset release pass. Every D3DPOOL_DEFAULT resource must be gone
+    // before Reset, and the device's render-target binding holds a reference to the substitute:
+    // left bound, Reset returns D3DERR_INVALIDCALL, the device never comes back, and the screen
+    // stays black for good after the first alt-tab or video-options change.
     //
-    // The wrapper's reference is deliberately not dropped and the surface deliberately left
-    // installed. The engine dereferences wrapper+0x1C at 0x1042471B with no null check and calls
-    // Release on it, and that release is what finally destroys the target.
+    // The wrapper's reference is left in place on purpose. The engine dereferences wrapper+0x1C at
+    // 0x1042471B with no null check and Releases it, which is what destroys the target.
     static void ReleaseForReset(IDirect3DDevice9* pDevice)
     {
         pKnownBackBuffer = nullptr;
 
         if (pDevice)
         {
-            // Depth first: binding a render target smaller than the currently bound depth buffer
-            // is rejected, and while supersampling the engine's depth buffer is the larger of the
-            // two.
             pDevice->SetDepthStencilSurface(nullptr);
 
             IDirect3DSurface9* pBackBuffer = nullptr;
@@ -570,18 +511,18 @@ public:
         for (auto& target : Chain)
             target.Release();
 
-        // Only this module's own two references. The wrapper keeps the third, and the engine's
-        // unconditional Release four instructions from here is what takes it to zero.
+        // This module's two references only. The wrapper keeps the third, released by the engine
+        // four instructions from here.
         Substitute.Release();
 
         SafeRelease(pStateBlock);
 
-        // Shaders survive Reset, but not a device that is destroyed and rebuilt. The compiled
-        // bytecode is kept, so coming back costs a CreatePixelShader rather than another compile.
+        // Shaders survive Reset but not a device rebuild, and vBytecode is kept, so releasing
+        // unconditionally costs at most a CreatePixelShader.
         SafeRelease(pCatmullRom);
     }
 
-    // Process teardown. The device may already be gone, so nothing is asked of it.
+    // Process teardown; the device may already be gone, so nothing is asked of it.
     static void ReleaseAll()
     {
         pKnownBackBuffer = nullptr;
@@ -598,8 +539,7 @@ public:
 // ---------------------------------------------------------------------------------------------
 // Hook bodies
 
-// Renderer vtable +0x40, the end-of-frame function. `this` is in ECX at the entry and
-// renderer+0x38 is the IDirect3DDevice9*.
+// Renderer vtable +0x40, the end-of-frame function. `this` in ECX, renderer+0x38 is the device.
 static void OnFrameEnd(uintptr_t nRenderer)
 {
     if (!bSubstituted || !nRenderer)
@@ -608,28 +548,23 @@ static void OnFrameEnd(uintptr_t nRenderer)
     CResolver::Resolve(*reinterpret_cast<IDirect3DDevice9**>(nRenderer + 0x38));
 }
 
-// FUN_1040F190, the wrapper's surface setter. It is generic - every render-target wrapper in the
-// engine goes through it - so the backbuffer has to be recognised rather than assumed. The test is
-// on the surface rather than on the wrapper object, because "this is the swapchain's own surface"
-// is exactly the condition that should be substituted, and because it survives a device being
-// destroyed and rebuilt rather than reset.
+// FUN_1040F190, the wrapper's surface setter. Every render-target wrapper goes through it, so the
+// backbuffer has to be recognised. Testing the surface survives a device rebuild.
 static void OnSetWrapperSurface(IDirect3DSurface9** ppSurface)
 {
     if (nInternalW == 0 || nInternalH == 0 || nOutputW == 0 || nOutputH == 0)
         return;
 
-    // Nothing to gain, and substituting would only cost a copy.
     if (nInternalW == nOutputW && nInternalH == nOutputH)
         return;
 
     IDirect3DSurface9* pIncoming = *ppSurface;
 
-    // The wrapper is torn down and set to NULL twice a frame. Those pass straight through.
+    // The wrapper is torn down and set to NULL twice a frame.
     if (!pIncoming)
         return;
 
-    // Every other render-target wrapper in the engine comes through here too, so the common case
-    // has to cost a pointer compare rather than two calls into the runtime. The identity is only
+    // Common case is a pointer compare instead of two calls into the runtime. The identity is only
     // re-established when there is none, which the pre-reset teardown arranges.
     if (pKnownBackBuffer && pIncoming != pKnownBackBuffer)
         return;
@@ -664,9 +599,8 @@ static void OnSetWrapperSurface(IDirect3DSurface9** ppSurface)
     {
         auto* pSubstitute = CResolver::Surface();
 
-        // Standing in for the GetBackBuffer the engine just made. The wrapper owns exactly one
-        // reference to whatever is installed and releases it unconditionally next frame, so the
-        // reference it was handed has to be replaced rather than added to.
+        // Stands in for the GetBackBuffer the engine just made. The wrapper owns one reference and
+        // releases it unconditionally next frame, so replace it rather than add.
         pSubstitute->AddRef();
         *ppSurface = pSubstitute;
         pIncoming->Release();
@@ -675,9 +609,8 @@ static void OnSetWrapperSurface(IDirect3DSurface9** ppSurface)
     }
     else
     {
-        // The engine keeps the real backbuffer. Its viewport and its scene targets are still sized
-        // for the internal resolution, so the frame will be wrong - but wrong and visible beats a
-        // resolve pass firing against a target that no longer exists.
+        // Engine keeps the real backbuffer, so the frame is wrong. Beats resolving against a
+        // target that is gone.
         bSubstituted = false;
     }
 
@@ -691,23 +624,20 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // FUN_10423400. Width and height arrive by pointer and point at the caller's own stack
-            // slots, which 0x10423610 reads back after the call to set the viewport - so a write
-            // through them at the entry reaches the viewport, the renderer fields, the aspect
-            // ratio and the present parameters from a single place.
+            // FUN_10423400. Width and height arrive by pointer at the caller's stack slots, which
+            // 0x10423610 reads back after the call, so writing through them moves the viewport too.
             auto setResolution = dunia_pattern("81 EC 48 02 00 00 53 55 56 57 33 ED 55 8D 84 24 B4 00 00 00");
             if (setResolution.empty())
                 return;
 
-            // The two present-parameter writes, the only writers of those globals in the binary.
-            // Hooking past them rather than in place of them leaves the engine's own bookkeeping
-            // intact and corrects nothing but the backbuffer size.
+            // The only writers of those globals in the binary. Hooked past them so the engine's
+            // own bookkeeping stays intact.
             auto presentParams = dunia_pattern("8B 56 1C 89 15 ? ? ? ? 8B 46 20 A3 ? ? ? ? 8A 4D 08 F6 D9");
             if (presentParams.empty())
                 return;
 
-            // FUN_1040F190. The pattern runs past the end of its ten-byte body into the CC padding
-            // and the next prologue on purpose: an identical setter body exists at 0x102795C4.
+            // FUN_1040F190. Pattern runs past the ten-byte body into the CC padding and the next
+            // prologue on purpose: an identical setter body exists at 0x102795C4.
             auto wrapperSetter = dunia_pattern("8B 44 24 04 89 41 1C C2 04 00 CC CC CC CC CC CC 56 57 8B F9 33 F6 39 77");
             if (wrapperSetter.empty())
                 return;
@@ -740,20 +670,17 @@ public:
 
                 const bool bWanted = nRequestedW > 0 && nRequestedH > 0;
 
-                // What the engine was about to render at is what it should still present at. In
-                // fullscreen that has already been rounded down to a real adapter mode by the boot
-                // path, so it stays a mode CreateDevice will accept - which matters, because a mode
-                // it will not accept is an infinite retry loop rather than an error. Windowed, it
-                // gets replaced with the measured client rect once the branch is known.
+                // Fullscreen, the boot path has already rounded this to a real adapter mode, which
+                // matters because CreateDevice's failure path at 0x104252D9 is an infinite retry
+                // loop. Windowed, it is replaced below with the measured client rect.
                 nOutputW = *pWidth;
                 nOutputH = *pHeight;
 
                 if (!bWanted || nOutputW == 0 || nOutputH == 0)
                     return;
 
-                // "Use the desktop resolution" makes GetScreenSize hand back the window's client
-                // rect instead of the stored pair, which silently undoes the whole split. Clearing
-                // it costs nothing: the backbuffer is sized from that same client rect either way.
+                // pConfig[9] is "use the desktop resolution". It makes GetScreenSize hand back the
+                // window's client rect instead of the stored pair, which undoes the split.
                 pConfig[9] = 0;
 
                 nInternalW = static_cast<uint32_t>(nRequestedW);
@@ -769,19 +696,17 @@ public:
                     !pBackBufferWidth || !pBackBufferHeight)
                     return;
 
-                // EBP is the device config and ESI the renderer at this point in the function. The
-                // hook sits on the instruction that reads the fullscreen byte for the presentation
-                // interval; DAT_11609D40 (Windowed) was derived from the same byte a few
-                // instructions back, and the three-branch block read it before that. Nothing writes
-                // it in between, so one reading here answers for both.
+                // EBP is the device config, ESI the renderer. The hook sits on the read of the
+                // fullscreen byte for the presentation interval; DAT_11609D40 (Windowed) came from
+                // the same byte a few instructions back and the three-branch aspect block read it
+                // before that, with no write in between, so one reading answers for both.
                 auto* pConfig = reinterpret_cast<uint8_t*>(regs.ebp);
                 const bool bFullscreen = pConfig[8] != 0;
 
                 if (!bFullscreen)
                 {
-                    // Measure the window rather than recompute it, so the backbuffer and the
-                    // client area cannot drift apart - including in borderless, where the window
-                    // covers the display no matter what resolution the video options say.
+                    // Measure the window rather than recompute it. Matters in borderless, where
+                    // the window covers the display whatever the video options say.
                     HWND hWnd = *reinterpret_cast<HWND*>(pConfig + 0x18);
                     if (!hWnd)
                         hWnd = *reinterpret_cast<HWND*>(pConfig + 0x04);
@@ -798,15 +723,9 @@ public:
                 *pBackBufferWidth = nOutputW;
                 *pBackBufferHeight = nOutputH;
 
-                // The frame is presented letterboxed, so its pixels are square on the display and
-                // the engine should compose for a screen shaped like the internal frame - which is
-                // exactly what both windowed branches already derived from the resolution. Only the
-                // fullscreen branch differs: it takes the config's stored aspect, which describes
-                // the monitor rather than the frame.
-                //
-                // Left alone when the two shapes agree, so a matched internal resolution is
-                // byte-for-byte stock and the video options' own forced-aspect setting still means
-                // what it says.
+                // Letterboxed, so the engine should compose for a screen shaped like the internal
+                // frame. Only the fullscreen branch differs: it takes the config's stored aspect,
+                // which describes the monitor.
                 const auto fInternal = static_cast<float>(nInternalW) / static_cast<float>(nInternalH);
                 const auto fOutput = static_cast<float>(nOutputW) / static_cast<float>(nOutputH);
 
@@ -817,7 +736,7 @@ public:
             static auto WrapperSetterHook = safetyhook::create_mid(wrapperSetter.get_first(), [](SafetyHookContext& regs)
             {
                 // __thiscall f(this in ECX, surface at [esp+4]), callee-cleaned. Rewriting the
-                // stack slot is enough: the relocated MOV EAX,[ESP+4] reads it back afterwards.
+                // stack slot is enough: the relocated MOV EAX,[ESP+4] reads it back.
                 OnSetWrapperSurface(reinterpret_cast<IDirect3DSurface9**>(regs.esp + 0x04));
             });
 
@@ -828,8 +747,7 @@ public:
 
             static auto PreResetHook = safetyhook::create_mid(preReset.get_first(), [](SafetyHookContext& regs)
             {
-                // Unconditional. Nothing this module owns may outlive the Reset four instructions
-                // from here, whether or not a substitution is currently installed.
+                // Nothing this module owns may outlive the Reset four instructions from here.
                 CResolver::ReleaseForReset(regs.ecx ? *reinterpret_cast<IDirect3DDevice9**>(regs.ecx + 0x38) : nullptr);
                 bSubstituted = false;
             });
@@ -840,7 +758,7 @@ public:
                 nRequestedH = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONY);
                 nFilter = JackalFixSettings.GetInt(PREF_SCALINGFILTER);
 
-                // One axis without the other is a typo, not a request.
+                // One axis without the other is a typo.
                 if (nRequestedW <= 0 || nRequestedH <= 0)
                 {
                     nRequestedW = 0;
@@ -850,8 +768,7 @@ public:
 
             InternalResolutionCB();
 
-            // The resolution is read at engine start and again whenever the video options apply a
-            // new one, so an ini change lands on the next launch or the next resolution change.
+            // Resolution is read at engine start and on every video-options apply.
             JackalFix::onIniFileChange() += []()
             {
                 InternalResolutionCB();

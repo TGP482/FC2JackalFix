@@ -8,8 +8,8 @@ export module systemdetection;
 import common;
 import settings;
 
-// DxDiag is required during startup, so cache its results instead of failing it. WMI queries can
-// be skipped since their consumers handle missing data.
+// DxDiag is required during startup, so cache its results rather than fail it. WMI queries can be
+// skipped; their consumers handle missing data.
 
 static constexpr GUID guidDxDiagProvider = { 0xA65B8071, 0x3BFE, 0x4213, { 0x9A, 0x5B, 0x49, 0x1D, 0xA4, 0x46, 0x1C, 0xA7 } };
 static constexpr GUID guidIDxDiagProvider = { 0x9C6B4CB0, 0x23F8, 0x49CC, { 0xA3, 0xED, 0x45, 0xA5, 0x50, 0x00, 0xA6, 0xD2 } };
@@ -127,8 +127,7 @@ static HRESULT __stdcall CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnkOut
     return pfnCoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, ppv);
 }
 
-// Redirects an imported function in one module's IAT.
-// Limits the hook to that module instead of affecting all callers.
+// Redirects an imported function in one module's IAT, so only that module's calls are affected.
 static bool HookImport(HMODULE hModule, const char* szModule, const char* szFunction, void* pDetour, void** ppOriginal)
 {
     if (!hModule)
@@ -186,8 +185,7 @@ class SystemDetection
 public:
     SystemDetection()
     {
-        // Hooked on load rather than at our own init, because Dunia does not load this DLL until
-        // InitDuniaEngine is already running.
+        // Hooked on load; Dunia does not load this DLL until InitDuniaEngine is already running.
         CallbackHandler::RegisterCallback(L"systemdetection.dll", []()
         {
             bSkipSystemDetection = JackalFixSettings.GetInt(PREF_SKIPSYSTEMDETECTION) != 0;
@@ -195,8 +193,7 @@ public:
             auto hModule = GetModuleHandleW(L"systemdetection.dll");
             HookImport(hModule, "ole32.dll", "CoCreateInstance", CoCreateInstanceHook, (void**)&pfnCoCreateInstance);
 
-            // Detection only runs during startup, so a live ini change is recorded but takes effect
-            // on the next launch.
+            // Detection only runs during startup, so a live ini change takes effect next launch.
             JackalFix::onIniFileChange() += []()
             {
                 bSkipSystemDetection = JackalFixSettings.GetInt(PREF_SKIPSYSTEMDETECTION) != 0;
