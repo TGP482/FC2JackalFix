@@ -58,6 +58,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed an issue where small scattered objects and vegetation would draw without casting a shadow (Ultra High only)
 - Fixed an issue where road textures looked abnormal with a higher LOD scale setting (Ultra High, applies with Enhanced LODs)
 - Fixed a case where the player could no longer save their game after completing certain missions
+- Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church
 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.

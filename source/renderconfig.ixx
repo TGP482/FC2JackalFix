@@ -89,7 +89,7 @@ static constexpr int32_t nStockShadowMapSize = 2048;
 // EnhancedLODs. LOD scales run backwards: the lower the value the further the detail survives,
 // and 0 is the maximum.
 static constexpr float fEnhancedKillLodScale = 0.7f;      // stock 1.0, below 0.7 pops on map 2
-static constexpr float fEnhancedLodScale = 0.0f;          // stock 1.0
+static constexpr float fEnhancedLodScale = 1.0f;          // stock 1.0
 static constexpr float fEnhancedTerrainLodScale = 0.1f;   // stock 1.0, 
 static constexpr float fEnhancedRealTreesLodScale = 0.0f; // stock 1.0
 static constexpr float fEnhancedClustersLodScale = 0.0f;  // stock 0.8
