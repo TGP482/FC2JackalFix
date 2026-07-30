@@ -14,7 +14,6 @@ import fov;
 import jackaltapes;
 import bonuscontent;
 import menucursor;
-import jackalfixmenu;
 import mousespeed;
 import inputdevice;
 import looksensitivity;
@@ -42,6 +41,7 @@ import entitylibrary;
 import lookback;
 import glassdecals;
 import fpsfixes;
+import debug;
 
 void Init()
 {

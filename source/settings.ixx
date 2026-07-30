@@ -46,6 +46,14 @@ export enum Pref
     PREF_NOCOLOREDSIGNS,
     PREF_PREDECESSORTAPES,
     PREF_MACHETES,
+    PREF_DEBUGINVINCIBILITY,
+    PREF_DEBUGINFINITEAMMO,
+    PREF_DEBUGUNLOCKALLWEAPONS,
+    PREF_DEBUGDIAMONDS,
+    PREF_DEBUGNOCLIP,
+    PREF_DEBUGNOCLIPKEY,
+    PREF_DEBUGFREECAM,
+    PREF_DEBUGFREECAMKEY,
 
     COUNT,
 };
@@ -90,7 +98,6 @@ public:
 
         mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 2);
 
-        // 0 is not uncapped. The engine uses 9999+ to disable the frame limiter.
         auto nMaxFrameRate = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 60), 0, 9999);
         mPrefs[PREF_MAXFRAMERATE] = nMaxFrameRate < 1 ? 9999 : nMaxFrameRate;
 
@@ -140,6 +147,18 @@ public:
 
         mPrefs[PREF_PREDECESSORTAPES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "PredecessorTapesUnlock", 1), 0, 1);
         mPrefs[PREF_MACHETES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "MachetesUnlock", 1), 0, 1);
+
+        mPrefs[PREF_DEBUGINVINCIBILITY] = std::clamp(iniReader.ReadInteger("Debug", "Invincibility", 0), 0, 1);
+        mPrefs[PREF_DEBUGINFINITEAMMO] = std::clamp(iniReader.ReadInteger("Debug", "InfiniteAmmo", 0), 0, 1);
+        mPrefs[PREF_DEBUGUNLOCKALLWEAPONS] = std::clamp(iniReader.ReadInteger("Debug", "UnlockAllWeapons", 0), 0, 1);
+
+        mPrefs[PREF_DEBUGDIAMONDS] = std::clamp(iniReader.ReadInteger("Debug", "Diamonds", 0), 0, 999);
+
+        mPrefs[PREF_DEBUGNOCLIP] = std::clamp(iniReader.ReadInteger("Debug", "Noclip", 0), 0, 1);
+        mPrefs[PREF_DEBUGFREECAM] = std::clamp(iniReader.ReadInteger("Debug", "Freecam", 0), 0, 1);
+
+        mPrefs[PREF_DEBUGNOCLIPKEY] = iniReader.ReadString("Debug", "NoclipKey", "F1");
+        mPrefs[PREF_DEBUGFREECAMKEY] = iniReader.ReadString("Debug", "FreecamKey", "F2");
 
         static std::once_flag flag;
         std::call_once(flag, [&]()
