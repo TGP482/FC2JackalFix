@@ -68,3 +68,14 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **High Precision Timer** - Forces 1ms timer resolution in Window, so the loading screen reaches the proper 30 FPS.
 - **Skip System Detection** - Skips redundant hardware detection, making game startup up much faster.
 - **Large Address Aware** - Patches the executable to increase the memory limit from 2 GB to 4 GB (may improve stability).
+ 
+### Debug
+- Added various debug, these have to be applied to FC2JackalFix.ini beneath the ** [Debug]** section:
+- Invincibility = 0
+- InfiniteAmmo = 0
+- UnlockAllWeapons = 0
+- Diamonds = 0
+- Noclip = 0
+- NoclipKey = F1
+- Freecam = 0
+- FreecamKey = F2
