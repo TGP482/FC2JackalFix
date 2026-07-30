@@ -17,6 +17,14 @@ import settings;
 // Only two numeric serialisers exist, float and int, shared by every config class. Hooking both
 // after they return covers every numeric attribute of every <quality> block with the descriptor
 // still in hand, so nothing here depends on patch.dat.
+//
+// Two of the values written here are fixes ported from Scrubah's Patch, which ships them as data
+// edits to engine\settings\DefaultRenderConfig.xml inside patch.dat:
+//
+//     <Geometry> ultrahigh   ClusterObjectMinSizeShadowScale   1.25 -> 1.0
+//                            SceneObjectMinSizeShadowScale     1.25 -> 1.0
+//     <Terrain>  ultrahigh   TerrainDetailViewDistance          512 -> 4096
+//                            TerrainDetailBlendViewDistance      64 -> 4096
 
 // Property descriptor, as built by the schema registration functions.
 struct RenderProperty
@@ -45,9 +53,14 @@ static constexpr uint32_t nGeometryRealTreesLodScale = 0x4C;
 static constexpr uint32_t nGeometryClustersLodScale = 0x50;
 static constexpr uint32_t nGeometryLodScale = 0x54;
 static constexpr uint32_t nGeometryKillLodScale = 0x58;
+static constexpr uint32_t nGeometryRealTreeMinSizeShadowScale = 0x80;
+static constexpr uint32_t nGeometryClusterObjectMinSizeShadowScale = 0x88;
+static constexpr uint32_t nGeometrySceneObjectMinSizeShadowScale = 0x94;
 static constexpr uint32_t nGeometryMinZoomFactor = 0x9C;
 
 // CRenderTerrainConfig - <Terrain><quality>
+static constexpr uint32_t nTerrainLodScale = 0x2C;
+static constexpr uint32_t nTerrainDetailViewDistance = 0x30;
 static constexpr uint32_t nTerrainDetailBlendViewDistance = 0x34;
 static constexpr uint32_t nTerrainAffectedByMuzzleFlash = 0x38;
 
@@ -76,8 +89,8 @@ static constexpr int32_t nStockShadowMapSize = 2048;
 // EnhancedLODs. LOD scales run backwards: the lower the value the further the detail survives,
 // and 0 is the maximum.
 static constexpr float fEnhancedKillLodScale = 0.7f;      // stock 1.0, below 0.7 pops on map 2
-static constexpr float fEnhancedLodScale = 1.0f;          // stock 1.0, lowering it hurts roads
-static constexpr float fEnhancedTerrainDetailBlendViewDistance = 128.0f; // stock 64
+static constexpr float fEnhancedLodScale = 0.0f;          // stock 1.0
+static constexpr float fEnhancedTerrainLodScale = 0.1f;   // stock 1.0, 
 static constexpr float fEnhancedRealTreesLodScale = 0.0f; // stock 1.0
 static constexpr float fEnhancedClustersLodScale = 0.0f;  // stock 0.8
 
@@ -89,14 +102,17 @@ static constexpr float fEnhancedSunShadowRange2 = 135.0f;   // stock 140, which 
 static constexpr float fEnhancedLeavesShadowRatio = 1.0f;   // stock 0.5
 static constexpr float fEnhancedMaxHemiMapDistance = 512.0f;// stock 160
 
+// Small object and vegetation shadows, from Scrubah's Patch, credited there to miru.
+static constexpr float fFixedMinSizeShadowScale = 1.0f; // stock 1.25
+
+// Road detail texture distance, from Scrubah's Patch.
+static constexpr float fFixedTerrainDetailViewDistance = 4096.0f;      // stock 512
+static constexpr float fFixedTerrainDetailBlendViewDistance = 4096.0f; // stock 64
+
 static bool bEnhancedLODs = false;
 static bool bEnhancedShadowRange = false;
 static int32_t nShadowResolution = nStockShadowMapSize;
 
-// The recognised block per section. The schema is walked in registration order, not XML order, so
-// the recognising property can land part way through a block: fields before it are rewritten on
-// recognition, fields after it as they arrive. Thread local because config streams are parsed on
-// more than one thread.
 static thread_local const void* pUltraShadow = nullptr;
 static thread_local const void* pUltraGeometry = nullptr;
 static thread_local const void* pUltraTerrain = nullptr;
@@ -133,7 +149,17 @@ static constexpr bool IsGeometryField(uint32_t nOffset)
     return nOffset == nGeometryKillLodScale
         || nOffset == nGeometryLodScale
         || nOffset == nGeometryClustersLodScale
-        || nOffset == nGeometryRealTreesLodScale;
+        || nOffset == nGeometryRealTreesLodScale
+        || nOffset == nGeometryRealTreeMinSizeShadowScale
+        || nOffset == nGeometryClusterObjectMinSizeShadowScale
+        || nOffset == nGeometrySceneObjectMinSizeShadowScale;
+}
+
+static constexpr bool IsTerrainField(uint32_t nOffset)
+{
+    return nOffset == nTerrainLodScale
+        || nOffset == nTerrainDetailViewDistance
+        || nOffset == nTerrainDetailBlendViewDistance;
 }
 
 static void ApplyShadow(uint8_t* pObject)
@@ -153,15 +179,27 @@ static void ApplyShadow(uint8_t* pObject)
 
 static void ApplyGeometry(uint8_t* pObject)
 {
-    SetFloat(pObject, nGeometryKillLodScale, fEnhancedKillLodScale);
-    SetFloat(pObject, nGeometryLodScale, fEnhancedLodScale);
-    SetFloat(pObject, nGeometryClustersLodScale, fEnhancedClustersLodScale);
-    SetFloat(pObject, nGeometryRealTreesLodScale, fEnhancedRealTreesLodScale);
+    if (bEnhancedLODs)
+    {
+        SetFloat(pObject, nGeometryKillLodScale, fEnhancedKillLodScale);
+        SetFloat(pObject, nGeometryLodScale, fEnhancedLodScale);
+        SetFloat(pObject, nGeometryClustersLodScale, fEnhancedClustersLodScale);
+        SetFloat(pObject, nGeometryRealTreesLodScale, fEnhancedRealTreesLodScale);
+    }
+
+    SetFloat(pObject, nGeometryRealTreeMinSizeShadowScale, fFixedMinSizeShadowScale);
+    SetFloat(pObject, nGeometryClusterObjectMinSizeShadowScale, fFixedMinSizeShadowScale);
+    SetFloat(pObject, nGeometrySceneObjectMinSizeShadowScale, fFixedMinSizeShadowScale);
 }
 
 static void ApplyTerrain(uint8_t* pObject)
 {
-    SetFloat(pObject, nTerrainDetailBlendViewDistance, fEnhancedTerrainDetailBlendViewDistance);
+    if (!bEnhancedLODs)
+        return;
+
+    SetFloat(pObject, nTerrainLodScale, fEnhancedTerrainLodScale);
+    SetFloat(pObject, nTerrainDetailViewDistance, fFixedTerrainDetailViewDistance);
+    SetFloat(pObject, nTerrainDetailBlendViewDistance, fFixedTerrainDetailBlendViewDistance);
 }
 
 static void ApplyAmbient(uint8_t* pObject)
@@ -194,7 +232,7 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
     case nGeometryMinZoomFactor:
         // MinZoomFactor is the only geometry attribute the xenon and ps3 blocks leave out, so it
         // is paired with KillLodScale, which the schema reads first.
-        if (bEnhancedLODs && name == "MinZoomFactor"
+        if (name == "MinZoomFactor"
             && *(float*)(pObject + nOffset) == fUltraMinZoomFactor
             && *(float*)(pObject + nGeometryKillLodScale) == fStockKillLodScale)
         {
@@ -233,7 +271,7 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
         ApplyShadow(pObject);
     else if (pObject == pUltraGeometry && IsGeometryField(nOffset))
         ApplyGeometry(pObject);
-    else if (pObject == pUltraTerrain && nOffset == nTerrainDetailBlendViewDistance)
+    else if (pObject == pUltraTerrain && IsTerrainField(nOffset))
         ApplyTerrain(pObject);
     else if (pObject == pHighAmbient && nOffset == nAmbientMaxHemiMapDistance)
         ApplyAmbient(pObject);
@@ -266,8 +304,7 @@ public:
             bEnhancedShadowRange = JackalFixSettings.GetInt(PREF_ENHANCEDSHADOWRANGE) != 0;
             nShadowResolution = JackalFixSettings.GetInt(PREF_SHADOWRESOLUTION);
 
-            if (!bEnhancedLODs && !WantsShadow())
-                return;
+            // No early out: the shadow scale fix has no setting, so the hooks always go in.
 
             // CFloatProperty::Serialise - esi = object + descriptor->offset, then a call through
             // the visitor's float slot at +0x10C.

@@ -55,7 +55,9 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed an issue with player not walking slower when using ironsights with the M79
 - Fixed an issue where the GPS was misaligned in vehicles
 - Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies
-
+- Fixed an issue where small scattered objects and vegetation would draw without casting a shadow (Ultra High only)
+- Fixed an issue where road textures looked abnormal with a higher LOD scale setting (Ultra High, applies with Enhanced LODs)
+- Fixed a case where the player could no longer save their game after completing certain missions
 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.
