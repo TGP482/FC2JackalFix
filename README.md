@@ -46,15 +46,15 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Vibration** - Restores controller vibration support.
 
 ### Fixes
-Fixed an issue where jump height was reduced at high FPS
-Fixed an issue where NPCs would bounce at high FPS without disabling rigid characters
-Fixed an issue with hang gliders falling out of the sky when shot
-Fixed an issue gliders bouncing on water
-Fixed an issue with bug truck sounds being silent
-Fixed an issue with the MAC-10 not being heard by enemies while shooting
-Fixed an issue with player not walking slower when using ironsights with the M79
-Fixed an issue where the GPS was misaligned in vehicles
-Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies
+- Fixed an issue where jump height was reduced at high FPS
+- Fixed an issue where NPCs would bounce at high FPS without disabling rigid characters
+- Fixed an issue with hang gliders falling out of the sky when shot
+- Fixed an issue gliders bouncing on water
+- Fixed an issue with bug truck sounds being silent
+- Fixed an issue with the MAC-10 not being heard by enemies while shooting
+- Fixed an issue with player not walking slower when using ironsights with the M79
+- Fixed an issue where the GPS was misaligned in vehicles
+- Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies
 
 
 ### Content Unlocks
