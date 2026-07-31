@@ -12,7 +12,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 
 ### Display
 - **Display Type** - Allows you to change between Fullscreen, Borderless and Windowed modes.
-- **FPS Limiter** - Caps the game's frame rate using the built-in engine limiter.
+- **FPS Limiter** - Caps the game's frame rate using the built-in engine limiter, either at your monitor's refresh rate automatically or at a value you pick.
 - **internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling
 
 #### Graphics

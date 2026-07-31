@@ -95,8 +95,7 @@ public:
 
         mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 2);
 
-        auto nMaxFrameRate = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 60), 0, 9999);
-        mPrefs[PREF_MAXFRAMERATE] = nMaxFrameRate < 1 ? 9999 : nMaxFrameRate;
+        mPrefs[PREF_MAXFRAMERATE] = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 1), 0, 9999);
 
         mPrefs[PREF_ANISOTROPICFILTERING] = std::clamp(iniReader.ReadInteger("Graphics", "AnisotropicFiltering", 16), 0, 16);
         mPrefs[PREF_X360GAMMA] = std::clamp(iniReader.ReadInteger("Graphics", "Xbox360Gamma", 0), 0, 1);
