@@ -41,6 +41,7 @@ import entitylibrary;
 import lookback;
 import glassdecals;
 import fpsfixes;
+import guiduplicates;
 import debug;
 
 void Init()

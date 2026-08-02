@@ -6,9 +6,18 @@ module;
 #include <vector>
 #include <cstdint>
 #include <d3d9.h>
+#include <d3d10.h>
+#include <dxgi.h>
+#include <cstring>
 
 // An internal render resolution independent of the window, the display mode and the backbuffer,
 // for supersampling above what the monitor can show or rendering below it and scaling back up.
+//
+// Borderless uses the same path with no setting of its own. Its window covers the display whatever
+// the video options ask for, so any resolution below the desktop has already split the frame from
+// the output, and leaving that to the runtime gives a point-sampled stretch to the whole client
+// area. The engine's own resolution becomes the internal one and the backbuffer becomes the client
+// rect, so the resolve below supplies the fit and the filter.
 //
 // Dunia has exactly one number for "how big is the frame" and it is welded to the swapchain.
 // FUN_10423400 (SetResolution) takes a width and a height, stores them at renderer+0x1C/+0x20,
@@ -78,12 +87,12 @@ enum ScalingFilter
 {
     FILTER_POINT = 0,
     FILTER_BILINEAR = 1,
-    FILTER_CATMULLROM = 2,
 };
 
 static int32_t nRequestedW = 0;         // from the ini; 0 leaves the game entirely alone
 static int32_t nRequestedH = 0;
 static int32_t nFilter = FILTER_BILINEAR;
+static bool bBorderless = false;        // borderless drives the split even with no ini request
 
 static uint32_t nInternalW = 0;         // what the engine believes the screen is
 static uint32_t nInternalH = 0;
@@ -109,58 +118,6 @@ static uint32_t* pBackBufferHeight = nullptr;
 
 // ---------------------------------------------------------------------------------------------
 // The resolve pass
-
-// A Catmull-Rom kernel for the final pass. It only earns its instruction count when scaling up:
-// on the way down the halving chain has already box-filtered everything, and bilinear on the
-// remainder is both cheaper and closer to correct.
-static constexpr const char* szCatmullRomPS = R"(
-sampler2D SrcTex : register(s0);
-float4 SrcSize : register(c0);   // xy = 1 / source size, zw = source size
-
-float4 CatmullRomPS(in float2 uv : TEXCOORD0) : COLOR0
-{
-    float2 samplePos = uv * SrcSize.zw;
-    float2 texPos1 = floor(samplePos - 0.5f) + 0.5f;
-    float2 f = samplePos - texPos1;
-
-    float2 w0 = f * (-0.5f + f * (1.0f - 0.5f * f));
-    float2 w1 = 1.0f + f * f * (-2.5f + 1.5f * f);
-    float2 w2 = f * (0.5f + f * (2.0f - 1.5f * f));
-    float2 w3 = f * f * (-0.5f + 0.5f * f);
-
-    float2 w12 = w1 + w2;
-    float2 offset12 = w2 / w12;
-
-    float2 texPos0  = (texPos1 - 1.0f)     * SrcSize.xy;
-    float2 texPos3  = (texPos1 + 2.0f)     * SrcSize.xy;
-    float2 texPos12 = (texPos1 + offset12) * SrcSize.xy;
-
-    float4 result = 0.0f;
-    result += tex2D(SrcTex, float2(texPos0.x,  texPos0.y))  * w0.x  * w0.y;
-    result += tex2D(SrcTex, float2(texPos12.x, texPos0.y))  * w12.x * w0.y;
-    result += tex2D(SrcTex, float2(texPos3.x,  texPos0.y))  * w3.x  * w0.y;
-
-    result += tex2D(SrcTex, float2(texPos0.x,  texPos12.y)) * w0.x  * w12.y;
-    result += tex2D(SrcTex, float2(texPos12.x, texPos12.y)) * w12.x * w12.y;
-    result += tex2D(SrcTex, float2(texPos3.x,  texPos12.y)) * w3.x  * w12.y;
-
-    result += tex2D(SrcTex, float2(texPos0.x,  texPos3.y))  * w0.x  * w3.y;
-    result += tex2D(SrcTex, float2(texPos12.x, texPos3.y))  * w12.x * w3.y;
-    result += tex2D(SrcTex, float2(texPos3.x,  texPos3.y))  * w3.x  * w3.y;
-
-    return float4(result.rgb, 1.0f);
-}
-)";
-
-struct IShaderBlob : public IUnknown
-{
-    virtual void* STDMETHODCALLTYPE GetBufferPointer() = 0;
-    virtual SIZE_T STDMETHODCALLTYPE GetBufferSize() = 0;
-};
-
-using D3DXCompileShader_t = HRESULT(WINAPI*)(const char* pSrcData, UINT SrcDataLen, const void* pDefines,
-    void* pInclude, const char* pFunctionName, const char* pProfile, DWORD Flags,
-    IShaderBlob** ppShader, IShaderBlob** ppErrorMsgs, void** ppConstantTable);
 
 class CResolver
 {
@@ -216,83 +173,6 @@ class CResolver
     static inline Target Chain[nMaxChain];
 
     static inline IDirect3DStateBlock9* pStateBlock = nullptr;
-    static inline IDirect3DPixelShader9* pCatmullRom = nullptr;
-    // Kept separately from the shader object so a device that is reset - or destroyed and rebuilt -
-    // costs a CreatePixelShader rather than another compile.
-    static inline std::vector<uint8_t> vBytecode;
-    static inline bool bCompileFailed = false;
-
-    static bool EnsureCatmullRom(IDirect3DDevice9* pDevice)
-    {
-        if (pCatmullRom)
-            return true;
-
-        if (!vBytecode.empty())
-        {
-            if (SUCCEEDED(pDevice->CreatePixelShader(reinterpret_cast<const DWORD*>(vBytecode.data()), &pCatmullRom)))
-                return true;
-
-            pCatmullRom = nullptr;
-            return false;
-        }
-
-        if (std::exchange(bCompileFailed, true))
-            return false;
-
-        // Dunia imports d3dx9_38. The others cover installs that pulled in a different D3DX.
-        D3DXCompileShader_t pCompile = nullptr;
-        for (auto* szModule : { L"d3dx9_38.dll", L"d3dx9_43.dll", L"d3dx9_42.dll", L"d3dx9_41.dll" })
-        {
-            if (auto hModule = GetModuleHandleW(szModule))
-            {
-                pCompile = reinterpret_cast<D3DXCompileShader_t>(GetProcAddress(hModule, "D3DXCompileShader"));
-                if (pCompile)
-                    break;
-            }
-        }
-
-        if (!pCompile)
-            return false;
-
-        // Nine dependent fetches and the weight math fit ps_3_0 comfortably and ps_2_0 only just,
-        // so the higher profile is tried first rather than the other way round.
-        for (auto* szProfile : { "ps_3_0", "ps_2_0" })
-        {
-            IShaderBlob* pShader = nullptr;
-            IShaderBlob* pErrors = nullptr;
-
-            const auto hr = pCompile(szCatmullRomPS, static_cast<UINT>(strlen(szCatmullRomPS)), nullptr,
-                                     nullptr, "CatmullRomPS", szProfile, 0, &pShader, &pErrors, nullptr);
-
-            if (SUCCEEDED(hr) && pShader)
-            {
-                const auto created = pDevice->CreatePixelShader(
-                    reinterpret_cast<const DWORD*>(pShader->GetBufferPointer()), &pCatmullRom);
-
-                if (SUCCEEDED(created) && pCatmullRom)
-                {
-                    const auto* pStart = static_cast<const uint8_t*>(pShader->GetBufferPointer());
-                    vBytecode.assign(pStart, pStart + pShader->GetBufferSize());
-                }
-
-                SafeRelease(pErrors);
-                SafeRelease(pShader);
-
-                if (pCatmullRom)
-                {
-                    bCompileFailed = false;
-                    return true;
-                }
-                continue;
-            }
-
-            SafeRelease(pErrors);
-            SafeRelease(pShader);
-        }
-
-        return false;
-    }
-
     // One textured quad from pSrc into a rect of pDst. The rect is the whole target for every
     // stage of the halving chain and, for the final pass, the aspect-preserving fit inside the
     // backbuffer - so bars are the only thing that ever separates the two.
@@ -338,7 +218,6 @@ class CResolver
         for (DWORD i = 1; i < 8; ++i)
             pDevice->SetTexture(i, nullptr);
 
-        const bool bUseShader = (eFilter == FILTER_CATMULLROM) && EnsureCatmullRom(pDevice);
         const DWORD nSampler = (eFilter == FILTER_POINT) ? D3DTEXF_POINT : D3DTEXF_LINEAR;
 
         pDevice->SetTexture(0, pSrc);
@@ -353,37 +232,20 @@ class CResolver
         pDevice->SetIndices(nullptr);
         pDevice->SetFVF(nScreenFVF);
 
-        // Three states the engine may have left set that a state block only restores afterwards
-        // rather than neutralising first, and that between them account for most of the ways a
-        // fullscreen quad comes out wrong. Wrapping makes the 0-to-1 texcoord take the short way
-        // round; the other two are vertex-stage states, so they bite the shader path as well.
+        // A state block restores these afterwards rather than neutralising them first, and between
+        // them they account for most of the ways a fullscreen quad comes out wrong. Wrapping makes
+        // the 0-to-1 texcoord take the short way round.
         pDevice->SetRenderState(D3DRS_WRAP0, 0);
         pDevice->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
         pDevice->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 
-        if (bUseShader)
-        {
-            const float consts[4] =
-            {
-                1.0f / static_cast<float>(nSrcW),
-                1.0f / static_cast<float>(nSrcH),
-                static_cast<float>(nSrcW),
-                static_cast<float>(nSrcH),
-            };
-            pDevice->SetPixelShader(pCatmullRom);
-            pDevice->SetPixelShaderConstantF(0, consts, 1);
-        }
-        else
-        {
-            // Fixed function, so point and bilinear need no shader and no D3DX at all.
-            pDevice->SetPixelShader(nullptr);
-            pDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-            pDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-            pDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-            pDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-            pDevice->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-            pDevice->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-        }
+        pDevice->SetPixelShader(nullptr);
+        pDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        pDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        pDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        pDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        pDevice->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+        pDevice->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
         const auto fLeft = static_cast<float>(nDstX) - 0.5f;
         const auto fTop = static_cast<float>(nDstY) - 0.5f;
@@ -575,10 +437,6 @@ public:
         Substitute.Release();
 
         SafeRelease(pStateBlock);
-
-        // Shaders survive Reset, but not a device that is destroyed and rebuilt. The compiled
-        // bytecode is kept, so coming back costs a CreatePixelShader rather than another compile.
-        SafeRelease(pCatmullRom);
     }
 
     // Process teardown. The device may already be gone, so nothing is asked of it.
@@ -591,7 +449,6 @@ public:
 
         Substitute.Release();
         SafeRelease(pStateBlock);
-        SafeRelease(pCatmullRom);
     }
 };
 
@@ -738,7 +595,38 @@ public:
                 if (!pWidth || !pHeight || !pConfig)
                     return;
 
-                const bool bWanted = nRequestedW > 0 && nRequestedH > 0;
+                auto nWantW = nRequestedW;
+                auto nWantH = nRequestedH;
+
+                // Borderless keeps a window covering the display whatever resolution the video
+                // options ask for, so below the desktop the two quantities have already come apart
+                // and something has to put the frame back on the screen. Left to the runtime that
+                // is a stretch to the whole client area: the wrong shape at any aspect ratio the
+                // display does not share, and a point sample at every ratio. Routing it through
+                // here instead costs one blit and gets the fit and the filter that the explicit
+                // internal resolution already had.
+                if ((nWantW <= 0 || nWantH <= 0) && bBorderless)
+                {
+                    // Only once the two have actually come apart. At the desktop resolution the
+                    // split would be a full screen blit per frame to reproduce the frame exactly,
+                    // so borderless at native stays byte for byte stock. Measured rather than
+                    // assumed: the window is the mod's own and the video options are the player's,
+                    // and neither is a safe guess about the other.
+                    RECT client{};
+                    auto hWnd = *reinterpret_cast<HWND*>(pConfig + 0x18);
+                    if (!hWnd)
+                        hWnd = *reinterpret_cast<HWND*>(pConfig + 0x04);
+
+                    if (hWnd && GetClientRect(hWnd, &client) &&
+                        (client.right - client.left != static_cast<LONG>(*pWidth) ||
+                         client.bottom - client.top != static_cast<LONG>(*pHeight)))
+                    {
+                        nWantW = static_cast<int32_t>(*pWidth);
+                        nWantH = static_cast<int32_t>(*pHeight);
+                    }
+                }
+
+                const bool bWanted = nWantW > 0 && nWantH > 0;
 
                 // What the engine was about to render at is what it should still present at. In
                 // fullscreen that has already been rounded down to a real adapter mode by the boot
@@ -756,8 +644,8 @@ public:
                 // it costs nothing: the backbuffer is sized from that same client rect either way.
                 pConfig[9] = 0;
 
-                nInternalW = static_cast<uint32_t>(nRequestedW);
-                nInternalH = static_cast<uint32_t>(nRequestedH);
+                nInternalW = static_cast<uint32_t>(nWantW);
+                nInternalH = static_cast<uint32_t>(nWantH);
 
                 *pWidth = nInternalW;
                 *pHeight = nInternalH;
@@ -839,6 +727,7 @@ public:
                 nRequestedW = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONX);
                 nRequestedH = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONY);
                 nFilter = JackalFixSettings.GetInt(PREF_SCALINGFILTER);
+                bBorderless = JackalFixSettings.GetInt(PREF_DISPLAYMODE) == 2;
 
                 // One axis without the other is a typo, not a request.
                 if (nRequestedW <= 0 || nRequestedH <= 0)
@@ -864,3 +753,569 @@ public:
         };
     }
 } InternalResolution;
+
+// =================================================================================================
+// Direct3D 10
+//
+// The same split against the other renderer. Nothing above this line runs here: it is written to
+// IDirect3DDevice9, the global D3DPRESENT_PARAMETERS, FUN_1040F190's surface wrapper, StretchRect,
+// state blocks and ps_3_0, and the D3D10 renderer shares only the vtable above all of it.
+//
+// Where each quantity lives:
+//
+//   renderer+0x1C/+0x20        the resolution the video options asked for. FUN_1041FB00 writes it
+//                              from SetMode's arguments and nothing else does, so it survives the
+//                              swapchain description being rewritten underneath it.
+//   vtable+0x44                the size the engine allocates from: its viewport, its scene targets
+//                              and its depth buffer. Answered with the internal resolution, except
+//                              for EndFrame refilling the swapchain description at 0x10420D6F,
+//                              the only caller that passes the description's own fields as the
+//                              out-pointers and the only one that wants the real size.
+//   the swapchain buffers      resized to the client area at the entry of FUN_1041FE80, the only
+//                              place GetBuffer is called and the one point reached after creation
+//                              as well as after a resize.
+//   the render target          substituted at the call that attaches the backbuffer texture to its
+//                              wrapper, so the engine draws into an internal-sized target and the
+//                              real backbuffer is left for the resolve.
+//
+// **The substitution is one instruction wide.** FUN_10418290 is the counterpart of FUN_1040F190:
+// it stores the texture at wrapper+0x2C and builds the views from the texture's own BindFlags, so
+// a target created with RENDER_TARGET and SHADER_RESOURCE arrives carrying both an RTV and an SRV.
+// Being class-wide it is hooked at its call site inside FUN_1041FE80, and only the argument in ECX
+// is replaced. The stack slot the engine releases afterwards still holds the real backbuffer, and
+// without that release IDXGISwapChain::ResizeBuffers fails for the rest of the run.
+//
+// **The viewport comes from the swapchain description rather than from the size query**, so
+// FUN_1041FE80's SetViewport is overridden separately. Its two arguments sit in EBX and EBP eight
+// instructions earlier and are dead everywhere else in the function.
+//
+// **The resolve runs at 0x10420DC4**, after the frame is drawn and before Present, the only point
+// in that function where no D3D object is half built. It takes the backbuffer from GetBuffer(0)
+// every frame: a held reference makes the next ResizeBuffers fail with DXGI_ERROR_INVALID_CALL,
+// which is the failure FUN_1041FE20 exists to avoid. FUN_10442A90 zeroes the engine's state shadow
+// immediately after Present, so everything disturbed here is re-issued next frame. The exception
+// is a slot whose next wanted value is also null, which compares equal to the zeroed shadow and is
+// skipped, so those two are unbound by hand.
+//
+// **Exclusive fullscreen needs no resize.** Its buffers are already the adapter mode, the size that
+// reaches the display, so only the substitution and the resolve apply. Windowed and borderless are
+// where the buffers have to be pushed out to the client rect first. The decision is taken once per
+// swapchain, at FUN_1041FE80, so an ini change lands on the next resolution change.
+
+namespace dx10
+{
+
+// Renderer fields, off the object DAT_11609668 points at. The D3D9 renderer is stored in the same
+// global behind the same vtable layout, which is why every renderer-agnostic caller works with
+// either and why only the implementations below the vtable had to be written twice.
+static constexpr uintptr_t nRendererModeWidth = 0x1C;
+static constexpr uintptr_t nRendererModeHeight = 0x20;
+static constexpr uintptr_t nRendererDevice = 0x38;
+static constexpr uintptr_t nRendererSwapChain = 0x40;
+static constexpr uintptr_t nDescWidth = 0x4C;
+static constexpr uintptr_t nDescOutputWindow = 0x78;
+static constexpr uintptr_t nDescWindowed = 0x7C;
+
+static uint32_t nInternalW = 0;
+static uint32_t nInternalH = 0;
+static uint32_t nOutputW = 0;
+static uint32_t nOutputH = 0;
+static bool bActive = false;
+
+// ---------------------------------------------------------------------------------------------
+// Shaders
+
+// The quad is three vertices generated from SV_VertexID rather than a vertex buffer, so the resolve
+// needs no buffer, no input layout and no vertex declaration. IASetInputLayout(nullptr) is legal
+// for a vertex shader with no inputs. The viewport is the fitted rect, so the triangle covers
+// exactly the area the frame belongs in and the bars are whatever the clear left.
+static constexpr const char* szVertexShader = R"(
+void ResolveVS(uint id : SV_VertexID, out float4 pos : SV_POSITION, out float2 uv : TEXCOORD0)
+{
+    uv = float2((id << 1) & 2, id & 2);
+    pos = float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
+}
+)";
+
+// Point and bilinear are the sampler's job, so one shader covers both.
+static constexpr const char* szBlitShader = R"(
+Texture2D SrcTex : register(t0);
+SamplerState SrcSamp : register(s0);
+
+float4 ResolvePS(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_Target
+{
+    return float4(SrcTex.Sample(SrcSamp, uv).rgb, 1.0f);
+}
+)";
+
+using D3D10CompileShader_t = HRESULT(WINAPI*)(LPCSTR, SIZE_T, LPCSTR, const void*, void*,
+                                              LPCSTR, LPCSTR, UINT, ID3D10Blob**, ID3D10Blob**);
+
+// ---------------------------------------------------------------------------------------------
+// The resolve pass
+
+class CResolver
+{
+    static constexpr size_t nMaxChain = 4;
+
+    struct Target
+    {
+        ID3D10Texture2D* pTex = nullptr;
+        ID3D10RenderTargetView* pRtv = nullptr;
+        ID3D10ShaderResourceView* pSrv = nullptr;
+        UINT nWidth = 0;
+        UINT nHeight = 0;
+        DXGI_FORMAT eFormat = DXGI_FORMAT_UNKNOWN;
+
+        void Release()
+        {
+            SafeRelease(pSrv);
+            SafeRelease(pRtv);
+            SafeRelease(pTex);
+            nWidth = 0;
+            nHeight = 0;
+            eFormat = DXGI_FORMAT_UNKNOWN;
+        }
+
+        bool Ensure(ID3D10Device* pDevice, UINT w, UINT h, DXGI_FORMAT fmt)
+        {
+            if (pTex && pRtv && pSrv && nWidth == w && nHeight == h && eFormat == fmt)
+                return true;
+
+            Release();
+
+            D3D10_TEXTURE2D_DESC desc{};
+            desc.Width = w;
+            desc.Height = h;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = fmt;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D10_USAGE_DEFAULT;
+            // Both, because the wrapper builds its views from these and the resolve has to read
+            // back what the engine drew.
+            desc.BindFlags = D3D10_BIND_RENDER_TARGET | D3D10_BIND_SHADER_RESOURCE;
+
+            if (FAILED(pDevice->CreateTexture2D(&desc, nullptr, &pTex)) || !pTex)
+                return false;
+
+            if (FAILED(pDevice->CreateRenderTargetView(pTex, nullptr, &pRtv)) ||
+                FAILED(pDevice->CreateShaderResourceView(pTex, nullptr, &pSrv)))
+            {
+                Release();
+                return false;
+            }
+
+            nWidth = w;
+            nHeight = h;
+            eFormat = fmt;
+            return true;
+        }
+    };
+
+    static inline Target Substitute;
+    static inline Target Chain[nMaxChain];
+
+    static inline ID3D10VertexShader* pVertexShader = nullptr;
+    static inline ID3D10PixelShader* pBlitShader = nullptr;    static inline ID3D10SamplerState* pPointSampler = nullptr;
+    static inline ID3D10SamplerState* pLinearSampler = nullptr;    static inline bool bSetupFailed = false;
+
+    static bool Compile(const char* szSource, const char* szEntry, const char* szProfile,
+                        std::vector<uint8_t>& vOut)
+    {
+        // The renderer refuses to initialise without d3d10.dll, so the compiler comes out of the
+        // module the game itself is already using.
+        auto hModule = GetModuleHandleW(L"d3d10.dll");
+        if (!hModule)
+            return false;
+
+        auto pCompile = reinterpret_cast<D3D10CompileShader_t>(GetProcAddress(hModule, "D3D10CompileShader"));
+        if (!pCompile)
+            return false;
+
+        ID3D10Blob* pShader = nullptr;
+        ID3D10Blob* pErrors = nullptr;
+
+        const auto hr = pCompile(szSource, strlen(szSource), nullptr, nullptr, nullptr,
+                                 szEntry, szProfile, 0, &pShader, &pErrors);
+
+        if (SUCCEEDED(hr) && pShader)
+        {
+            const auto* pStart = static_cast<const uint8_t*>(pShader->GetBufferPointer());
+            vOut.assign(pStart, pStart + pShader->GetBufferSize());
+        }
+
+        SafeRelease(pErrors);
+        SafeRelease(pShader);
+        return !vOut.empty();
+    }
+
+    static bool EnsureSetup(ID3D10Device* pDevice)
+    {
+        if (pVertexShader && pBlitShader && pPointSampler && pLinearSampler)
+            return true;
+
+        if (std::exchange(bSetupFailed, true))
+            return false;
+
+        std::vector<uint8_t> vCode;
+        if (!Compile(szVertexShader, "ResolveVS", "vs_4_0", vCode) ||
+            FAILED(pDevice->CreateVertexShader(vCode.data(), vCode.size(), &pVertexShader)))
+            return false;
+
+        vCode.clear();
+        if (!Compile(szBlitShader, "ResolvePS", "ps_4_0", vCode) ||
+            FAILED(pDevice->CreatePixelShader(vCode.data(), vCode.size(), &pBlitShader)))
+            return false;
+
+        D3D10_SAMPLER_DESC sampler{};
+        sampler.AddressU = D3D10_TEXTURE_ADDRESS_CLAMP;
+        sampler.AddressV = D3D10_TEXTURE_ADDRESS_CLAMP;
+        sampler.AddressW = D3D10_TEXTURE_ADDRESS_CLAMP;
+        sampler.MaxLOD = D3D10_FLOAT32_MAX;
+
+        sampler.Filter = D3D10_FILTER_MIN_MAG_MIP_POINT;
+        if (FAILED(pDevice->CreateSamplerState(&sampler, &pPointSampler)))
+            return false;
+
+        sampler.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+        if (FAILED(pDevice->CreateSamplerState(&sampler, &pLinearSampler)))
+            return false;
+
+        bSetupFailed = false;
+        return true;
+    }
+
+    // One textured triangle from pSrc into a rect of pDst. The rect is the whole target for every
+    // stage of the halving chain and, for the final pass, the aspect-preserving fit inside the
+    // backbuffer - so bars are the only thing that ever separates the two.
+    static void Blit(ID3D10Device* pDevice, ID3D10RenderTargetView* pDst,
+                     int32_t nDstX, int32_t nDstY, UINT nDstW, UINT nDstH,
+                     ID3D10ShaderResourceView* pSrc, UINT nSrcW, UINT nSrcH, int32_t eFilter)
+    {
+        pDevice->OMSetRenderTargets(1, &pDst, nullptr);
+
+        D3D10_VIEWPORT viewport{};
+        viewport.TopLeftX = nDstX;
+        viewport.TopLeftY = nDstY;
+        viewport.Width = nDstW;
+        viewport.Height = nDstH;
+        viewport.MinDepth = 0.0f;
+        viewport.MaxDepth = 1.0f;
+        pDevice->RSSetViewports(1, &viewport);
+
+        // Defaults for all three: opaque, no depth or stencil, solid fill with no scissor. The
+        // engine's own values come back next frame out of the state shadow FUN_10442A90 zeroes
+        // immediately after Present.
+        const float fBlend[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        pDevice->OMSetBlendState(nullptr, fBlend, 0xFFFFFFFF);
+        pDevice->OMSetDepthStencilState(nullptr, 0);
+        pDevice->RSSetState(nullptr);
+
+        ID3D10Buffer* pNullBuffer = nullptr;
+        UINT nZero = 0;
+        pDevice->IASetInputLayout(nullptr);
+        pDevice->IASetVertexBuffers(0, 1, &pNullBuffer, &nZero, &nZero);
+        pDevice->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+        pDevice->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        pDevice->VSSetShader(pVertexShader);
+        pDevice->GSSetShader(nullptr);
+        pDevice->PSSetShader(pBlitShader);
+        pDevice->PSSetShaderResources(0, 1, &pSrc);
+
+        auto* pSampler = (eFilter == FILTER_POINT) ? pPointSampler : pLinearSampler;
+        pDevice->PSSetSamplers(0, 1, &pSampler);
+
+        pDevice->Draw(3, 0);
+
+        // Never leave the source bound: the next stage of the chain renders into it.
+        ID3D10ShaderResourceView* pNullSrv = nullptr;
+        pDevice->PSSetShaderResources(0, 1, &pNullSrv);
+    }
+
+public:
+    static ID3D10Texture2D* Texture() { return Substitute.pTex; }
+
+    static bool Ensure(ID3D10Device* pDevice, UINT w, UINT h, DXGI_FORMAT fmt)
+    {
+        return pDevice && EnsureSetup(pDevice) && Substitute.Ensure(pDevice, w, h, fmt);
+    }
+
+    static void Resolve(ID3D10Device* pDevice, IDXGISwapChain* pSwapChain)
+    {
+        if (!pDevice || !pSwapChain || !Substitute.pSrv || !pVertexShader || !pBlitShader)
+            return;
+
+        // Taken fresh every frame rather than cached. A held reference to buffer zero makes the
+        // next ResizeBuffers fail with DXGI_ERROR_INVALID_CALL.
+        ID3D10Texture2D* pBackBuffer = nullptr;
+        if (FAILED(pSwapChain->GetBuffer(0, __uuidof(ID3D10Texture2D),
+                                         reinterpret_cast<void**>(&pBackBuffer))) || !pBackBuffer)
+            return;
+
+        D3D10_TEXTURE2D_DESC desc{};
+        pBackBuffer->GetDesc(&desc);
+
+        ID3D10RenderTargetView* pTargetView = nullptr;
+        if (FAILED(pDevice->CreateRenderTargetView(pBackBuffer, nullptr, &pTargetView)) || !pTargetView)
+        {
+            SafeRelease(pBackBuffer);
+            return;
+        }
+
+        // The largest rect of the backbuffer that still has the internal frame's shape, centred,
+        // as above.
+        UINT nFitW = desc.Width;
+        UINT nFitH = desc.Height;
+        {
+            const auto w = static_cast<uint64_t>(Substitute.nWidth);
+            const auto h = static_cast<uint64_t>(Substitute.nHeight);
+
+            if (w * desc.Height > h * desc.Width)
+                nFitH = (std::max)(1u, static_cast<UINT>((desc.Width * h + w / 2) / w));
+            else if (h * desc.Width > w * desc.Height)
+                nFitW = (std::max)(1u, static_cast<UINT>((desc.Height * w + h / 2) / h));
+        }
+
+        const auto nFitX = static_cast<int32_t>((desc.Width - nFitW) / 2);
+        const auto nFitY = static_cast<int32_t>((desc.Height - nFitH) / 2);
+
+        auto* pSrc = Substitute.pSrv;
+        UINT nSrcW = Substitute.nWidth;
+        UINT nSrcH = Substitute.nHeight;
+
+        for (size_t stage = 0; stage < nMaxChain; ++stage)
+        {
+            if (nSrcW < nFitW * 2 && nSrcH < nFitH * 2)
+                break;
+
+            const UINT dw = (nSrcW >= nFitW * 2) ? (std::max)(nSrcW / 2, nFitW) : nSrcW;
+            const UINT dh = (nSrcH >= nFitH * 2) ? (std::max)(nSrcH / 2, nFitH) : nSrcH;
+
+            if (!Chain[stage].Ensure(pDevice, dw, dh, Substitute.eFormat))
+                break;
+
+            Blit(pDevice, Chain[stage].pRtv, 0, 0, dw, dh, pSrc, nSrcW, nSrcH, FILTER_BILINEAR);
+
+            pSrc = Chain[stage].pSrv;
+            nSrcW = dw;
+            nSrcH = dh;
+        }
+
+        // Only when there is something outside the image. The swapchain is
+        // DXGI_SWAP_EFFECT_DISCARD, so the bars hold whatever the driver last left there.
+        if (nFitW != desc.Width || nFitH != desc.Height)
+        {
+            const float fBlack[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+            pDevice->ClearRenderTargetView(pTargetView, fBlack);
+        }
+
+        Blit(pDevice, pTargetView, nFitX, nFitY, nFitW, nFitH, pSrc, nSrcW, nSrcH, nFilter);
+
+        // The engine re-issues everything else next frame from a state shadow that is zeroed right
+        // after Present. These two are the exception: where its next wanted value is also null it
+        // compares equal to the zeroed shadow and skips the call, leaving this binding live.
+        ID3D10ShaderResourceView* pNullSrv = nullptr;
+        ID3D10SamplerState* pNullSampler = nullptr;
+        pDevice->PSSetShaderResources(0, 1, &pNullSrv);
+        pDevice->PSSetSamplers(0, 1, &pNullSampler);
+
+        SafeRelease(pTargetView);
+        SafeRelease(pBackBuffer);
+    }
+};
+
+// ---------------------------------------------------------------------------------------------
+// Hooks
+
+static ID3D10Device* Device(uintptr_t nRenderer)
+{
+    return *reinterpret_cast<ID3D10Device**>(nRenderer + nRendererDevice);
+}
+
+static IDXGISwapChain* SwapChain(uintptr_t nRenderer)
+{
+    return *reinterpret_cast<IDXGISwapChain**>(nRenderer + nRendererSwapChain);
+}
+
+// Decides, once per swapchain, whether the split is on and at what pair of sizes. Runs at the entry
+// of FUN_1041FE80, the only place the backbuffer is fetched, which is reached after creation as
+// well as after a resize.
+static void PrepareSplit(uintptr_t nRenderer)
+{
+    bActive = false;
+
+    auto* pDevice = Device(nRenderer);
+    auto* pSwapChain = SwapChain(nRenderer);
+    if (!pDevice || !pSwapChain)
+        return;
+
+    DXGI_SWAP_CHAIN_DESC scd{};
+    if (FAILED(pSwapChain->GetDesc(&scd)))
+        return;
+
+    const bool bWindowed = *reinterpret_cast<uint32_t*>(nRenderer + nDescWindowed) != 0;
+
+    if (bWindowed)
+    {
+        // What DXGI stretches the backbuffer to, which is the window whatever the video options
+        // say once borderless has stopped the window following them.
+        const auto hWnd = *reinterpret_cast<HWND*>(nRenderer + nDescOutputWindow);
+        RECT client{};
+        if (!hWnd || !GetClientRect(hWnd, &client))
+            return;
+
+        nOutputW = static_cast<uint32_t>(client.right - client.left);
+        nOutputH = static_cast<uint32_t>(client.bottom - client.top);
+    }
+    else
+    {
+        // Exclusive fullscreen owns the display mode and the buffers are already it, so the
+        // swapchain is the authority rather than the window. Read from the description instead of
+        // measuring, because the two disagree for a frame across a mode transition.
+        nOutputW = scd.BufferDesc.Width;
+        nOutputH = scd.BufferDesc.Height;
+    }
+
+    if (nOutputW == 0 || nOutputH == 0)
+        return;
+
+    if (nRequestedW > 0 && nRequestedH > 0)
+    {
+        nInternalW = static_cast<uint32_t>(nRequestedW);
+        nInternalH = static_cast<uint32_t>(nRequestedH);
+    }
+    else if (bBorderless)
+    {
+        // The resolution the video options asked for, read from the pair FUN_1041FB00 writes out
+        // of SetMode's arguments rather than from the swapchain description, which EndFrame
+        // rewrites from the client rect whenever it rebuilds.
+        nInternalW = *reinterpret_cast<uint32_t*>(nRenderer + nRendererModeWidth);
+        nInternalH = *reinterpret_cast<uint32_t*>(nRenderer + nRendererModeHeight);
+    }
+    else
+    {
+        return;
+    }
+
+    if (nInternalW == 0 || nInternalH == 0)
+        return;
+
+    // Nothing to split while the two still agree, so borderless at the desktop resolution and a
+    // matched internal resolution both stay byte for byte stock.
+    if (nInternalW == nOutputW && nInternalH == nOutputH)
+        return;
+
+    // The buffers the engine is about to fetch have to be the size that reaches the display, not
+    // the size it draws at. BufferCount zero and format UNKNOWN keep the description's own values.
+    // Fullscreen never needs it, having read both from the same description. A resize there would
+    // be a display mode change nobody asked for, so a disagreement declines instead.
+    if (scd.BufferDesc.Width != nOutputW || scd.BufferDesc.Height != nOutputH)
+    {
+        if (!bWindowed)
+            return;
+
+        if (FAILED(pSwapChain->ResizeBuffers(0, nOutputW, nOutputH, DXGI_FORMAT_UNKNOWN, scd.Flags)))
+            return;
+    }
+
+    if (!CResolver::Ensure(pDevice, nInternalW, nInternalH, scd.BufferDesc.Format))
+        return;
+
+    bActive = true;
+}
+
+// Renderer vtable+0x44, the size the engine allocates from.
+static SafetyHookInline BackBufferSizeHook{};
+
+static void __fastcall BackBufferSize(uint8_t* pRenderer, void* pEdx, HWND hWnd,
+                                      int32_t* pWidth, int32_t* pHeight)
+{
+    // EndFrame refills the swapchain description through this same call and wants the real thing.
+    // It is the only caller that passes the description's own fields as the out-pointers, which is
+    // cheaper to recognise than the return address and does not care how it was reached.
+    const bool bDescription = pWidth == reinterpret_cast<int32_t*>(pRenderer + nDescWidth);
+
+    if (bActive && !bDescription && pWidth && pHeight)
+    {
+        *pWidth = static_cast<int32_t>(nInternalW);
+        *pHeight = static_cast<int32_t>(nInternalH);
+        return;
+    }
+
+    BackBufferSizeHook.fastcall(pRenderer, pEdx, hWnd, pWidth, pHeight);
+}
+
+class InternalResolutionDX10
+{
+public:
+    InternalResolutionDX10()
+    {
+        JackalFix::onDuniaInitEvent() += []()
+        {
+            // FUN_1041FE80, matched from its prologue through the swapchain null test.
+            auto backBufferViews = dunia_pattern("51 56 8B F1 8B 46 40 57 33 FF 3B C7 0F 84");
+
+            // The same function eighteen bytes in, where the description's width and height are
+            // already in EBX and EBP on their way to SetViewport and dead everywhere else.
+            auto viewport = dunia_pattern("53 8B 5E 4C 55 8B 6E 50 8D 54 24 10 52 68 ? ? ? ?");
+
+            // Its call to the wrapper's texture setter, with the backbuffer texture in ECX one
+            // instruction from being pushed. Anchored on the push rather than the load above it,
+            // because the load would be relocated over the top of anything written to ECX.
+            auto attachTexture = dunia_pattern("51 8B CF E8 ? ? ? ? 6A 00 57 E8");
+
+            // Renderer vtable+0x44, from its prologue through the windowed test and the
+            // GetClientRect that test guards.
+            auto backBufferSize = dunia_pattern("83 EC 10 83 79 7C 00 74 76 8B 4C 24 14 8D 04 24 50 51 FF 15 ? ? ? ?");
+
+            // The end of the frame function, after everything the engine draws and before the
+            // Present argument loads.
+            auto frameEnd = dunia_pattern("BD 01 00 00 00 55 6A 02 E8 ? ? ? ? 8B 46 40 8B 96 8C 00 00 00");
+
+            if (backBufferViews.empty() || viewport.empty() || attachTexture.empty() ||
+                backBufferSize.empty() || frameEnd.empty())
+                return;
+
+            BackBufferSizeHook = safetyhook::create_inline(backBufferSize.get_first(), BackBufferSize);
+
+            static auto BackBufferViewsHook = safetyhook::create_mid(backBufferViews.get_first(), [](SafetyHookContext& regs)
+            {
+                // ECX is the renderer; the relocated MOV copies it into ESI a moment from now.
+                PrepareSplit(regs.ecx);
+            });
+
+            static auto ViewportHook = safetyhook::create_mid(viewport.get_first(0x08), [](SafetyHookContext& regs)
+            {
+                if (!bActive)
+                    return;
+
+                regs.ebx = nInternalW;
+                regs.ebp = nInternalH;
+            });
+
+            static auto AttachTextureHook = safetyhook::create_mid(attachTexture.get_first(), [](SafetyHookContext& regs)
+            {
+                if (!bActive)
+                    return;
+
+                if (auto* pTexture = CResolver::Texture())
+                    regs.ecx = reinterpret_cast<uintptr_t>(pTexture);
+            });
+
+            static auto FrameEndHook = safetyhook::create_mid(frameEnd.get_first(), [](SafetyHookContext& regs)
+            {
+                if (bActive)
+                    CResolver::Resolve(Device(regs.esi), SwapChain(regs.esi));
+            });
+
+            JackalFix::onShutdownEvent() += []()
+            {
+                bActive = false;
+            };
+        };
+    }
+} InternalResolutionDX10;
+
+} // namespace dx10

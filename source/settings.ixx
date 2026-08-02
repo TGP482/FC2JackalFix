@@ -93,7 +93,7 @@ public:
         mPrefs[PREF_INTERNALRESOLUTIONX] = nInternalResolutionX;
         mPrefs[PREF_INTERNALRESOLUTIONY] = nInternalResolutionY;
 
-        mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 2);
+        mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 1);
 
         mPrefs[PREF_MAXFRAMERATE] = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 1), 0, 9999);
 
