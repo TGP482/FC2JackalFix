@@ -30,6 +30,7 @@ import x360gamma;
 import borderless;
 import internalres;
 import affinity;
+import utilisation;
 import largeaddressaware;
 import limitedsaving;
 import saveonmissioncomplete;

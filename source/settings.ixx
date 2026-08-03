@@ -40,6 +40,7 @@ export enum Pref
     PREF_INTERNALRESOLUTIONY,
     PREF_SCALINGFILTER,
     PREF_CPUAFFINITY,
+    PREF_UTILISATION,
     PREF_LIMITEDSAVING,
     PREF_CONSOLEAUTOSAVES,
     PREF_NOBLINKINGITEMS,
@@ -70,6 +71,7 @@ public:
         mPrefs[PREF_SKIPINTRO] = std::clamp(iniReader.ReadInteger("General", "SkipIntro", 1), 0, 1);
         mPrefs[PREF_SKIPTITLESCREEN] = std::clamp(iniReader.ReadInteger("General", "SkipTitleScreen", 1), 0, 1);
         mPrefs[PREF_CPUAFFINITY] = std::clamp(iniReader.ReadInteger("General", "CpuAffinity", 0), 0, 64);
+        mPrefs[PREF_UTILISATION] = std::clamp(iniReader.ReadInteger("General", "Utilisation", 1), 0, 1);
         mPrefs[PREF_HIGHPRECISIONTIMER] = std::clamp(iniReader.ReadInteger("General", "HighPrecisionTimer", 1), 0, 1);
         mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
         mPrefs[PREF_LARGEADDRESSAWARE] = std::clamp(iniReader.ReadInteger("General", "LargeAddressAware", 0), 0, 1);
