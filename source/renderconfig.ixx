@@ -18,13 +18,22 @@ import settings;
 // after they return covers every numeric attribute of every <quality> block with the descriptor
 // still in hand, so nothing here depends on patch.dat.
 //
-// Two of the values written here are fixes ported from Scrubah's Patch, which ships them as data
-// edits to engine\settings\DefaultRenderConfig.xml inside patch.dat:
+// The four schemas are registered by FUN_103F56E0 (geometry), FUN_103F7240 (terrain),
+// FUN_103F4600 (shadow) and FUN_103F7520 (ambient), each after the shared base FUN_103F42E0,
+// which is why every derived field sits at 0x20 or above. Bools are stored as four byte ints and
+// go through the integer serialiser, so every field below is either a float or an int32.
 //
-//     <Geometry> ultrahigh   ClusterObjectMinSizeShadowScale   1.25 -> 1.0
-//                            SceneObjectMinSizeShadowScale     1.25 -> 1.0
-//     <Terrain>  ultrahigh   TerrainDetailViewDistance          512 -> 4096
-//                            TerrainDetailBlendViewDistance      64 -> 4096
+// Ultra High is the only geometry, shadow and terrain preset touched, and High the only ambient
+// one, which is where the settings say they apply.
+//
+// The step 3 geometry and shadow numbers are Boggalog's, from Far Cry 2 Patched, where they ship
+// as data edits to DefaultRenderConfig.xml inside patch.dat.
+//
+// One of Boggalog's edits is deliberately not reproduced. His <Geometry> ultrahigh block sets
+// TerrainLodScale="0.1", but CRenderGeometryConfig registers no TerrainLodScale descriptor: the
+// only TerrainLodScale in Dunia is CRenderTerrainConfig+0x2C, and the string at 0x10E5078C is
+// referenced from FUN_103F7240 alone. The attribute is inert where he wrote it. The real one is
+// driven by BeyondUltraTerrain below.
 
 // Property descriptor, as built by the schema registration functions.
 struct RenderProperty
@@ -49,12 +58,20 @@ static constexpr uint32_t nShadowCascadedShadowMapSize = 0x50;
 static constexpr uint32_t nShadowLeavesShadowRatio = 0x60;
 
 // CRenderGeometryConfig - <Geometry><quality>
+static constexpr uint32_t nGeometryRealTreeCapsMaxDistance = 0x48;
 static constexpr uint32_t nGeometryRealTreesLodScale = 0x4C;
 static constexpr uint32_t nGeometryClustersLodScale = 0x50;
 static constexpr uint32_t nGeometryLodScale = 0x54;
 static constexpr uint32_t nGeometryKillLodScale = 0x58;
+static constexpr uint32_t nGeometryMaxDecalCount = 0x64;
+static constexpr uint32_t nGeometryMaxDecalCountPerType = 0x68;
+static constexpr uint32_t nGeometryRealTreeLeafMinSize = 0x74;
+static constexpr uint32_t nGeometryRealTreeHLeafMinSize = 0x78;
+static constexpr uint32_t nGeometryRealTreeNodeMinSize = 0x7C;
 static constexpr uint32_t nGeometryRealTreeMinSizeShadowScale = 0x80;
+static constexpr uint32_t nGeometryClusterObjectMinSize = 0x84;
 static constexpr uint32_t nGeometryClusterObjectMinSizeShadowScale = 0x88;
+static constexpr uint32_t nGeometrySceneObjectMinSize = 0x8C;
 static constexpr uint32_t nGeometrySceneObjectMinSizeShadowScale = 0x94;
 static constexpr uint32_t nGeometryMinZoomFactor = 0x9C;
 
@@ -79,38 +96,105 @@ static constexpr int32_t nUltraAffectedByMuzzleFlash = 1; // only the ultrahigh 
 static constexpr int32_t nHighSectorCountX = 12;          // 4, 8, 8, 12, 8
 
 // Stock KillLodScale of the ultrahigh geometry block, used to confirm the block alongside
-// MinZoomFactor.
+// MinZoomFactor. The schema serialises KillLodScale first of the two, so it is already in place
+// when the pair is tested.
 static constexpr float fStockKillLodScale = 1.0f;
 
 // Stock shadow map resolution of the ultrahigh block. Also the default ShadowResolution, so the
-// setting is a no-op until it is raised.
+// setting is a no-op until it is moved.
 static constexpr int32_t nStockShadowMapSize = 2048;
 
-// EnhancedLODs. LOD scales run backwards: the lower the value the further the detail survives,
-// and 0 is the maximum.
-static constexpr float fEnhancedKillLodScale = 0.7f;      // stock 1.0, below 0.7 pops on map 2
-static constexpr float fEnhancedLodScale = 1.0f;          // stock 1.0
-static constexpr float fEnhancedTerrainLodScale = 0.1f;   // stock 1.0, 
-static constexpr float fEnhancedRealTreesLodScale = 0.0f; // stock 1.0
-static constexpr float fEnhancedClustersLodScale = 0.0f;  // stock 0.8
+// BeyondUltraGeometry. Four steps over the Ultra High geometry block, indexed by the setting:
+//
+//     0  the values the game ships
+//     1  twice the vanilla draw distance
+//     2  four times the vanilla draw distance
+//     3  the most the block will take, which is Boggalog's set
+//
+// Two conventions run in opposite directions. LOD scales run backwards: the lower the value the
+// further the detail survives, and 0 is the maximum, so doubling a distance halves the scale. The
+// MinSize thresholds are the size below which an object is culled outright and halve the same way,
+// bottoming out at 0. Only RealTreeCapsMaxDistance and the two decal counts are plain quantities
+// that double.
+//
+// Two columns are pinned rather than scaled.
+//
+// KillLodScale holds at 0.7 from step 1 on. It is the distance at which an object stops being
+// drawn at all, and below 0.7 scenery pops in on map 2, which is where Boggalog stops as well.
+// Halving it would put step 1 past his maximum, so the column is clamped rather than left to
+// overshoot.
+//
+// LodScale holds at its stock 1.0 for every step. Lowering it is what makes road surfaces break
+// up, and no terrain setting compensates for it, so the column stays where the game put it.
+//
+// RealTreeNodeMinSize starts at 0.002, small enough that halving it changes nothing visible, so it
+// goes straight to 0 at step 1.
+struct GeometryStep
+{
+    float fRealTreeCapsMaxDistance;
+    float fRealTreesLodScale;
+    float fClustersLodScale;
+    float fLodScale;
+    float fKillLodScale;
+    float fRealTreeLeafMinSize;
+    float fRealTreeHLeafMinSize;
+    float fRealTreeNodeMinSize;
+    float fClusterObjectMinSize;
+    float fSceneObjectMinSize;
+    int32_t nMaxDecalCount;
+    int32_t nMaxDecalCountPerType;
+};
 
-// EnhancedShadowRange.
-static constexpr float fEnhancedSunShadowFadeRange = 12.0f; // stock 10
-static constexpr float fEnhancedSunShadowRange0 = 20.0f;    // stock 4
-static constexpr float fEnhancedSunShadowRange1 = 40.0f;    // stock 20
-static constexpr float fEnhancedSunShadowRange2 = 135.0f;   // stock 140, which flickers
-static constexpr float fEnhancedLeavesShadowRatio = 1.0f;   // stock 0.5
-static constexpr float fEnhancedMaxHemiMapDistance = 512.0f;// stock 160
+static constexpr GeometryStep GeometrySteps[] =
+{
+    //  CapsDist RealTrees Clusters   Lod    Kill    Leaf     HLeaf     Node   Cluster   Scene   Decals PerType
+    {    100.0f,   1.0f,    0.8f,    1.0f,   1.0f,  0.02f,   0.015f,   0.002f,  0.02f,   0.01f,    200,     50 }, // 0 stock
+    {    200.0f,   0.5f,    0.4f,    1.0f,   0.7f,  0.01f,   0.0075f,  0.0f,    0.01f,   0.005f,   400,    100 }, // 1 twice
+    {    400.0f,   0.25f,   0.2f,    1.0f,   0.7f,  0.005f,  0.00375f, 0.0f,    0.005f,  0.0025f,  800,    200 }, // 2 four times
+    {   1000.0f,   0.1f,    0.1f,    1.0f,   0.7f,  0.0f,    0.0f,     0.0f,    0.0f,    0.0f,    2000,   1000 }, // 3 maximum
+};
 
-// Small object and vegetation shadows, from Scrubah's Patch, credited there to miru.
-static constexpr float fFixedMinSizeShadowScale = 1.0f; // stock 1.25
+static constexpr int32_t nMaxGeometryStep = static_cast<int32_t>(sizeof(GeometrySteps) / sizeof(GeometrySteps[0])) - 1;
 
-// Road detail texture distance, from Scrubah's Patch.
-static constexpr float fFixedTerrainDetailViewDistance = 4096.0f;      // stock 512
-static constexpr float fFixedTerrainDetailBlendViewDistance = 4096.0f; // stock 64
+// BeyondUltraShadows. Boggalog's Ultra High shadow set, less the two map sizes, which
+// ShadowResolution owns. SunShadowFadeRange and SunShadowRange1 already carry his values in the
+// stock ultrahigh block, so only three fields move.
+static constexpr float fBeyondUltraSunShadowRange0 = 6.0f;   // stock 4
+static constexpr float fBeyondUltraSunShadowRange2 = 135.0f; // stock 140, which flickers
+static constexpr float fBeyondUltraLeavesShadowRatio = 1.0f; // stock 0.5
 
-static bool bEnhancedLODs = false;
-static bool bEnhancedShadowRange = false;
+// Static ambient shadow distance, the Ambient High half of the same claim.
+static constexpr float fBeyondUltraMaxHemiMapDistance = 512.0f; // stock 160
+
+// BeyondUltraTerrain. The same four steps over the Ultra High terrain block. TerrainLodScale runs
+// backwards like the geometry scales and bottoms out at 0; the two detail distances are plain
+// quantities that double. Step 3 goes well past Boggalog, who only moves
+// TerrainDetailBlendViewDistance from 64 to 128.
+struct TerrainStep
+{
+    float fLodScale;
+    float fDetailViewDistance;
+    float fDetailBlendViewDistance;
+};
+
+static constexpr TerrainStep TerrainSteps[] =
+{
+    //  LodScale  ViewDist  BlendDist
+    {     1.0f,     512.0f,     64.0f }, // 0 stock
+    {     0.5f,    1024.0f,    128.0f }, // 1 twice
+    {     0.25f,   2048.0f,    256.0f }, // 2 four times
+    {     0.0f,    4096.0f,   4096.0f }, // 3 maximum
+};
+
+static constexpr int32_t nMaxTerrainStep = static_cast<int32_t>(sizeof(TerrainSteps) / sizeof(TerrainSteps[0])) - 1;
+
+// Small object and vegetation shadows, credited to miru. Unconditional: it is a fix rather than a
+// setting, and Boggalog leaves the ultrahigh block's 1.25s alone.
+static constexpr float fFixedMinSizeShadowScale = 1.0f; // stock 1.25, bar RealTree which is 1.0
+
+static int32_t nGeometryStep = 0;
+static int32_t nTerrainStep = 0;
+static bool bBeyondUltraShadows = false;
 static int32_t nShadowResolution = nStockShadowMapSize;
 
 static thread_local const void* pUltraShadow = nullptr;
@@ -128,9 +212,16 @@ static void SetInt(uint8_t* pObject, uint32_t nOffset, int32_t nValue)
     *(int32_t*)(pObject + nOffset) = nValue;
 }
 
+// ShadowResolution carries no range. The only thing guarded against is a value the device cannot
+// use at all, which would otherwise leave the game with no shadow map rather than a large one.
+static bool HasShadowResolution()
+{
+    return nShadowResolution > 0;
+}
+
 static bool WantsShadow()
 {
-    return bEnhancedShadowRange || nShadowResolution != nStockShadowMapSize;
+    return bBeyondUltraShadows || (HasShadowResolution() && nShadowResolution != nStockShadowMapSize);
 }
 
 static constexpr bool IsShadowField(uint32_t nOffset)
@@ -146,12 +237,20 @@ static constexpr bool IsShadowField(uint32_t nOffset)
 
 static constexpr bool IsGeometryField(uint32_t nOffset)
 {
-    return nOffset == nGeometryKillLodScale
-        || nOffset == nGeometryLodScale
-        || nOffset == nGeometryClustersLodScale
+    return nOffset == nGeometryRealTreeCapsMaxDistance
         || nOffset == nGeometryRealTreesLodScale
+        || nOffset == nGeometryClustersLodScale
+        || nOffset == nGeometryLodScale
+        || nOffset == nGeometryKillLodScale
+        || nOffset == nGeometryMaxDecalCount
+        || nOffset == nGeometryMaxDecalCountPerType
+        || nOffset == nGeometryRealTreeLeafMinSize
+        || nOffset == nGeometryRealTreeHLeafMinSize
+        || nOffset == nGeometryRealTreeNodeMinSize
         || nOffset == nGeometryRealTreeMinSizeShadowScale
+        || nOffset == nGeometryClusterObjectMinSize
         || nOffset == nGeometryClusterObjectMinSizeShadowScale
+        || nOffset == nGeometrySceneObjectMinSize
         || nOffset == nGeometrySceneObjectMinSizeShadowScale;
 }
 
@@ -164,28 +263,36 @@ static constexpr bool IsTerrainField(uint32_t nOffset)
 
 static void ApplyShadow(uint8_t* pObject)
 {
-    if (bEnhancedShadowRange)
+    if (bBeyondUltraShadows)
     {
-        SetFloat(pObject, nShadowSunShadowFadeRange, fEnhancedSunShadowFadeRange);
-        SetFloat(pObject, nShadowSunShadowRange0, fEnhancedSunShadowRange0);
-        SetFloat(pObject, nShadowSunShadowRange1, fEnhancedSunShadowRange1);
-        SetFloat(pObject, nShadowSunShadowRange2, fEnhancedSunShadowRange2);
-        SetFloat(pObject, nShadowLeavesShadowRatio, fEnhancedLeavesShadowRatio);
+        SetFloat(pObject, nShadowSunShadowRange0, fBeyondUltraSunShadowRange0);
+        SetFloat(pObject, nShadowSunShadowRange2, fBeyondUltraSunShadowRange2);
+        SetFloat(pObject, nShadowLeavesShadowRatio, fBeyondUltraLeavesShadowRatio);
     }
 
-    SetInt(pObject, nShadowShadowMapSize, nShadowResolution);
-    SetInt(pObject, nShadowCascadedShadowMapSize, nShadowResolution);
+    if (HasShadowResolution())
+    {
+        SetInt(pObject, nShadowShadowMapSize, nShadowResolution);
+        SetInt(pObject, nShadowCascadedShadowMapSize, nShadowResolution);
+    }
 }
 
 static void ApplyGeometry(uint8_t* pObject)
 {
-    if (bEnhancedLODs)
-    {
-        SetFloat(pObject, nGeometryKillLodScale, fEnhancedKillLodScale);
-        SetFloat(pObject, nGeometryLodScale, fEnhancedLodScale);
-        SetFloat(pObject, nGeometryClustersLodScale, fEnhancedClustersLodScale);
-        SetFloat(pObject, nGeometryRealTreesLodScale, fEnhancedRealTreesLodScale);
-    }
+    const auto& step = GeometrySteps[nGeometryStep];
+
+    SetFloat(pObject, nGeometryRealTreeCapsMaxDistance, step.fRealTreeCapsMaxDistance);
+    SetFloat(pObject, nGeometryRealTreesLodScale, step.fRealTreesLodScale);
+    SetFloat(pObject, nGeometryClustersLodScale, step.fClustersLodScale);
+    SetFloat(pObject, nGeometryLodScale, step.fLodScale);
+    SetFloat(pObject, nGeometryKillLodScale, step.fKillLodScale);
+    SetFloat(pObject, nGeometryRealTreeLeafMinSize, step.fRealTreeLeafMinSize);
+    SetFloat(pObject, nGeometryRealTreeHLeafMinSize, step.fRealTreeHLeafMinSize);
+    SetFloat(pObject, nGeometryRealTreeNodeMinSize, step.fRealTreeNodeMinSize);
+    SetFloat(pObject, nGeometryClusterObjectMinSize, step.fClusterObjectMinSize);
+    SetFloat(pObject, nGeometrySceneObjectMinSize, step.fSceneObjectMinSize);
+    SetInt(pObject, nGeometryMaxDecalCount, step.nMaxDecalCount);
+    SetInt(pObject, nGeometryMaxDecalCountPerType, step.nMaxDecalCountPerType);
 
     SetFloat(pObject, nGeometryRealTreeMinSizeShadowScale, fFixedMinSizeShadowScale);
     SetFloat(pObject, nGeometryClusterObjectMinSizeShadowScale, fFixedMinSizeShadowScale);
@@ -194,17 +301,16 @@ static void ApplyGeometry(uint8_t* pObject)
 
 static void ApplyTerrain(uint8_t* pObject)
 {
-    if (!bEnhancedLODs)
-        return;
+    const auto& step = TerrainSteps[nTerrainStep];
 
-    SetFloat(pObject, nTerrainLodScale, fEnhancedTerrainLodScale);
-    SetFloat(pObject, nTerrainDetailViewDistance, fFixedTerrainDetailViewDistance);
-    SetFloat(pObject, nTerrainDetailBlendViewDistance, fFixedTerrainDetailBlendViewDistance);
+    SetFloat(pObject, nTerrainLodScale, step.fLodScale);
+    SetFloat(pObject, nTerrainDetailViewDistance, step.fDetailViewDistance);
+    SetFloat(pObject, nTerrainDetailBlendViewDistance, step.fDetailBlendViewDistance);
 }
 
 static void ApplyAmbient(uint8_t* pObject)
 {
-    SetFloat(pObject, nAmbientMaxHemiMapDistance, fEnhancedMaxHemiMapDistance);
+    SetFloat(pObject, nAmbientMaxHemiMapDistance, fBeyondUltraMaxHemiMapDistance);
 }
 
 // Called once per numeric attribute, after the loader has written the parsed value into the field.
@@ -243,7 +349,7 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
         break;
 
     case nTerrainAffectedByMuzzleFlash:
-        if (bEnhancedLODs && name == "TerrainAffectedByMuzzleFlash" && *(int32_t*)(pObject + nOffset) == nUltraAffectedByMuzzleFlash)
+        if (nTerrainStep > 0 && name == "TerrainAffectedByMuzzleFlash" && *(int32_t*)(pObject + nOffset) == nUltraAffectedByMuzzleFlash)
         {
             pUltraTerrain = pObject;
             ApplyTerrain(pObject);
@@ -252,7 +358,7 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
         break;
 
     case nAmbientSectorCountX:
-        if (bEnhancedShadowRange && name == "SectorCountX" && *(int32_t*)(pObject + nOffset) == nHighSectorCountX)
+        if (bBeyondUltraShadows && name == "SectorCountX" && *(int32_t*)(pObject + nOffset) == nHighSectorCountX)
         {
             pHighAmbient = pObject;
             ApplyAmbient(pObject);
@@ -300,8 +406,15 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            bEnhancedLODs = JackalFixSettings.GetInt(PREF_ENHANCEDLODS) != 0;
-            bEnhancedShadowRange = JackalFixSettings.GetInt(PREF_ENHANCEDSHADOWRANGE) != 0;
+            // Already bounded when the ini is read; bounded again so each table lookup is safe on
+            // its own terms.
+            const auto nGeometry = JackalFixSettings.GetInt(PREF_BEYONDULTRAGEOMETRY);
+            nGeometryStep = nGeometry < 0 ? 0 : (nGeometry > nMaxGeometryStep ? nMaxGeometryStep : nGeometry);
+
+            const auto nTerrain = JackalFixSettings.GetInt(PREF_BEYONDULTRATERRAIN);
+            nTerrainStep = nTerrain < 0 ? 0 : (nTerrain > nMaxTerrainStep ? nMaxTerrainStep : nTerrain);
+
+            bBeyondUltraShadows = JackalFixSettings.GetInt(PREF_BEYONDULTRASHADOWS) != 0;
             nShadowResolution = JackalFixSettings.GetInt(PREF_SHADOWRESOLUTION);
 
             // No early out: the shadow scale fix has no setting, so the hooks always go in.
