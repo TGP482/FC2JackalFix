@@ -1,6 +1,6 @@
 /*
-  Four entity library bug fixes from Boggalog's Far Cry 2 Patched. Credit to him for identifying
-  all four and for the values used here. His versions are data edits to
+  Five entity library edits from Boggalog's Far Cry 2 Patched. Credit to him for identifying all
+  five and for the values used here. His versions are data edits to
   generated/entitylibrarypatchoverride.fcb inside patch.dat:
 
     "Fixed the MAC-10 being silent"
@@ -20,54 +20,12 @@
         FOVMultipliers: fPreCombatMultiplier 4 -> 0.75, fCombatMultiplier 4 -> 1,
                         fPostCombatMultiplier 4 -> 1.25
 
-  The MAC-10's muzzle stim is the noise the shot broadcasts to AI; every other level-8 weapon
-  carries radius 75 and 3 is inside the muzzle. The 4/4/4 field-of-view multipliers are the set the
-  game gives snipers and mortar crews, 0.75/1/1.25 the one an ordinary merc gets.
+    "Explosive barrels now start fires"
+        OA_Explosives.Explosives.ExplosiveBarrel_NEW
+        CCompoundPhysComponent -> RootNode -> States -> State -> StateSubNode -> Explosion ->
+        ExtraStims: the third Stim, which the archive ships zeroed, becomes
+                    selType 7 (Burn), nLevel 15, fRadius 3.0, bFalloff true, nFalloffMinLevel 1
 
-  One hook, because two of the six floats cannot be recognised by value: fMoveSpeedFactor is 1.0 on
-  134 other weapon entries and the 4/4/4/2/0.5/6/0.15 multiplier set is shared by 28 enemy
-  archetypes. The fix needs prototype names, which the property system never sees. All six also go
-  through float descriptor vtable 0x10E98014, serialiser 0x10957940, which renderconfig.ixx hooks.
-
-  Each .fcb is parsed into a DOM of nodes kept for the session; components are read out of it on
-  demand when an entity spawns. So editing the DOM edits the archive after load.
-
-  FUN_105492E0 is the per-file prototype indexer, called once per entity library .fcb immediately
-  after the file's root node joins the library:
-
-    root = *ppRoot
-    for each child of root:                         ; one per EntityLibrary
-      for each child of that:                       ; one per EntityPrototype
-        ent = proto->GetChildByName({"Entity", 0x0984415E})
-        if (ent && ent->GetProperty(&g_hidName, &pszName))
-          map[hash(pszName)] = proto
-
-  Every prototype in the file passes through it with its hidName in hand.
-
-  Two node classes publish the same interface with the same vtable slot layout. The wrapper is a
-  0x10 byte heap object (vtable, refcount, inner pointer, parent), is what the library holds and
-  what the hook is handed, and each of its accessors hops to the inner node first:
-
-        10233FB0  GetChildCount   MOV EAX,[ECX+8] / MOV EAX,[EAX+0xC]
-        10233FC0  GetChild        MOV ECX,[ECX+8] / MOV EAX,[ECX+EAX*4+0x18] / ADD EAX,ECX
-        102348B0  GetProperty     MOV ECX,[ECX+8] / ... / CALL FindProperty
-
-  The inner node is the DOM node itself, with a parallel family of accessors (10233E10, 102349D0,
-  10234A00) that operate on this directly with no hop:
-
-        10233E10  GetChild        MOV EAX,[ESP+4] / MOV EAX,[ECX+EAX*4+0x18] / ADD EAX,ECX
-
-  GetChild returns an inner node whichever class it is called on, so the root is a wrapper and
-  everything below it is an inner node. Reading the property block as node+8 everywhere is right
-  for the root only; on a descendant it hands FindProperty four bytes of .fcb payload as its cursor
-  and faults at Dunia+0x23433A. So everything here dispatches through the node's own vtable.
-
-  Slot +0xD8 hands back a pointer into the loaded .fcb buffer for a named property whatever its
-  type, which is why hidName and a float both come out of it. All six edits are float to float, so
-  nothing moves.
-
-  The whole walk runs under SEH: if anything here is still wrong the fixes silently do not apply
-  and the game still starts.
 */
 
 module;
@@ -109,6 +67,21 @@ static NameKey KeyPreCombatMultiplier = { "fPreCombatMultiplier", 0 };
 static NameKey KeyCombatMultiplier = { "fCombatMultiplier", 0 };
 static NameKey KeyPostCombatMultiplier = { "fPostCombatMultiplier", 0 };
 
+// The barrel walk. Named navigation rather than a subtree sweep, because the prototype carries a
+// second Explosion under OnEvent whose placeholder stim is identical and has to stay untouched.
+static NameKey KeyComponents = { "Components", 0 };
+static NameKey KeyCompoundPhys = { "CCompoundPhysComponent", 0 };
+static NameKey KeyRootNode = { "RootNode", 0 };
+static NameKey KeyStates = { "States", 0 };
+static NameKey KeyState = { "State", 0 };
+static NameKey KeyStateSubNode = { "StateSubNode", 0 };
+static NameKey KeyExplosion = { "Explosion", 0 };
+static NameKey KeyExtraStims = { "ExtraStims", 0 };
+static NameKey KeySelType = { "selType", 0 };
+static NameKey KeyLevel = { "nLevel", 0 };
+static NameKey KeyFalloff = { "bFalloff", 0 };
+static NameKey KeyFalloffMinLevel = { "nFalloffMinLevel", 0 };
+
 // NameHash::Set, the engine's own hash, so hashes computed here match the archive by construction.
 // __thiscall with three stack arguments.
 using NameHash_t = void(__fastcall*)(uint32_t* pOut, void* pEdx, const char* pszName, int32_t, int32_t);
@@ -127,6 +100,16 @@ static constexpr float fFixedPreCombatMultiplier = 0.75f;
 static constexpr float fFixedCombatMultiplier = 1.0f;
 static constexpr float fFixedPostCombatMultiplier = 1.25f;
 
+// The barrel's fire stim. selType is the stim table's enum: 0 None, 1 Bang, 2 Snap, 3 Pierce,
+// 4 Crush, 5 Cut, 6 Health, 7 Burn, 8 Water, 9 Panic, 10 Fear, 11 Morale, 12 Dirt, 13 Reliability,
+// 14 Interest. The barrel already broadcasts Bang at radius 25 and Crush at radius 8; Burn at 3 is
+// tight enough that the fire starts under the barrel rather than across the whole compound.
+static constexpr uint32_t nStimTypeNone = 0;
+static constexpr uint32_t nStimTypeBurn = 7;
+static constexpr uint32_t nBurnStimLevel = 15;
+static constexpr float fBurnStimRadius = 3.0f;
+static constexpr uint32_t nBurnStimFalloffMinLevel = 1;
+
 enum class Prototype
 {
     None,
@@ -134,6 +117,7 @@ enum class Prototype
     M79,                  // ironsight move speed
     VehicleCompass,       // GPS height offset
     AssassinationTarget,  // field of view multipliers
+    ExplosiveBarrel,      // explosion burn stim
 };
 
 // hidName comes back as a raw pointer with no length, so the compare is bounded.
@@ -179,6 +163,9 @@ static Prototype ClassifyPrototype(const char* pszHidName)
     if (NameIs(pszHidName, "enemy_archetypes.Missions.Assassination_Target"))
         return Prototype::AssassinationTarget;
 
+    if (NameIs(pszHidName, "OA_Explosives.Explosives.ExplosiveBarrel_NEW"))
+        return Prototype::ExplosiveBarrel;
+
     return Prototype::None;
 }
 
@@ -194,6 +181,9 @@ static FCBNode* GetChild(FCBNode* pNode, uint32_t nIndex)
 
 static FCBNode* GetChildByName(FCBNode* pNode, const NameKey& key)
 {
+    if (pNode == nullptr || pNode->ppVTable == nullptr)
+        return nullptr;
+
     return reinterpret_cast<FCBNode*(__fastcall*)(FCBNode*, void*, const NameKey*)>(pNode->ppVTable[nNodeGetChildByName])(pNode, nullptr, &key);
 }
 
@@ -213,6 +203,27 @@ static bool SetFloat(FCBNode* pNode, const NameKey& key, float fStock, float fFi
         return false;
 
     *pValue = fFixed;
+    return true;
+}
+
+static bool SetUInt32(FCBNode* pNode, const NameKey& key, uint32_t nStock, uint32_t nFixed)
+{
+    auto* pValue = static_cast<uint32_t*>(GetProperty(pNode, key));
+    if (pValue == nullptr || *pValue != nStock)
+        return false;
+
+    *pValue = nFixed;
+    return true;
+}
+
+// Bools are a single byte in the archive, so this cannot share SetUInt32.
+static bool SetBool(FCBNode* pNode, const NameKey& key, bool bStock, bool bFixed)
+{
+    auto* pValue = static_cast<uint8_t*>(GetProperty(pNode, key));
+    if (pValue == nullptr || (*pValue != 0) != bStock)
+        return false;
+
+    *pValue = bFixed ? 1 : 0;
     return true;
 }
 
@@ -265,6 +276,45 @@ static void ApplyToSubtree(Prototype ePrototype, FCBNode* pNode, int nDepth)
         ApplyToSubtree(ePrototype, GetChild(pNode, i), nDepth + 1);
 }
 
+// The one edit that cannot be a subtree sweep. GetChildByName returns the first match, which is
+// what is wanted at every step: States holds two State nodes and only the first carries an
+// explosion, and that State holds StateSubNode ahead of OnEvent.
+static void ApplyBarrelFire(FCBNode* pPrototype)
+{
+    static const NameKey* const path[] =
+    {
+        &KeyEntity, &KeyComponents, &KeyCompoundPhys, &KeyRootNode,
+        &KeyStates, &KeyState, &KeyStateSubNode, &KeyExplosion, &KeyExtraStims,
+    };
+
+    auto* pNode = pPrototype;
+    for (const auto* pKey : path)
+    {
+        pNode = GetChildByName(pNode, *pKey);
+        if (pNode == nullptr || pNode->ppVTable == nullptr)
+            return;
+    }
+
+    // The placeholder is the last of the three, but it is found by value rather than by index so a
+    // reordered archive cannot make this overwrite a live stim.
+    const auto nStims = GetChildCount(pNode);
+    for (uint32_t i = 0; i < nStims; ++i)
+    {
+        auto* pStim = GetChild(pNode, i);
+        if (pStim == nullptr || pStim->ppVTable == nullptr)
+            continue;
+
+        if (!SetUInt32(pStim, KeySelType, nStimTypeNone, nStimTypeBurn))
+            continue;
+
+        SetUInt32(pStim, KeyLevel, 0, nBurnStimLevel);
+        SetFloat(pStim, KeyRadius, 0.0f, fBurnStimRadius);
+        SetBool(pStim, KeyFalloff, false, true);
+        SetUInt32(pStim, KeyFalloffMinLevel, 0, nBurnStimFalloffMinLevel);
+        return;
+    }
+}
+
 // The same two-level walk FUN_105492E0 performs: libraries, then prototypes. pRoot is the wrapper,
 // everything GetChild hands back below it is an inner node.
 static void PatchLibrary(FCBNode* pRoot)
@@ -291,7 +341,9 @@ static void PatchLibrary(FCBNode* pRoot)
                 continue;
 
             const auto ePrototype = ClassifyPrototype(static_cast<const char*>(GetProperty(pEntity, KeyHidName)));
-            if (ePrototype != Prototype::None)
+            if (ePrototype == Prototype::ExplosiveBarrel)
+                ApplyBarrelFire(pPrototype);
+            else if (ePrototype != Prototype::None)
                 ApplyToSubtree(ePrototype, pPrototype, 0);
         }
     }
@@ -336,13 +388,15 @@ public:
 
             NameHash = reinterpret_cast<NameHash_t>(hashPattern.get_first());
 
-            NameHash(&KeyMoveSpeedFactor.nHash, nullptr, KeyMoveSpeedFactor.pszName, 0, 0);
-            NameHash(&KeyCanIronsight.nHash, nullptr, KeyCanIronsight.pszName, 0, 0);
-            NameHash(&KeyRadius.nHash, nullptr, KeyRadius.pszName, 0, 0);
-            NameHash(&KeyHeightOffset.nHash, nullptr, KeyHeightOffset.pszName, 0, 0);
-            NameHash(&KeyPreCombatMultiplier.nHash, nullptr, KeyPreCombatMultiplier.pszName, 0, 0);
-            NameHash(&KeyCombatMultiplier.nHash, nullptr, KeyCombatMultiplier.pszName, 0, 0);
-            NameHash(&KeyPostCombatMultiplier.nHash, nullptr, KeyPostCombatMultiplier.pszName, 0, 0);
+            for (auto* pKey : {
+                &KeyMoveSpeedFactor, &KeyCanIronsight, &KeyRadius, &KeyHeightOffset,
+                &KeyPreCombatMultiplier, &KeyCombatMultiplier, &KeyPostCombatMultiplier,
+                &KeyComponents, &KeyCompoundPhys, &KeyRootNode, &KeyStates, &KeyState,
+                &KeyStateSubNode, &KeyExplosion, &KeyExtraStims,
+                &KeySelType, &KeyLevel, &KeyFalloff, &KeyFalloffMinLevel })
+            {
+                NameHash(&pKey->nHash, nullptr, pKey->pszName, 0, 0);
+            }
 
             // hidName is one of the two hashes FUN_105492E0 hardcodes, so rehashing it checks
             // NameHash against the archive before the others are trusted.

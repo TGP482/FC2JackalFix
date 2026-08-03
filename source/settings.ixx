@@ -35,6 +35,7 @@ export enum Pref
     PREF_ENHANCEDLODS,
     PREF_ENHANCEDSHADOWRANGE,
     PREF_SHADOWRESOLUTION,
+    PREF_NORIMLIGHTING,
     PREF_DISPLAYMODE,
     PREF_INTERNALRESOLUTIONX,
     PREF_INTERNALRESOLUTIONY,
@@ -106,6 +107,8 @@ public:
         mPrefs[PREF_ENHANCEDSHADOWRANGE] = std::clamp(iniReader.ReadInteger("Graphics", "EnhancedShadowRange", 1), 0, 1);
 
         mPrefs[PREF_SHADOWRESOLUTION] = std::clamp(iniReader.ReadInteger("Graphics", "ShadowResolution", 2048), 128, 2560);
+
+        mPrefs[PREF_NORIMLIGHTING] = std::clamp(iniReader.ReadInteger("Graphics", "NoRimLighting", 0), 0, 1);
 
         mPrefs[PREF_MOUSESPEEDCAP] = std::clamp(iniReader.ReadInteger("Gameplay", "RemoveMouseSpeedCap", 1), 0, 1);
 

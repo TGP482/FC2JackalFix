@@ -48,6 +48,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Enhanced LODs** - Improves level of detail (LOD) distances for models, terrain, trees, and object clusters, reducing the distance at which they switch to lower detail or stop rendering (Ultra High preset only).
 - **Enhanced Shadow Range** - Extends shadow draw distance, allowing more vegetation to cast shadows and keeping static ambient shadows visible farther away (Ultra High preset only).
 - **Shadow Resolution** - Adjusts the resolution of sun and cascaded shadow maps.
+- **No Rim Lighting** - Removes the extra light the engine wraps around characters and cloth, which reads as a blue cast on the player's arms and on nearby vegetation at night.
 
 ### Gameplay
 - **Remove Mouse Speed Cap** - Removes the engine's mouse movement speed limit.
@@ -90,6 +91,8 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies
 - Fixed an issue where small scattered objects and vegetation would draw without casting a shadow (Ultra High only)
 - Fixed an issue where road textures looked abnormal with a higher LOD scale setting (Ultra High, applies with Enhanced LODs)
+- Fixed an issue where exploding barrels left no fire behind, unlike every other explosive in the game
+- Fixed an issue where the DLC ATV and Utility Truck only ever spawned in one colour, while their multiplayer counterparts came in the full range
 - Fixed a case where the player could no longer save their game after completing certain missions
 - Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church
 - Fixed an issue with tape 9 repeating 
