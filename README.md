@@ -16,6 +16,20 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling
 
 ### Graphics
+- **Utilisation** - Improves GPU and CPU utilisation, increasing performance across the board
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/aad65d76-2e53-43bd-b389-902ebd843700"></td>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/eed3b612-2a68-42bb-83ec-4ad895dc37e4"></td>
+    </tr>
+    <tr>
+      <td align="center">Utilization Off</td>
+      <td align="center">Utilization On</td>
+    </tr>
+  </table>
+</div>
+
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures instead of using the game's inconsistent defaults.
 - **Console Gamma** - Restores the Xbox 360's darker gamma look with deeper blacks and stronger contrast.
 - **Enhanced LODs** - Improves level of detail (LOD) distances for models, terrain, trees, and object clusters, reducing the distance at which they switch to lower detail or stop rendering (Ultra High preset only).
