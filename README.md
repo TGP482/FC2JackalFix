@@ -88,6 +88,20 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Freecam = 0
 - FreecamKey = F2
 
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/aad65d76-2e53-43bd-b389-902ebd843700"></td>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/eed3b612-2a68-42bb-83ec-4ad895dc37e4"></td>
+    </tr>
+    <tr>
+      <td align="center">Utilization Off</td>
+      <td align="center">Utilization On</td>
+    </tr>
+  </table>
+</div>
+
+
 ### Credits
 - @Boggalog - Various fixes and [An Almost Complete Guide to Far Cry 2 Modding](https://www.nexusmods.com/farcry2/mods/299)
 - @scubrah - Various fixes
