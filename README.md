@@ -57,6 +57,8 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Sprint Toggle** - Toggles sprinting with a tap instead of requiring the button to be held.
 - **Limited Saving** - Enables console-style saving by removing Save Game from the pause menu and disabling F5/F9 quick save/load.
 - **Console Autosaves** - Displays the save box after mission completion, matching the console versions.
+<img width="400" height="224" alt="ConsoleAutosave" src="https://github.com/user-attachments/assets/0be95623-8b88-4a51-b09b-c5683d450228" />
+
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
 - **No Colored Signs** - Prevents road and safe house signs from tinting red or blue when they belong to an active objective.
 - **Lookback** - Included dedicated lookback button
