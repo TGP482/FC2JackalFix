@@ -45,12 +45,13 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Aim Assist** - Enables or disables controller aim assist.
 - **Vibration** - Restores controller vibration support.
 
-### Fixes
+### Jackal Fixes
 - Fixed an issue where jump height was reduced at high FPS
 - Fixed an issue where NPCs would bounce at high FPS without disabling rigid characters
 - Fixed an issue where the game could crash when changing the resolution at the main menu
 - Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution
 - Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner
+### Community Fixes
 - Fixed an issue with hang gliders falling out of the sky when shot
 - Fixed an issue gliders bouncing on water
 - Fixed an issue with bug truck sounds being silent
@@ -62,6 +63,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed an issue where road textures looked abnormal with a higher LOD scale setting (Ultra High, applies with Enhanced LODs)
 - Fixed a case where the player could no longer save their game after completing certain missions
 - Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church
+- Fixed an issue with tape 9 repeating 
 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.
@@ -85,3 +87,9 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - NoclipKey = F1
 - Freecam = 0
 - FreecamKey = F2
+
+### Credits
+- @Boggalog - Various fixes and [An Almost Complete Guide to Far Cry 2 Modding](https://www.nexusmods.com/farcry2/mods/299)
+- @scubrah - Various fixes
+- @ThirteenAG - [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) and Xbox 360 gamma
+- @FoxAhead - Various Multi Fixer improvements
