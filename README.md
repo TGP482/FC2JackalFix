@@ -13,9 +13,9 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 ### Display
 - **Display Type** - Allows you to change between Fullscreen, Borderless and Windowed modes.
 - **FPS Limiter** - Caps the game's frame rate using the built-in engine limiter, either at your monitor's refresh rate automatically or at a value you pick.
-- **internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling
+- **Internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling
 
-#### Graphics
+### Graphics
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures instead of using the game's inconsistent defaults.
 - **Console Gamma** - Restores the Xbox 360's darker gamma look with deeper blacks and stronger contrast.
 - **Enhanced LODs** - Improves level of detail (LOD) distances for models, terrain, trees, and object clusters, reducing the distance at which they switch to lower detail or stop rendering (Ultra High preset only).
