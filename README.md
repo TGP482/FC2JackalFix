@@ -120,5 +120,5 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 ### Credits
 - [Boggalog](https://www.nexusmods.com/profile/Boggalog) - Various fixes and [An Almost Complete Guide to Far Cry 2 Modding](https://www.nexusmods.com/farcry2/mods/299)
 - [scubrah](https://www.nexusmods.com/profile/scubrah) - Various fixes
-- [ThirteenAG](https://github.com/ThirteenAG) - [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) and Xbox 360 gamma
+- [ThirteenAG](https://github.com/ThirteenAG) - [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) and [Xbox 360 gamma](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix/blob/e5d53963cce44c38eacbad2e721ae023318ad0a5/source/consolegamma.ixx)
 - [FoxAhead](https://github.com/FoxAhead) - Various [Far Cry 2 Multi Fixer](https://github.com/FoxAhead/Far-Cry-2-Multi-Fixer) improvements
