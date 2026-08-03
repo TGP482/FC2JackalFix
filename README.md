@@ -31,7 +31,20 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 </div>
 
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures instead of using the game's inconsistent defaults.
-- **Console Gamma** - Restores the Xbox 360's darker gamma look with deeper blacks and stronger contrast.
+- **Xbox 360 Gamma** - Restores the Xbox 360's darker gamma look with deeper blacks and stronger contrast, reducing the washed out appearance.
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/99975709-f262-40d0-8ca2-93f295d7b8e2"></td>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/d6e2b079-7eaa-49de-8f48-b2e3884c67d2"></td>
+    </tr>
+    <tr>
+      <td align="center">Off</td>
+      <td align="center">On</td>
+    </tr>
+  </table>
+</div>
+
 - **Enhanced LODs** - Improves level of detail (LOD) distances for models, terrain, trees, and object clusters, reducing the distance at which they switch to lower detail or stop rendering (Ultra High preset only).
 - **Enhanced Shadow Range** - Extends shadow draw distance, allowing more vegetation to cast shadows and keeping static ambient shadows visible farther away (Ultra High preset only).
 - **Shadow Resolution** - Adjusts the resolution of sun and cascaded shadow maps.
@@ -92,7 +105,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Large Address Aware** - Patches the executable to increase the memory limit from 2 GB to 4 GB (may improve stability).
  
 ### Debug
-- Added various debug, these have to be applied to FC2JackalFix.ini beneath the ** [Debug]** section:
+- **Debug Options** - Apply these to FC2JackalFix.ini beneath the [Debug] section:
 - Invincibility = 0
 - InfiniteAmmo = 0
 - UnlockAllWeapons = 0
@@ -101,20 +114,6 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - NoclipKey = F1
 - Freecam = 0
 - FreecamKey = F2
-
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/aad65d76-2e53-43bd-b389-902ebd843700"></td>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/eed3b612-2a68-42bb-83ec-4ad895dc37e4"></td>
-    </tr>
-    <tr>
-      <td align="center">Utilization Off</td>
-      <td align="center">Utilization On</td>
-    </tr>
-  </table>
-</div>
-
 
 ### Credits
 - @Boggalog - Various fixes and [An Almost Complete Guide to Far Cry 2 Modding](https://www.nexusmods.com/farcry2/mods/299)
