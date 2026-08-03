@@ -108,14 +108,17 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
  
 ### Debug
 - **Debug Options** - Apply these to FC2JackalFix.ini beneath the [Debug] section:
-- Invincibility = 0
-- InfiniteAmmo = 0
-- UnlockAllWeapons = 0
-- Diamonds = 0
-- Noclip = 0
-- NoclipKey = F1
-- Freecam = 0
-- FreecamKey = F2
+```
+[Debug]
+Invincibility = 0
+InfiniteAmmo = 0
+UnlockAllWeapons = 0
+Diamonds = 0
+Noclip = 0
+NoclipKey = F1
+Freecam = 0
+FreecamKey = F2
+```
 
 ### Credits
 - [Boggalog](https://www.nexusmods.com/profile/Boggalog) - Various fixes and [An Almost Complete Guide to Far Cry 2 Modding](https://www.nexusmods.com/farcry2/mods/299)
