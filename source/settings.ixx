@@ -33,6 +33,7 @@ export enum Pref
     PREF_ANISOTROPICFILTERING,
     PREF_X360GAMMA,
     PREF_NORIMLIGHTING,
+    PREF_SATURATION,
     PREF_BEYONDULTRAGEOMETRY,
     PREF_BEYONDULTRASHADOWS,
     PREF_SHADOWRESOLUTION,
@@ -105,6 +106,10 @@ public:
         mPrefs[PREF_X360GAMMA] = std::clamp(iniReader.ReadInteger("Graphics", "Xbox360Gamma", 0), 0, 1);
 
         mPrefs[PREF_NORIMLIGHTING] = std::clamp(iniReader.ReadInteger("Graphics", "NoRimLighting", 0), 0, 1);
+
+        // 0 is greyscale, 0.5 the look the game ships, 1 the untouched asset colour. Negatives
+        // invert chroma, so the floor is 0; the ceiling is only there to keep a typo in range.
+        mPrefs[PREF_SATURATION] = std::clamp(iniReader.ReadFloat("Graphics", "Saturation", 0.5f), 0.0f, 4.0f);
 
         mPrefs[PREF_BEYONDULTRAGEOMETRY] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraGeometry", 3), 0, 3);
         mPrefs[PREF_BEYONDULTRASHADOWS] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraShadows", 1), 0, 1);

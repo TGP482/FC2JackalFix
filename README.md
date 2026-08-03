@@ -45,13 +45,14 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
   </table>
 </div>
 
-- **No Rim Lighting** - Removes the extra light the engine wraps around characters and cloth, which reads as a blue cast on the player's arms and on nearby vegetation at night.
+- **No Rim Lighting** - Removes the rim lighting glow on the edges of characters, mainly visible at night
+- **Saturation** - Adjust the saturation levels
 
 ### Beyond Ultra
 **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
 **Beyond Ultra Shadows** - Increases past the Ultra High shadow values: (0) default, (1) max draw distance
 **Shadow Resolution** - Resolution of the sun and cascaded shadow maps. 2048 is stock Ultra High, range: 128 - 16384
-**Beyond Ultra Terrain** - Increases past the Ultra High terrain values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
+**Beyond Ultra Terrain** - Increases past the Ultra High terrain values: (0) default, (1) 2x, (2) 4x, (3) max draw distanc
 
 ### Gameplay
 - **Remove Mouse Speed Cap** - Removes the engine's mouse movement speed limit.
