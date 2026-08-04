@@ -49,10 +49,10 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Saturation** - Adjust the saturation levels
 
 ### Beyond Ultra
-**Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
-**Beyond Ultra Shadows** - Increases past the Ultra High shadow values: (0) default, (1) max draw distance
-**Shadow Resolution** - Resolution of the sun and cascaded shadow maps. 2048 is stock Ultra High, range: 128 - 16384
-**Beyond Ultra Terrain** - Increases past the Ultra High terrain values: (0) default, (1) 2x, (2) 4x, (3) max draw distanc
+- **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
+- **Beyond Ultra Shadows** - Increases past the Ultra High shadow values: (0) default, (1) max draw distance
+- **Shadow Resolution** - Resolution of the sun and cascaded shadow maps. 2048 is stock Ultra High, range: 128 - 16384
+- **Beyond Ultra Terrain** - Increases past the Ultra High terrain values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
 
 ### Gameplay
 - **Remove Mouse Speed Cap** - Removes the engine's mouse movement speed limit.
@@ -78,6 +78,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Controller Look Sensitivity** - Adjusts controller look sensitivity beyond the in-game slider.
 - **Aim Assist** - Enables or disables controller aim assist.
 - **Vibration** - Restores controller vibration support.
+- **Prompts** - Added Xbox 360 button prompts (interactables only)
 
 ### Jackal Fixes
 - Fixed an issue where jump height was reduced at high FPS
