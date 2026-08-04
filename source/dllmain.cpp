@@ -20,7 +20,7 @@ import looksensitivity;
 import inputtoggles;
 import controller;
 import vibration;
-import buttonprompts;
+import controllerprompts;
 import loadingscreen;
 import systemdetection;
 import maxfps;

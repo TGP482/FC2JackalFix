@@ -53,6 +53,23 @@ export bool IsPadActiveDevice()
     return bPadIsActiveDevice;
 }
 
+// Fires on the flip, not on every input. Anything that only rebuilds when a page changes has no
+// other way to notice the player put the pad down mid screen.
+export JackalFix::Event<>& onInputDeviceChange()
+{
+    static JackalFix::Event<> InputDeviceChange;
+    return InputDeviceChange;
+}
+
+static void SetPadActiveDevice(bool bPad)
+{
+    if (bPadIsActiveDevice == bPad)
+        return;
+
+    bPadIsActiveDevice = bPad;
+    onInputDeviceChange().executeAll();
+}
+
 // 64 bit deliberately: two full scale axes square to 2,147,352,578, just over INT32_MAX.
 static bool ThumbOutsideDeadzone(int16_t sX, int16_t sY, int32_t nDeadzone)
 {
@@ -94,7 +111,7 @@ public:
                         || ThumbOutsideDeadzone(sThumbLX, sThumbLY, nLeftThumbDeadzone)
                         || ThumbOutsideDeadzone(sThumbRX, sThumbRY, nRightThumbDeadzone))
                     {
-                        bPadIsActiveDevice = true;
+                        SetPadActiveDevice(true);
                     }
                 });
             }
@@ -114,7 +131,7 @@ public:
                         return;
 
                     if (pKeyStates[nKey] & nPressedBit)
-                        bPadIsActiveDevice = false;
+                        SetPadActiveDevice(false);
                 });
             }
 
@@ -132,7 +149,7 @@ public:
                         return;
 
                     if (pFrameState[nMouseButtons + nButton] & nPressedBit)
-                        bPadIsActiveDevice = false;
+                        SetPadActiveDevice(false);
                 });
             }
 
@@ -147,7 +164,7 @@ public:
                         return;
 
                     if (pAccumulator[0] != 0 || pAccumulator[1] != 0)
-                        bPadIsActiveDevice = false;
+                        SetPadActiveDevice(false);
                 });
             }
         };
