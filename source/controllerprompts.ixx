@@ -58,6 +58,34 @@
   Pad navigation does not go near any of this. FUN_104F0FB0 splits on a device type crc at the top
   and the gamepad arm reaches FUN_104EF990 and FUN_104EF340, which touch neither bitmask.
 
+  The gameplay HUD is a different mechanism again, and console does not use sprites for it at all.
+  Each prompt builds a token, L"{use}" or L"{reload}" or L"{heal}", hands it to magma's expander at
+  xex 0x826AEDC0, and that walks the live action map and emits two character markup for every bound
+  pad button: ~AA for a, ~XX for x, ~YY for y, ~LB for left shoulder. The expanded string goes to
+  Text::SetText, and magma's text layout scans for a tilde, hashes the two characters after it and
+  draws the matching glyph inline.
+
+  All of that survived into Dunia.dll even though Far Cry 2's half of it did not. The scan is at
+  0x1061B1F8, CMP AX,0x7E; the code map is at renderer+0x468 with its end at +0x478; the value at
+  node+0x0C is a plain button id and the engine calls FUN_105362E0 on it itself. The map is filled
+  by the constructor at 0x1061BF60, keyed by zlib CRC-32 of the two characters, ids in FUN_10533F10
+  order: AA 0xA9601DBD -> 0, XX 0x560B1C65 -> 2, YY 0x38171DB2 -> 3, LB 0x85C7324A -> 6.
+
+  It still cannot be used, and this was tried before the Image below was written. Console's layout
+  binder reads both path and text off each prompt entry in hud.mgb.desc and resolves the named
+  t_button child, while PC's CHud::BuildFromLayout reads path alone; Interact_prompt, Reload_prompt,
+  Swap_prompt and t_button appear nowhere in Dunia.dll as strings. That much is only missing
+  plumbing. The blocker is the data: dumping every prompt subtree at runtime finds no t_button and
+  no magma::Text at all, so there is nothing to write markup into. A markup code that misses the
+  map draws nothing rather than printing itself, so this failure and an unwritten string look
+  identical on screen.
+
+  Two console prompts turn out not to exist. There is no bed or sleep prompt in either binary:
+  bedroll_readyToInteract is a GO state event and ActivateSleep an entity action, so a bed is an
+  ordinary usable entity and shows the plain interact prompt. And the phone is not a hudprompt at
+  all, just a CHud+0x1F4 member driven by a keyframe, with no call to the expander anywhere in its
+  path; console draws the ringing phone with no glyph on it.
+
   magma layout, which every offset below depends on:
 
       Widget + 0x08          -> State
@@ -442,6 +470,12 @@ static constexpr uint32_t nStringSizeLimit = 0x400;
 static constexpr ptrdiff_t nTextStatePointSize = 0x40;
 static constexpr int nMenuGlyphSizeNumerator = 36;
 static constexpr int nMenuGlyphSizeDenominator = 11;
+static constexpr int nMenuGlyphPixels = 30;
+
+// The one length in rect units whose size on screen is known, so everything else is measured
+// against it. The HUD has no label to derive a point size from and borrows this instead; it is
+// sound because magma is one flat unit space, Area::Draw pushing a translate and nothing else.
+static int32_t nCalibratedGlyphSide = 0;
 
 // If the point size cannot be read. 150 units was what the counted build fell back to, so it
 // takes the same 30 over 11 and lands on the same square whichever branch runs.
@@ -609,6 +643,8 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
     if (nSide < 1)
         return false;
 
+    nCalibratedGlyphSide = nSide;
+
     auto nGap = nSide * nMenuGlyphGapPercent / 100;
     auto nCentreY = (box.nTop + box.nBottom) / 2;
 
@@ -741,6 +777,253 @@ static void RefreshMenuGlyphs()
         ApplyMenuGlyph(*it);
         ++it;
     }
+}
+
+// --------------------------------------------------------------------------------------------
+// Gameplay HUD
+// --------------------------------------------------------------------------------------------
+
+/*
+  Console's mechanism does not port. It sets a t_button Text under each prompt container from an
+  expanded {use} or {reload} token, but the PC art pass took those containers out. A dump of every
+  prompt subtree at runtime found a_prompt_interact 01808B52 absent, t_button 1361D4C3 absent, and
+  across interact, switchweapon and the inventory family not one magma::Text anywhere: every
+  drawable is a Placeholder at vtable rva EE9EA4, an AreaInstance at EE6BB4 or an Image at EE6A04.
+  So the glyph is built as an Image, the way the nav bar's is.
+
+  The same dump gave the anchors to hang it off, by crc:
+
+      interact       a_interact_icon 7AD39F66 -> stain CB2D676F, i_use_icon FC09AC1D
+      switchweapon   a_weapon_switch 00E1C03A -> a_swap_icon 0509A605 -> i_stain 7395FC18,
+                     i_arrow 608F7549
+      inventory      a_inventory_icons 7A3A3A37 -> stain, i_watch E8B3D151, i_wrench A9264364,
+                     i_phone FCF70CAA, i_ied D43D37D9
+
+  Prompt+0x0C is the Area itself, not an element wrapping one; the child search runs straight off
+  it. Buttons come from the shipped console action map: use -> pad:a and pad:y, reload -> pad:x,
+  tryuseied -> pad:right_trigger, heal -> pad:left_shoulder. Console interacts with Y.
+*/
+
+// CHudPrompt, stride 0x60 on the manager's array. +0x08 is the show request, +0x0C the Area the
+// <Prompt path="..."> entry resolved to at layout build time.
+static constexpr ptrdiff_t nHudPromptName = 0x04;
+static constexpr ptrdiff_t nHudPromptShown = 0x08;
+static constexpr ptrdiff_t nHudPromptArea = 0x0C;
+
+// The call inside CHudPromptMgr::Update's per prompt loop, which hands the prompt over as ECX.
+static constexpr ptrdiff_t nHudPromptUpdateCall = 0x0E;
+
+// Square, in 720p pixels, converted through the menu glyph's calibrated side. Until a menu prompt
+// has been placed there is nothing to convert with, so the fallback is the older behaviour: a
+// share of the icon the glyph sits over. The gap stays relative to that icon either way.
+static constexpr int nHudGlyphGapPercent = 20;
+static constexpr int nHudGlyphFallbackPercent = 85;
+
+/*
+  Dead end: centring the glyph on the screen rather than on the icon beneath it.
+
+  Console does centre on the screen. Counted on 1280x720 captures, Xenia puts the interact glyph
+  across x 628..651 and the weapon swap glyph across 624..653, both centred on 639 give or take
+  the antialiasing, while the icons underneath are not symmetric about the screen at all: the swap
+  arrow's own pixels centre on 653. Centring on the anchor rect, which is what the code below
+  does, therefore lands 2 pixels right on interact and 3 on the swap. Both attempts to close that
+  gap failed and it is left open deliberately; two pixels are not worth a fragile placement.
+
+  The first attempt derived screen centre from the glyph calibration. Its own sanity check
+  rejected it every frame, so it never once ran.
+
+  The second read the canvas instead of guessing it. That much is solid and is worth keeping
+  written down. The canvas is not a constant anywhere in the binary; magma refills it from the
+  active screen's extent every frame in FUN_10AB59A0. CInputHandler's mouse event builder
+  FUN_104EFAD0 is where reading it is plainest, clamping a freshly moved cursor to it:
+
+      MOV   ECX,[0x10FD4588]          ; owner of the per thread table
+      MOV   EDI,[0x10F98AB8]          ; which slot of it
+      CALL  0x1002F880                ; the table
+      MOV   EAX,[EAX + EDI*4 + 0xC]   ; the render context
+      MOVZX EAX,word ptr [EAX + 0x34] ; canvas width
+      ...
+      MOVZX ECX,word ptr [ECX + 0x36] ; canvas height
+
+  with the other end of both clamps a literal zero, so the canvas origin is the top left corner.
+  Half that width still did not move the glyph, which points at the rects in this subtree being
+  local to a parent rather than absolute on the canvas. Nothing here can see a parent: a node
+  holds its children and no back pointer. FUN_10A97020 looks like the way through, since it is
+  what the cursor is hit tested against and the cursor is in canvas units, but that was not
+  followed up.
+*/
+
+// Position and size do not convert at the same rate in this tree, which no single affine
+// transform explains and which is not understood. The square is right: at nPixels 30 the interact
+// glyph measures 26 across and at 34 the swap glyph measures 30, a ratio of 1.15 against the 1.13
+// asked for, and both sit within a pixel or two of Xenia's 23 and 29. The offset is not. Two
+// captures whose anchors are pixel identical to the build before them put a requested 17 pixel
+// drop at 33 and a requested 12 at 23: a straight line of slope two.
+//
+// So the offset rate is measured rather than modelled. Every distance that positions the glyph
+// halves; the square does not.
+static constexpr int nHudOffsetHalving = 2;
+
+// Xbox button ids as FUN_10533F10 numbers them.
+static constexpr int32_t nPadX = 2;
+static constexpr int32_t nPadY = 3;
+static constexpr int32_t nPadRT = 5;
+static constexpr int32_t nPadLB = 6;
+
+// szAbove is both the sibling the glyph is added next to and the rect it is measured from.
+// nPixels is the square and nDown a downward nudge on top of the gap, both in 720p pixels.
+//
+// The two nudges are counted off the Xenia captures. Interact: console leaves 43 pixels between
+// the glyph and the hand, the port left 57. Weapon swap: 39 against 52. Rounded out of the
+// antialiasing on both bounds that is 17 down and 12 down. The inventory prompts have no console
+// capture to count against, so they take interact's number as the closer of the two.
+struct HudPrompt
+{
+    const char* szName;
+    int32_t nButton;
+    const char* szAbove;
+    int nPixels;
+    int nDown;
+};
+
+static constexpr std::array<HudPrompt, 8> sHudPrompts =
+{{
+    { "interact",     nPadY,  "i_use_icon", 30, 17 },
+    { "switchweapon", nPadY,  "i_arrow",    34, 12 },
+    { "watch",        nPadY,  "i_watch",    30, 17 },
+    { "ratchet",      nPadY,  "i_wrench",   30, 17 },
+    { "map",          nPadY,  "i_watch",    30, 17 },
+    { "ied",          nPadRT, "i_ied",      30, 17 },
+    { "syringe",      nPadLB, "i_watch",    30, 17 },
+    { "reload",       nPadX,  nullptr,      30, 17 },
+}};
+
+static const HudPrompt* FindHudPrompt(uint32_t nName)
+{
+    static const auto ids = []()
+    {
+        std::array<uint32_t, sHudPrompts.size()> v{};
+        for (size_t i = 0; i < sHudPrompts.size(); ++i)
+            v[i] = NameId(sHudPrompts[i].szName);
+        return v;
+    }();
+
+    for (size_t i = 0; i < sHudPrompts.size(); ++i)
+    {
+        if (ids[i] == nName)
+            return &sHudPrompts[i];
+    }
+
+    return nullptr;
+}
+
+// The glyph has to be a sibling of the icon it sits over, so the search reports the Area it found
+// the icon in rather than just the icon.
+static uint8_t* FindNamedDeepParent(uint8_t* pArea, uint32_t nWanted, uint8_t** ppParent, int nMaxDepth = 8, int nDepth = 0)
+{
+    if (!pArea || nDepth > nMaxDepth)
+        return nullptr;
+
+    uint8_t* pFound = nullptr;
+
+    ForEachChild(pArea, [&](uint32_t nId, uint8_t* pDrawable)
+    {
+        if (pFound)
+            return;
+
+        if (nId == nWanted)
+        {
+            pFound = pDrawable;
+            if (ppParent)
+                *ppParent = pArea;
+        }
+        else if (auto pSub = GetSubArea(pDrawable))
+        {
+            pFound = FindNamedDeepParent(pSub, nWanted, ppParent, nMaxDepth, nDepth + 1);
+        }
+    });
+
+    return pFound;
+}
+
+// Re-run every update rather than latched on first sight: the icon animates in, so a square taken
+// from its first frame is far too small and the lock mask then pins it there for good.
+static bool ComputeHudGlyphRect(uint8_t* pAnchor, const HudPrompt& prompt, Rect& out)
+{
+    auto anchor = ReadRect(GetState(pAnchor));
+    if (!anchor.Valid())
+        return false;
+
+    auto nHeight = anchor.nBottom - anchor.nTop;
+
+    auto nSide = nCalibratedGlyphSide > 0
+        ? nCalibratedGlyphSide * prompt.nPixels / nMenuGlyphPixels
+        : nHeight * nHudGlyphFallbackPercent / 100;
+
+    if (nSide < 1)
+        return false;
+
+    auto nGap = nHeight * nHudGlyphGapPercent / 100;
+
+    auto nCentreX = (anchor.nLeft + anchor.nRight) / 2;
+
+    auto nDrop = nCalibratedGlyphSide > 0
+        ? prompt.nDown * nCalibratedGlyphSide / (nMenuGlyphPixels * nHudOffsetHalving)
+        : 0;
+
+    out.nLeft = static_cast<int16_t>(nCentreX - nSide / 2);
+    out.nRight = static_cast<int16_t>(out.nLeft + nSide);
+    out.nBottom = static_cast<int16_t>(anchor.nTop - nGap + nDrop);
+    out.nTop = static_cast<int16_t>(out.nBottom - nSide);
+    return true;
+}
+
+static void ApplyHudGlyph(uint8_t* pPrompt, const HudPrompt& prompt)
+{
+    if (!GetPadButtonImage || !prompt.szAbove)
+        return;
+
+    auto pArea = *reinterpret_cast<uint8_t**>(pPrompt + nHudPromptArea);
+    if (!pArea || !IsReadable(pArea))
+        return;
+
+    static const auto nGlyphName = NameId("i_jackalfix_glyph");
+
+    uint8_t* pSiblingArea = nullptr;
+    auto pAnchor = FindNamedDeepParent(pArea, NameId(prompt.szAbove), &pSiblingArea);
+    if (!pAnchor || !pSiblingArea)
+        return;
+
+    auto pImage = FindNamedDeep(pSiblingArea, nGlyphName, 0);
+
+    if (!IsPadActiveDevice())
+    {
+        if (pImage)
+            *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = 0;
+
+        return;
+    }
+
+    auto nSprite = GetPadButtonImage(prompt.nButton);
+    if (nSprite == 0)
+        return;
+
+    if (!pImage)
+        pImage = BuildImageChild(pSiblingArea, nGlyphName);
+
+    auto pState = GetState(pImage);
+    if (!pState)
+        return;
+
+    Rect rect;
+    if (!ComputeHudGlyphRect(pAnchor, prompt, rect))
+        return;
+
+    ResetImageState(pState);
+    WriteRect(pState, rect);
+
+    *reinterpret_cast<uint32_t*>(pImage + nWidgetLockMask) = nAllComponentsLocked;
+    *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = nSprite;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -950,6 +1233,35 @@ public:
             //   ...
             //   8A 5C 24 20     MOV  BL,[ESP+0x20]    ; the same slot, low byte
             //   38 4C 24 24     CMP  [ESP+0x24],CL    ; the enable flag
+            // CHudPromptMgr::Update's per prompt loop. Hooking the call hands ECX over as the
+            // prompt.
+            //
+            //   8B FF           MOV  EDI,EDI          ; hot patch pad, and a useful anchor
+            //   D9 44 24 10     FLD  dword [ESP+0x10] ; dt
+            //   51              PUSH ECX
+            //   8B 0E           MOV  ECX,[ESI]        ; the prompt array
+            //   D9 1C 24        FSTP dword [ESP]
+            //   03 CB           ADD  ECX,EBX          ; ECX = &prompts[i], stride 0x60
+            //   E8 ? ? ? ?      CALL CHudPrompt::Update   <- hook
+            auto hudPromptPattern = dunia_pattern("8B FF D9 44 24 10 51 8B 0E D9 1C 24 03 CB E8 ? ? ? ? 83 C7 01 83 C3 60 3B 7E 04 72 E4");
+            if (!hudPromptPattern.empty() && GetPadButtonImage)
+            {
+                static auto HudPromptHook = safetyhook::create_mid(hudPromptPattern.get_first(nHudPromptUpdateCall), [](SafetyHookContext& regs)
+                {
+                    auto pPrompt = reinterpret_cast<uint8_t*>(regs.ecx);
+                    if (!pPrompt)
+                        return;
+
+                    // Nothing requested means the prompt is on its way out and its group hidden.
+                    if (*reinterpret_cast<uint32_t*>(pPrompt + nHudPromptShown) == 0)
+                        return;
+
+                    auto pEntry = FindHudPrompt(*reinterpret_cast<uint32_t*>(pPrompt + nHudPromptName));
+                    if (pEntry)
+                        ApplyHudGlyph(pPrompt, *pEntry);
+                });
+            }
+
             auto setCursorEnabledPattern = dunia_pattern("83 EC 14 8B 44 24 18 53 56 8B F1 50 8D 4C 24 0C 51 8B CE E8 ? ? ? ? 8B 10 8A 5C 24 20 33 C9 38 4C 24 24");
             if (!setCursorEnabledPattern.empty())
                 SetCursorEnabled = reinterpret_cast<SetCursorEnabled_t>(setCursorEnabledPattern.get_first());
