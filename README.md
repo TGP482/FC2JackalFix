@@ -1,5 +1,5 @@
 # Far Cry 2: Jackal Fix
-<img width="2000" height="877" alt="Far Cry 2: Jackal Fix" src="https://github.com/user-attachments/assets/fd15de0e-e7d8-43eb-af63-174af4cd4bd7"/>
+<img width="2000" height="877" alt="image (2)" src="https://github.com/user-attachments/assets/2d9357dc-5c84-432a-b452-7413448e9937" />
 
 ## Installation
 The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2JackalFix/releases) can be found in the Releases page.
