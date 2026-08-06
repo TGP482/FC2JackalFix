@@ -77,7 +77,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Controller Look Sensitivity** - Adjusts controller look sensitivity beyond the in-game slider.
 - **Aim Assist** - Enables or disables controller aim assist.
 - **Vibration** - Restores controller vibration support.
-- **Prompts** - Added Xbox 360 button prompts (interactables only)
+- **Prompts** - Restored Xbox 360 button prompts.
 
 ### Jackal Fixes
 - Fixed an issue where jump height was reduced at high FPS
@@ -101,7 +101,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed a case where the player could no longer save their game after completing certain missions
 - Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church
 - Fixed an issue with tape 9 repeating 
-- Fixed an issue where black squares flickered across the screen when using DirectX 10 with Bloom both enabled
+- Fixed an issue where black squares flickered across the screen when using DirectX 10 with Bloom enabled
 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.
