@@ -85,6 +85,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed an issue where the game could crash when changing the resolution at the main menu
 - Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution
 - Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner
+- Fixed an issue where character's hair, glasses and water rendered over certain smoke, dust and other 2D effects
 ### Community Fixes
 - Fixed an issue with hang gliders falling out of the sky when shot
 - Fixed an issue gliders bouncing on water
@@ -100,6 +101,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed a case where the player could no longer save their game after completing certain missions
 - Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church
 - Fixed an issue with tape 9 repeating 
+- Fixed an issue where black squares flickered across the screen when using DirectX 10 with Bloom both enabled
 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.

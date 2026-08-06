@@ -47,6 +47,8 @@ import glassdecals;
 import fpsfixes;
 import guiduplicates;
 import debug;
+import dx10fixes;
+import effectsorting;
 
 void Init()
 {
