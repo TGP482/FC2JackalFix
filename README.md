@@ -65,7 +65,6 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
 - **No Colored Signs** - Prevents road and safe house signs from tinting red or blue when they belong to an active objective.
-- **Lookback** - Included dedicated lookback button
 
 ### Field of View
 - **Field of View** - Adjusts the base gameplay field of view.
