@@ -1,89 +1,5 @@
 /*
-  Two artifacts with the same shape: geometry drawing over a 2D effect that is in front of it. A
-  character's transparent parts - hair, the lenses of glasses - paint over smoke and dust, and the
-  water surface paints over the glow of a fire burning at a shoreline. Different causes, both decided
-  as the draw is queued, so both live here.
-
-  Hair and glasses
-  Skin and clothing are opaque and draw in the Opaque pass, which writes depth. Anything on a
-  character carrying a blend mode is not: CSceneMeshRenderer::Submit skips the opaque pass ids the
-  material info cached and routes that sub-mesh into the blended family instead - BlendedNoWater,
-  BlendedBeforeWater or BlendedAfterWater, picked per frame from the view's water planes. With no
-  water in view the classifier returns above, so it lands in BlendedAfterWater, the bucket every smoke
-  and dust billboard lands in.
-
-  That bucket sorts on ascending key and, only where two items agree on the key, descending distance.
-  Everything in it is submitted with key 0, so distance is what orders it, and the two submitters do
-  not measure the same thing. A mesh reports the squared distance to its own centre; a particle
-  reports the squared distance to its emitter, once, for all hundred-odd billboards of that emitter.
-  A character half a metre away submits its hair at 0.22 while a plume whose emitter sits a metre off
-  submits every billboard at about 1.0, including the ones that have drifted between the character and
-  the camera. Larger distance draws first, so the plume goes down before the hair and the hair paints
-  over it. A capture of the artifact has hair at index 169 of a 185 item list, behind 169 particles.
-
-  Submitting them at key -1 moves them ahead of the whole particle layer and nothing else. That is the
-  key the engine's own blended prop submitter already uses, and the water surface is further ahead at
-  -1000, so the layering becomes water, blended geometry, effects.
-
-  Depth still does the real work in both directions, which is why one layer step is enough rather than
-  a sorting rewrite. Smoke in front of the head passes the body's depth test and now draws after the
-  hair, so it covers it; smoke behind the head fails that test and never reaches the hair. What is
-  left is smoke behind a fringe overhanging the body's silhouette, a far smaller error than the plume
-  sized hole it replaces and the only one a per-billboard distance could fix.
-
-  That argument holds only where opaque geometry sits directly behind the transparent surface, which
-  is what a character is and what a windscreen is not - nothing opaque stands behind vehicle glass, so
-  the same step would paint smoke over the inside of it. The skinning permutation separates the two:
-  every skinned draw gets that define OR'd into its 64 bit shader id, and only meshes bound to a
-  skeleton get it. Hair and glasses do; vehicle glass, world glass, foliage, decals and water do not.
-  The hair technique is tested as well, so hair stays covered on a build where its sub-mesh reaches
-  the list without the skinning bit.
-
-  Water over the fire glow
-  Not a sorting problem: the water surface is submitted into BlendedAfterWater at -1000, so everything
-  else in that pass already draws after it. Two other things put the effect behind it.
-
-  The first is which pass the effect lands in. CSceneParticleEmitterRenderer::Render classifies an
-  emitter against the view's water planes - entirely above goes to BlendedAfterWater, entirely below
-  to BlendedBeforeWater, straddling is submitted to both with a clip plane each. BlendedBeforeWater
-  has finished by the time the water pass starts, so anything there is simply painted over. The
-  classifier tests the emitter's bounding sphere rather than the particles it has already spawned, and
-  a plane's footprint is the water sector's axis aligned extents rather than the shape of the surface,
-  so a fire whose emitter sits below the water level anywhere inside those extents is called submerged
-  and its whole plume goes down early, however far above the water the flames actually are. The
-  straddling case is worse: one clip plane applied to a plume of camera facing billboards whose
-  extents have nothing to do with where the emitter was classified cuts the plume in half and leaves
-  the water showing through the gap, and the engine swaps which plane goes to which pass when a
-  refraction surface is active, which is a second way for the halves to end up the wrong way round.
-
-  Both arms are pointed at BlendedAfterWater, so a particle never takes part in the water split at
-  all. The cost is particles that really are submerged: they now draw over the surface rather than
-  beneath it, untinted. Bubbles and silt lose their tint, a plume on a shoreline stops being cut in
-  half. The mesh submitter keeps its own copy of the dispatch, since a blended prop that really is
-  under the surface should still draw beneath it, and unlike a plume its bounding sphere is its
-  geometry.
-
-  The second is the water's own depth prepass. Every water sub-mesh is submitted twice: once depth
-  only into DepthAlpha, and once as the surface into BlendedAfterWater. DepthAlpha runs seventeen
-  passes earlier, before anything blended, so the water has written depth across its whole surface
-  before an effect is ever drawn and every billboard behind it fails the depth test. It is not blended
-  under the water, it is discarded - which reads as the water drawing over it, and which also makes
-  BlendedBeforeWater pointless in practice, since the whole purpose of that pass is to draw things
-  meant to be seen through the water. The depth only submission is skipped for the transparent surface
-  by forcing the branch that gates it, which is the path the game already takes with the water prepass
-  switched off in the render config.
-
-  There are two submitters to do that to, and which one a body of water uses is not obvious from the
-  game. CWaterRenderer::Render passes the real squared distance to the sector, which is the river path
-  behind the WaterRiver technique; CSceneMeshRenderer::Submit has its own water branch that hardcodes
-  a key of -1000 and a distance of exactly zero, which is the one behind the technique that reads
-  Water. A scene can contain either, so both are patched.
-
-  The surface itself is unaffected, which is the part worth being sure of before touching this: its
-  own draw takes render state block #0 from the material info at +0x28, not the depth equal companion
-  at +0x30 the opaque Z-prepass path uses, so nothing about it compares equal against the depth this
-  submission was producing. Opaque geometry behind the water writes its own depth in the same prepass
-  and still occludes normally.
+Fix for hair, glasses, and water rendering over 2D elements due to sorting issues.
 */
 
 module;
@@ -286,7 +202,6 @@ static void ForceJump(uint8_t* pBranch, int32_t nDistance)
     injector::WriteMemory<uint8_t>(pBranch + 5, nNop, true);
 }
 
-// Not exposed in the ini. Plain bug fixes.
 class EffectSorting
 {
 public:
