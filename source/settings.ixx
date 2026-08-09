@@ -12,6 +12,7 @@ export enum Pref
 {
     PREF_SKIPINTRO,
     PREF_SKIPTITLESCREEN,
+    PREF_SKIPTUTORIALS,
     PREF_FIELDOFVIEW,
     PREF_VIEWMODELFIELDOFVIEW,
     PREF_IRONSIGHTFIELDOFVIEW,
@@ -73,6 +74,9 @@ public:
         CIniReader iniReader("");
         mPrefs[PREF_SKIPINTRO] = std::clamp(iniReader.ReadInteger("General", "SkipIntro", 1), 0, 1);
         mPrefs[PREF_SKIPTITLESCREEN] = std::clamp(iniReader.ReadInteger("General", "SkipTitleScreen", 1), 0, 1);
+
+        mPrefs[PREF_SKIPTUTORIALS] = std::clamp(iniReader.ReadInteger("General", "SkipTutorials", 0), 0, 2);
+
         mPrefs[PREF_CPUAFFINITY] = std::clamp(iniReader.ReadInteger("General", "CpuAffinity", 0), 0, 64);
         mPrefs[PREF_UTILISATION] = std::clamp(iniReader.ReadInteger("General", "Utilisation", 1), 0, 1);
         mPrefs[PREF_HIGHPRECISIONTIMER] = std::clamp(iniReader.ReadInteger("General", "HighPrecisionTimer", 1), 0, 1);
@@ -107,8 +111,6 @@ public:
 
         mPrefs[PREF_NORIMLIGHTING] = std::clamp(iniReader.ReadInteger("Graphics", "NoRimLighting", 0), 0, 1);
 
-        // 0 is greyscale, 0.5 the look the game ships, 1 the untouched asset colour. Negatives
-        // invert chroma, so the floor is 0; the ceiling is only there to keep a typo in range.
         mPrefs[PREF_SATURATION] = std::clamp(iniReader.ReadFloat("Graphics", "Saturation", 0.5f), 0.0f, 4.0f);
 
         mPrefs[PREF_BEYONDULTRAGEOMETRY] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraGeometry", 3), 0, 3);

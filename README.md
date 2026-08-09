@@ -101,7 +101,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - Fixed a case where the player could no longer save their game after completing certain missions
 - Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church
 - Fixed an issue with tape 9 repeating 
-- Fixed an issue where black squares flickered across the screen when using DirectX 10 with Bloom both enabled
+- Fixed an issue where black squares flickered across the screen when using DirectX 10 with Bloom enabled
 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.
@@ -110,6 +110,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 ### General
 - **Skip Intro** - Skips the Ubisoft, Dunia, and rating screens.
 - **Skip Title Screen** - Skips the "Press any key" title screen and boots straight to the main menu.
+- **Skip Tutorials** - Skips tutorial messages: (0) default, (1) the pop-ups that interrupt gameplay, (2) also the floating on-screen hints
 - **CPU Affinity** - Limits the game to the first logical processor (may improve performance on systems with many CPU cores).
 - **High Precision Timer** - Forces 1ms timer resolution in Window, so the loading screen reaches the proper 30 FPS.
 - **Skip System Detection** - Skips redundant hardware detection, making game startup up much faster.

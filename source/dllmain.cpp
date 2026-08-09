@@ -38,6 +38,7 @@ import limitedsaving;
 import saveonmissioncomplete;
 import blinkingitems;
 import coloredsigns;
+import tutorialmessages;
 import glider;
 import truck;
 import dlcvehiclecolors;
