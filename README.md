@@ -65,7 +65,6 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
 - **No Colored Signs** - Prevents road and safe house signs from tinting red or blue when they belong to an active objective.
-- **Lookback** - Included dedicated lookback button
 
 ### Field of View
 - **Field of View** - Adjusts the base gameplay field of view.
@@ -77,7 +76,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 - **Controller Look Sensitivity** - Adjusts controller look sensitivity beyond the in-game slider.
 - **Aim Assist** - Enables or disables controller aim assist.
 - **Vibration** - Restores controller vibration support.
-- **Prompts** - Added Xbox 360 button prompts (interactables only)
+- **Prompts** - Restored Xbox 360 button prompts.
 
 ### Jackal Fixes
 - Fixed an issue where jump height was reduced at high FPS
