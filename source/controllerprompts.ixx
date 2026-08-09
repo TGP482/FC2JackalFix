@@ -479,6 +479,15 @@ static constexpr ptrdiff_t nPromptAttached = 0x51;
 static constexpr size_t nPromptSize = 0x54;
 static constexpr ptrdiff_t nPromptVtableRva = 0xE25054;
 
+// Xbox button ids as FUN_10533F10 numbers them.
+static constexpr int32_t nPadA = 0;
+static constexpr int32_t nPadB = 1;
+static constexpr int32_t nPadX = 2;
+static constexpr int32_t nPadY = 3;
+static constexpr int32_t nPadRT = 5;
+static constexpr int32_t nPadLB = 6;
+static constexpr int32_t nPadRB = 7;
+
 // magma::Node. FUN_10AB13F0 is the engine's setter for bit 0 and FUN_10AB1A10 gates both drawing
 // and child recursion on it, so clearing it takes the pill and everything under it off screen.
 static constexpr ptrdiff_t nNodeFlags = 0x34;
@@ -534,8 +543,65 @@ static int32_t nCalibratedGlyphSide = 0;
 // takes the same 30 over 11 and lands on the same square whichever branch runs.
 static constexpr int nMenuGlyphSideFallback = 409;
 
-// Beside the label.
-static constexpr int nMenuGlyphGapPercent = 40;
+// Beside the label. Counted between the glyph and the nearest letter on a 1280x720 capture of the
+// console display options: 7 pixels on "(B) Back", 7 on "(X) Default", 10 on "Apply (Y)" and 9 on
+// "Accept (A)". The tighter end is the one to take: the wider two are the labels whose nearest
+// letter is a "y", which stops short of the glyph on its own.
+//
+// Held against the disc rather than against the unit space, so it is 6 pixels only where it was
+// counted and stays the same share of the glyph everywhere else. Both are lengths across, so the
+// scale divides out and the ratio survives any resolution or aspect. Fixing it in units instead
+// leaves it growing with the display's width while the glyph grows with its height, which reads
+// loose on an ultrawide.
+static constexpr int nMenuGlyphGapPixels = 6;
+static constexpr int nMenuGlyphRoundPixels = 31;
+
+// The quad is not the glyph, so the gap cannot be counted against the side. The sprite carries
+// its own transparent margin, and the rect sizes the quad the sprite draws into rather than the
+// disc inside it. The gap the player sees starts at the disc, a margin's worth of nothing further
+// in than where the rect ends.
+//
+// Solved rather than counted, since neither edge of the margin is visible to count. Three builds
+// of this file ask for the gap in three different lengths, 0.4, 0.2 and 4/7 of the side, and
+// their captures read 43, 54 and 30 pixels between the "(B) Back" glyph and its label. Two
+// unknowns against three readings, and the quad comes out 65.0, 65.0 and 64.9 pixels across with
+// the disc at 34.0, 34.0 and 34.3, which is the 34 the disc measures on the capture directly.
+//
+// The disc is the fraction of the quad, not a length, so both hold at any size or aspect: the
+// margin is half of what the quad has over the disc, taken off whatever the quad works out to.
+static constexpr int nMenuGlyphQuadPixels = 65;
+static constexpr int nMenuGlyphDiscPixels = 34;
+
+/*
+  The unit space is not square on screen, which is the whole of the stretch.
+
+  A rect as wide as it is tall does not draw that way. Differencing two captures for a clean edge
+  puts the disc at 34 across against 31 down, from a square rect, and it holds from a tenth of the
+  sprite's peak up through a third of it. Console draws the same sprite round, so the sprite is
+  not carrying an oval and the space is.
+
+  The space is fixed and stretched to whatever the display is, so the correction is one aspect
+  against the other and nothing else needs measuring. 16 over 9 of display against the 34 over 31
+  the glyph came out at leaves the space itself at 1.62 wide to 1 tall. Counting the width against
+  that puts a 4:3 display wider in units and a 21:9 display narrower, both landing square, and
+  leaves the height alone so the glyph still scales with the screen the way the rest of the UI
+  does.
+
+  Every round glyph takes it, the nav bar, the HUD and the bazaar alike, since all three write a
+  square rect and all three came out oval. The bazaar's category arrows do not: that quad is a
+  pill counted whole off a capture with this stretch already in it, and it wants its own capture
+  before it moves.
+*/
+static constexpr int nUiSpaceWide = 162;
+static constexpr int nUiSpaceHigh = 100;
+
+// If the window cannot be measured. The space was solved at 1280x720, so falling back to it
+// leaves the glyph exactly where the capture put it.
+static constexpr int nFallbackScreenWide = 1280;
+static constexpr int nFallbackScreenHigh = 720;
+
+// Below this a client rect is a window being built or torn down, not a display.
+static constexpr int nScreenSizeFloor = 64;
 
 // FUN_10AB4F50. Anchored past the SEH prologue, on the two null checks that reach the font
 // through Text+0x58, since the prologue itself is shared with every other guarded function.
@@ -656,16 +722,38 @@ static int32_t TextLeftInBox(int32_t nAlign, int32_t nBoxWidth, int32_t nTextWid
     return 0;
 }
 
-// Console puts the glyph outboard, and the slots are fixed: b_prompt1 is the rightmost and
-// b_prompt4 the leftmost. Console's display options splits four that way, "(B) Back" b_prompt4
-// and "(X) Default" b_prompt3 in front of their labels against "Apply (Y)" b_prompt2 and
-// "Accept (A)" b_prompt1 behind. The node the prompt hangs off carries the slot's name crc.
-//
-// Comparing element rects across the prompt set was the first attempt and gets a lone prompt
-// wrong: the main menu shows only "Accept (A)", and with nothing to span, a midpoint puts it in
-// front of the label where console puts it behind.
+/*
+  Console puts the glyph outboard, and the button picks the side rather than the slot.
+
+  Its quit box reads "(B) Cancel" against "Accept (A)" with B on b_prompt2, while its display
+  options reads "Accept (A)" and "Apply (Y)" behind their labels with "(X) Default" and "(B) Back"
+  in front, on b_prompt3 and b_prompt4. A and Y sit behind in both, B and X in front, so b_prompt2
+  lands on either side depending on what it carries.
+
+  The slots decide it only where there is no button: b_prompt1 is the rightmost and b_prompt4 the
+  leftmost, and the node the prompt hangs off carries the slot's name crc. +0x4C reads 0x5C on
+  those, which no button id matches.
+
+  Comparing element rects across the prompt set was the first attempt and gets a lone prompt
+  wrong: the main menu shows only "Accept (A)", and with nothing to span, a midpoint puts it in
+  front of the label where console puts it behind.
+*/
 static bool GlyphSitsRight(uint8_t* pPrompt)
 {
+    switch (*reinterpret_cast<int32_t*>(pPrompt + nPromptButtonId))
+    {
+    case nPadA:
+    case nPadY:
+        return true;
+
+    case nPadB:
+    case nPadX:
+        return false;
+
+    default:
+        break;
+    }
+
     auto pNode = *reinterpret_cast<uint8_t**>(pPrompt + nPromptNode);
     if (!pNode)
         return false;
@@ -700,6 +788,63 @@ static int32_t CalibrateGlyphSide(uint8_t* pArea)
     return nCalibratedGlyphSide;
 }
 
+// The surface the unit space is stretched across. Walked out of this process rather than asked
+// for as the active window, since the glyph is placed from the input thread as well as the game
+// thread and the active window is per thread.
+static HWND hGameWindow = nullptr;
+
+static BOOL CALLBACK TakeGameWindow(HWND hWindow, LPARAM)
+{
+    DWORD nProcess = 0;
+    GetWindowThreadProcessId(hWindow, &nProcess);
+
+    if (nProcess != GetCurrentProcessId() || !IsWindowVisible(hWindow))
+        return TRUE;
+
+    hGameWindow = hWindow;
+    return FALSE;
+}
+
+static void ScreenSize(int32_t& nWide, int32_t& nHigh)
+{
+    nWide = nFallbackScreenWide;
+    nHigh = nFallbackScreenHigh;
+
+    if (!IsWindow(hGameWindow))
+    {
+        hGameWindow = nullptr;
+        EnumWindows(TakeGameWindow, 0);
+    }
+
+    RECT client{};
+    if (!hGameWindow || !GetClientRect(hGameWindow, &client))
+        return;
+
+    auto nClientWide = static_cast<int32_t>(client.right - client.left);
+    auto nClientHigh = static_cast<int32_t>(client.bottom - client.top);
+
+    if (nClientWide < nScreenSizeFloor || nClientHigh < nScreenSizeFloor)
+        return;
+
+    nWide = nClientWide;
+    nHigh = nClientHigh;
+}
+
+// The width that draws as square as the side is tall, whatever the display is shaped like. It
+// takes the side rather than reading the calibrated one, since the three pages size their glyphs
+// differently and only the shape is shared.
+static int32_t GlyphWidth(int32_t nSide)
+{
+    int32_t nScreenWide = 0;
+    int32_t nScreenHigh = 0;
+    ScreenSize(nScreenWide, nScreenHigh);
+
+    auto nWide = nSide * nUiSpaceWide / nUiSpaceHigh;
+    nWide = nWide * nScreenHigh / nScreenWide;
+
+    return nWide > 0 ? nWide : nSide;
+}
+
 static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
 {
     static const auto nLabelName = NameId("t_button_text");
@@ -720,24 +865,37 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
         nCalibratedGlyphSide = nSide;
     }
 
-    auto nGap = nSide * nMenuGlyphGapPercent / 100;
+    auto nWide = GlyphWidth(nSide);
+
+    // Both come off the width the display worked out, not off the side, so the glyph keeps its
+    // proportions wherever it lands. Taking the margin here leaves the gap measured to the disc.
+    auto nDisc = nWide * nMenuGlyphDiscPixels / nMenuGlyphQuadPixels;
+    auto nMargin = (nWide - nDisc) / 2;
+    auto nGap = nDisc * nMenuGlyphGapPixels / nMenuGlyphRoundPixels - nMargin;
+
     auto nCentreY = (box.nTop + box.nBottom) / 2;
 
     out.nTop = static_cast<int16_t>(nCentreY - nSide / 2);
     out.nBottom = static_cast<int16_t>(out.nTop + nSide);
 
-    // Without a font there is nothing to measure and nothing to sit against, so the box edge
-    // stands in and a centred label leaves a gap until the next attach.
+    // The measurement is the branch that runs. The three captures the margin was solved from all
+    // sit against the text and not against the label rect, which is only true of this branch, so
+    // the box edge below is a fallback and nothing more.
+    //
+    // An empty label measures zero rather than failing, and zero is the one width that must not
+    // be taken: a centred label of no width puts both edges on the box's midpoint, which is where
+    // the text will be, so the glyph lands on top of it. The box edge is wrong by the padding but
+    // it is wrong outboard, where a glyph waiting for its label belongs.
     auto nBoxWidth = box.nRight - box.nLeft;
     auto nTextWidth = MeasureTextWidth(pText, nBoxWidth);
-    auto bMeasured = nTextWidth >= 0;
+    auto bMeasured = nTextWidth > 0;
 
     auto nAlign = *reinterpret_cast<int32_t*>(pText + nTextAlignX);
     auto nTextLeft = bMeasured ? box.nLeft + TextLeftInBox(nAlign, nBoxWidth, nTextWidth) : box.nLeft;
     auto nTextRight = bMeasured ? nTextLeft + nTextWidth : box.nRight;
 
-    out.nLeft = static_cast<int16_t>(bRightSide ? nTextRight + nGap : nTextLeft - nGap - nSide);
-    out.nRight = static_cast<int16_t>(out.nLeft + nSide);
+    out.nLeft = static_cast<int16_t>(bRightSide ? nTextRight + nGap : nTextLeft - nGap - nWide);
+    out.nRight = static_cast<int16_t>(out.nLeft + nWide);
     return true;
 }
 
@@ -1025,15 +1183,6 @@ static constexpr int nHudGlyphFallbackPercent = 85;
 // halves; the square does not.
 static constexpr int nHudOffsetHalving = 2;
 
-// Xbox button ids as FUN_10533F10 numbers them.
-static constexpr int32_t nPadA = 0;
-static constexpr int32_t nPadB = 1;
-static constexpr int32_t nPadX = 2;
-static constexpr int32_t nPadY = 3;
-static constexpr int32_t nPadRT = 5;
-static constexpr int32_t nPadLB = 6;
-static constexpr int32_t nPadRB = 7;
-
 // szAbove is both the sibling the glyph is added next to and the rect it is measured from.
 // nPixels is the square and nDown a downward nudge on top of the gap, both in 720p pixels.
 //
@@ -1135,8 +1284,11 @@ static bool ComputeHudGlyphRect(uint8_t* pAnchor, const HudPrompt& prompt, Rect&
         ? prompt.nDown * nCalibratedGlyphSide / (nMenuGlyphPixels * nHudOffsetHalving)
         : 0;
 
-    out.nLeft = static_cast<int16_t>(nCentreX - nSide / 2);
-    out.nRight = static_cast<int16_t>(out.nLeft + nSide);
+    // Centred on the anchor, so the narrower width costs nothing but the stretch.
+    auto nWide = GlyphWidth(nSide);
+
+    out.nLeft = static_cast<int16_t>(nCentreX - nWide / 2);
+    out.nRight = static_cast<int16_t>(out.nLeft + nWide);
     out.nBottom = static_cast<int16_t>(anchor.nTop - nGap + nDrop);
     out.nTop = static_cast<int16_t>(out.nBottom - nSide);
     return true;
@@ -1660,10 +1812,14 @@ static bool ComputeBazaarGlyphRect(uint8_t* pLabel, Rect& out)
     auto nGap = nBase * nBazaarGapPixels / nBazaarGlyphMeasured;
     auto nCentreY = (box.nTop + box.nBottom) / 2;
 
+    // Hung off the bar's edge, so the narrower width takes the glyph in from the left and leaves
+    // the counted two pixels where they were.
+    auto nWide = GlyphWidth(nSide);
+
     out.nTop = static_cast<int16_t>(nCentreY - nSide / 2);
     out.nBottom = static_cast<int16_t>(out.nTop + nSide);
-    out.nLeft = static_cast<int16_t>(-(nGap + nSide));
-    out.nRight = static_cast<int16_t>(out.nLeft + nSide);
+    out.nLeft = static_cast<int16_t>(-(nGap + nWide));
+    out.nRight = static_cast<int16_t>(out.nLeft + nWide);
     return true;
 }
 
@@ -2079,6 +2235,50 @@ public:
                     sAttachedPrompts.insert(pPrompt);
                     ApplyMenuGlyph(pPrompt);
                 });
+
+                /*
+                  The attach is the wrong moment to measure, so the placement is redone every
+                  frame instead of once.
+
+                  Attaching runs CNavBarPrompt::SetText four instructions ahead of the SetIcon
+                  hooked above, but with whatever the .desc carried, and the message box carries
+                  no words: common.mgb.desc gives MESSAGEBOX its buttons and not its labels, so
+                  "Cancel" and "Accept" arrive from the page afterwards. Measuring an empty label
+                  is not an error the engine reports, it is a width of nothing, and a centred
+                  label of no width puts both of its edges on the box's midpoint, which is where
+                  the text lands. That is what put the glyphs on top of the words until a pad
+                  press refreshed them.
+
+                  Hooking the tail of SetText, so the label is in the widget first, was tried and
+                  did not take. Every path that sets a label goes through FUN_10536270 and only
+                  SetText calls it, so the lever is the right one; what it does not answer is
+                  which of SetText and OnAttach runs last, and the glyph is only right if the
+                  measurement is the later of the two.
+
+                  Redrawing answers it without having to know. magma::ScreenManager::Draw runs the
+                  whole UI once a frame, so a placement taken here is measured against whatever
+                  the label says now. It costs a tree walk and a text measurement for at most four
+                  prompts, and nothing at all outside a menu, where the set is empty. The HUD is
+                  already placed this way for the same reason: its icon animates in, and a size
+                  taken from the first frame stays wrong.
+
+                  Hooked past the register saves rather than on the entry, which is a call target.
+
+                    51 53 55 56 57    PUSH ECX / EBX / EBP / ESI / EDI
+                    8B F9             MOV  EDI,ECX          <- hook
+                    8B 0D ? ? ? ?     MOV  ECX,[the quad builder]
+                    8B 01 8B 50 1C    its vtable, +0x1C
+                    6A 01 FF D2       CALL it with 1
+                */
+                static constexpr ptrdiff_t nUiDrawEntry = 0x05;
+                auto uiDrawPattern = dunia_pattern("51 53 55 56 57 8B F9 8B 0D ? ? ? ? 8B 01 8B 50 1C 6A 01 FF D2 8B 0D ? ? ? ? 8B 35 ? ? ? ? E8");
+                if (!uiDrawPattern.empty())
+                {
+                    static auto UiDrawHook = safetyhook::create_mid(uiDrawPattern.get_first(nUiDrawEntry), [](SafetyHookContext&)
+                    {
+                        RefreshMenuGlyphs();
+                    });
+                }
 
                 // Fired from the input drivers, so this lands on whichever thread saw the input.
                 // The writes are a sprite pointer, a rect and two flag words, so the worst a race
