@@ -31,6 +31,7 @@ import saturation;
 import x360gamma;
 import borderless;
 import internalres;
+import modereapply;
 import affinity;
 import utilisation;
 import largeaddressaware;
@@ -50,6 +51,7 @@ import guiduplicates;
 import debug;
 import dx10fixes;
 import effectsorting;
+import jackalfixmenu;
 
 void Init()
 {

@@ -14,12 +14,12 @@ import settings;
 //
 // Dunia already has all three. It just never exposes the choice coherently: the window style comes
 // from an undocumented "-borderless" command-line switch with no entry in the video options, and
-// everything else - which resolution path runs, whether the D3D9 device goes exclusive, whether the
-// cursor is hidden - hangs off a single derived flag that the video options own.
+// everything else, from which resolution path runs to whether the D3D9 device goes exclusive and
+// whether the cursor is hidden, hangs off a single derived flag that the video options own.
 //
 // That flag is the whole mechanism. InitDuniaEngine computes it once at 0x10005367 from the render
-// config's Fullscreen property - registered under that name in FUN_10402210, which writes offset
-// 0x28 for "Fullscreen" and 0x2C for "Maximized" - and from there it fans out to:
+// config's Fullscreen property, registered under that name in FUN_10402210, which writes offset
+// 0x28 for "Fullscreen" and 0x2C for "Maximized". From there it fans out to:
 //
 //   the window position   the saved WindowPos X/Y are only read when neither Fullscreen nor
 //                         Maximized is set, so a fullscreen profile leaves the window at 0,0
@@ -27,7 +27,7 @@ import settings;
 //   the resolution path   `0x10F92040`, which picks between GetClientRect and walking
 //                         EnumDisplaySettings for the nearest mode <= the request
 //   the device            the same byte is field +0x08 of the engine-init params at 0x10F92038,
-//                         whose first 0x2C bytes become the renderer's device config - and
+//                         whose first 0x2C bytes become the renderer's device config, and
 //                         D3DPRESENT_PARAMETERS.Windowed, FullScreen_RefreshRateInHz and
 //                         PresentationInterval are all derived from it
 //
@@ -37,42 +37,43 @@ import settings;
 //
 // Three things need saying about the details.
 //
-// **The flag is forced twice, in two different places, and both are necessary.** The one at engine
-// init drives the window and the boot-time resolution choice. The device config is a *copy* of
-// those params taken at device creation, and the render manager recomputes its fullscreen byte from
-// the live device state whenever the video options change - renderer vtable +0x134 is a
-// GetPresentParameters call returning `Windowed == 0` - so without a second write inside
+// The flag is forced twice, in two different places, and both are necessary. The one at engine
+// init drives the window and the boot-time resolution choice. The device config is a copy of
+// those params taken at device creation, and the render manager recomputes its fullscreen byte
+// from the live device state whenever the video options change, renderer vtable +0x134 being a
+// GetPresentParameters call returning Windowed == 0, so without a second write inside
 // SetResolution the mode would drift the first time the player touched the video options. The
 // second write lands before SetResolution's three-branch block reads the byte, which also keeps the
 // aspect ratio coherent: the fullscreen branch takes the config's stored aspect and the windowed
-// branches derive it from the resolution, so clearing the byte after the branch - as the old
-// borderless option did - produced a windowed device carrying a fullscreen aspect.
+// branches derive it from the resolution, so clearing the byte after the branch, as the old
+// borderless option did, produced a windowed device carrying a fullscreen aspect.
 //
-// **Borderless has to defeat Maximized as well.** It is a real registered property, not a dead
+// Borderless has to defeat Maximized as well. It is a real registered property rather than a dead
 // field, and the last thing InitDuniaEngine does is ShowWindow(SW_MAXIMIZE) when it is set. On a
 // WS_POPUP window sized to cover the display, maximising snaps it to the work area and the taskbar
 // reappears over the game.
 //
-// **None of this writes the user's saved video options.** Every write is to a derived flag or to
+// None of this writes the user's saved video options. Every write is to a derived flag or to
 // the renderer's per-run copy, so turning DisplayMode off restores stock behaviour with nothing
 // left behind. The consequence is that the Fullscreen entry in the video options still shows what
-// the player saved and no longer decides anything - DisplayMode outranks it.
+// the player saved and no longer decides anything, DisplayMode outranking it.
 //
 // Two more things, both of which are why nobody ever used windowed mode.
 //
-// **The engine asks for a device reset every time it is asked whether one is needed, forever.**
+// The engine asks for a device reset every time it is asked whether one is needed, forever.
 // FUN_1033C7E0 decides that. It calls GetClientRect and compares the result against the render
-// config's resolution at 0x1033C933; if they differ it runs AdjustWindowRectEx over the *config*
-// resolution and, for a window that is not WS_POPUP, compares the result against SM_CXFULLSCREEN /
-// SM_CYFULLSCREEN at 0x1033C9F9. Bigger than either and it returns "device change needed".
+// config's resolution at 0x1033C933; if they differ it runs AdjustWindowRectEx over the config
+// resolution rather than the client one and, for a window that is not WS_POPUP, compares the
+// result against SM_CXFULLSCREEN / SM_CYFULLSCREEN at 0x1033C9F9. Bigger than either and it
+// returns "device change needed".
 //
-// Ask for a resolution equal to the desktop - the obvious thing to do - and a bordered window can
-// never satisfy that, because the frame alone puts it over. The client rect can then never equal
-// the config resolution either, so the test is reached on every call and answers the same way every
-// time. Nothing converges: the clamp it computes goes into renderMgr+0x330, which the function
-// itself zeroes on entry, and the comparison is always against the unclamped config. The result is
-// a release/Reset/restore cycle several times a second, forever, which is what the low erratic
-// frame rate actually was.
+// Ask for a resolution equal to the desktop, which is the obvious thing to do, and a bordered
+// window can never satisfy that, because the frame alone puts it over. The client rect can then
+// never equal the config resolution either, so the test is reached on every call and answers the
+// same way every time. Nothing converges: the clamp it computes goes into renderMgr+0x330, which
+// the function itself zeroes on entry, and the comparison is always against the unclamped config.
+// The result is a release/Reset/restore cycle several times a second, forever, which is what the
+// low erratic frame rate actually was.
 //
 // Fullscreen returns before reaching it while the renderer answers the fullscreen query truthfully.
 // Borderless takes the WS_POPUP branch, where the adjusted size equals the requested size because a
@@ -81,17 +82,17 @@ import settings;
 // comparison in every mode. That is the smallest edit that makes the answer "no change needed"
 // without touching the clamp, the config, or the other reasons the function can ask for a reset.
 //
-// **And the presentation parameters are wrong for a composed window.** SetResolution hardcodes
-// PresentationInterval to D3DPRESENT_INTERVAL_IMMEDIATE for any windowed device - 0x104235CF,
-// unconditional, the config's own vsync value only ever reaches the fullscreen branch - and leaves
-// BackBufferCount at zero, which D3D9 reads as one.
+// And the presentation parameters are wrong for a composed window. SetResolution hardcodes
+// PresentationInterval to D3DPRESENT_INTERVAL_IMMEDIATE for any windowed device at 0x104235CF,
+// unconditionally, the config's own vsync value only ever reaching the fullscreen branch, and
+// leaves BackBufferCount at zero, which D3D9 reads as one.
 //
 // Exclusive fullscreen does not care: it flips. Borderless does not care either, because a popup
 // covering the whole display gets an independent flip out of the compositor and never touches the
 // redirection surface. A bordered window is again the one case that takes the composed blit path,
-// and there those two values are the worst possible pair. IMMEDIATE buys nothing - a composed
-// window cannot tear, the compositor owns the vblank - so all it does is let the game run ahead and
-// then block inside Present. With a single backbuffer there is nothing to absorb the jitter. So
+// and there those two values are the worst possible pair. IMMEDIATE buys nothing, since a composed
+// window cannot tear and the compositor owns the vblank, so all it does is let the game run ahead
+// and then block inside Present. With a single backbuffer there is nothing to absorb the jitter. So
 // windowed asks for INTERVAL_ONE and two backbuffers instead; the ceiling was the refresh rate
 // either way.
 
@@ -102,7 +103,7 @@ import settings;
 // device Reset and present parameters have no counterpart in the D3D10 renderer, whose Reset slot
 // +0x54 is a stub returning 1 and which drives everything through DXGI.
 //
-// **Alt-tab out of exclusive fullscreen returned windowed, one resolution smaller.** Both renderers
+// Alt-tab out of exclusive fullscreen returned windowed, one resolution smaller. Both renderers
 // answer "is the device fullscreen" (vtable +0x134) from a live query, and both answer "windowed"
 // when they cannot answer at all: D3D9's FUN_10422E50 walks GetSwapChain then GetPresentParameters
 // and falls to XOR AL,AL at 0x10422E9E on any failure, D3D10's FUN_1041F710 clears its result on a
@@ -124,13 +125,14 @@ import settings;
 // sampled a moment earlier, so the D3D10 path re-enters at the end of a frame where no D3D object
 // is half built.
 //
-// **Borderless collapsed into a box in the top left below the desktop resolution.** D3D9 sizes the
+// Borderless collapsed into a box in the top left below the desktop resolution. D3D9 sizes the
 // window to BackBufferWidth/Height after every successful Reset, which suits a bordered window
 // whose client area is meant to be the resolution. On WS_POPUP AdjustWindowRectEx is a no-op and
 // SWP_NOMOVE holds the origin, so the window itself shrinks to the resolution at 0,0. D3D10 never
 // touches the window (the only SetWindowPos is in the D3D9 reset, the only MoveWindow in engine
 // init) and calls IDXGISwapChain::ResizeTarget at 0x104205EB, which resizes the output window to
-// the mode it is handed. Either way it is the window that is small, not the frame inside it.
+// the mode it is handed. Either way it is the window that is small rather than the frame inside
+// it.
 //
 // Borderless keeps the window it was given. D3D9 gets the display size in place of the backbuffer
 // size, D3D10 gets a stand-in swapchain for that one call. FUN_1034CA80 then disagrees with the
@@ -206,6 +208,81 @@ static HRESULT __stdcall NullResizeTarget(void*, const void*) { return S_OK; }
 static void* pStubSwapChainVtbl[16] = {};
 static void* pStubSwapChain[1] = { pStubSwapChainVtbl };
 
+// Switching mode while the game runs.
+//
+// Everything above decides the mode while the device is being built, and one of those decisions is
+// made once and never revisited: the window's style. The window is created during engine init and
+// the ninth argument to its creator picks between WS_POPUP and a captioned window, so a window born
+// windowed keeps its title bar for the rest of the run no matter what the device does afterwards.
+// That is why changing the setting and taking a device reset left borderless looking like a plain
+// window: the frame was still the one the game started with.
+//
+// The reset does not restyle it either: the engine's own post-reset call is a SetWindowPos with
+// SWP_NOMOVE and no SWP_FRAMECHANGED, which resizes and nothing more. So the restyle is done here,
+// on that same reset, which is the one moment the device is already being rebuilt around it.
+//
+// The two styles are the engine's own, computed by the window creator as
+// (-(borderless != 0) & 0x7F360000) + 0xCA0000, where 0CA0000h is WS_CAPTION | WS_SYSMENU |
+// WS_MINIMIZEBOX and the sum for borderless is WS_POPUP.
+static constexpr LONG nWindowedStyle = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+static constexpr LONG nBorderlessStyle = WS_POPUP;
+static constexpr LONG nModeStyles = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+                                  | WS_THICKFRAME | WS_POPUP;
+
+// The mode the window is currently wearing, so a reset that changes nothing leaves it alone.
+static int32_t nWindowMode = 0;
+
+// The window the game is drawing into, for the parts of the mod that have to measure it. Null until
+// engine init has sized it.
+export HWND JackalFixGameWindow()
+{
+    return hGameWindow;
+}
+
+static void ApplyWindowMode(HWND hWnd)
+{
+    if (hWnd == nullptr || !IsWindow(hWnd) || IsFullscreen())
+        return;
+
+    const auto bBorderlessNow = IsBorderless();
+    const auto nStyle = GetWindowLongA(hWnd, GWL_STYLE);
+    const auto nWanted = (nStyle & ~nModeStyles) | (bBorderlessNow ? nBorderlessStyle : nWindowedStyle);
+
+    SetWindowLongA(hWnd, GWL_STYLE, nWanted);
+
+    if (bBorderlessNow)
+    {
+        // The whole display, which is what the boot path gives it.
+        SetWindowPos(hWnd, nullptr, 0, 0,
+            GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+    else
+    {
+        // A captioned window is sized so its *client* area is the backbuffer, which is what the
+        // engine's windowed path wants and what the frame is drawn for. Centred, because it may be
+        // arriving from a borderless origin of 0,0 with a caption now sitting above it.
+        const auto nWidth = pPresentParams != nullptr && pPresentParams->BackBufferWidth != 0
+            ? static_cast<LONG>(pPresentParams->BackBufferWidth) : 1280;
+        const auto nHeight = pPresentParams != nullptr && pPresentParams->BackBufferHeight != 0
+            ? static_cast<LONG>(pPresentParams->BackBufferHeight) : 720;
+
+        RECT frame{ 0, 0, nWidth, nHeight };
+        AdjustWindowRectEx(&frame, static_cast<DWORD>(nWanted), FALSE,
+                           static_cast<DWORD>(GetWindowLongA(hWnd, GWL_EXSTYLE)));
+
+        const auto nFrameW = frame.right - frame.left;
+        const auto nFrameH = frame.bottom - frame.top;
+        const auto nX = (GetSystemMetrics(SM_CXSCREEN) - nFrameW) / 2;
+        const auto nY = (GetSystemMetrics(SM_CYSCREEN) - nFrameH) / 2;
+
+        SetWindowPos(hWnd, nullptr, nX > 0 ? nX : 0, nY > 0 ? nY : 0, nFrameW, nFrameH,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+
+    nWindowMode = nDisplayMode;
+}
+
 static ULONGLONG nLastFullscreenAttempt = 0;
 
 // Nothing calls SetMode after an alt-tab, because every check that would notice agrees with the
@@ -248,10 +325,10 @@ static void ReenterFullscreen(uint8_t* pRenderer)
 
 // The game confined the pointer by owning the display and imports no ClipCursor at all, so a
 // borderless window lets it walk onto a second monitor mid-firefight. Clipped while the window
-// holds focus and released the moment it doesn't, on its own thread because Dunia never exposes its
-// window procedure - there is no SetWindowLongA import to subclass through. Fullscreen needs none
-// of this, the display mode change does it; windowed wants none of it, the pointer belongs to the
-// desktop.
+// holds focus and released the moment it doesn't, on its own thread because Dunia never exposes
+// its window procedure and there is no SetWindowLongA import to subclass through. Fullscreen
+// needs none of this, the display mode change does it; windowed wants none of it, the pointer
+// belongs to the desktop.
 static void ClipCursorThread()
 {
     bool bClipped = false;
@@ -382,6 +459,12 @@ public:
             {
                 static auto ResetWindowSizeHook = safetyhook::create_mid(resetWindowSize.get_first(), [](SafetyHookContext& regs)
                 {
+                    // The device has just been reset. If the mode moved since the window was made,
+                    // this is where the window is put into it, before the engine's own resize, so
+                    // that one lands on a window already wearing the right frame.
+                    if (nWindowMode != nDisplayMode)
+                        ApplyWindowMode(hGameWindow);
+
                     if (!IsBorderless())
                         return;
 
@@ -534,6 +617,10 @@ public:
             };
 
             DisplayModeCB();
+
+            // The window is made in this mode, so it starts out wearing it and the reset hook has
+            // nothing to do until the setting actually moves.
+            nWindowMode = nDisplayMode;
 
             // The window style, its rect and the boot resolution path are all read while the engine
             // starts up, so an ini change lands on the next launch rather than the current one. The

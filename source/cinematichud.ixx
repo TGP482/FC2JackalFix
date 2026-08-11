@@ -34,9 +34,9 @@ using SetCinematicUIMode_t = void(__cdecl*)(int32_t);
 
 static SetCinematicUIMode_t SetCinematicUIMode = nullptr;
 
-// Domino mission ids, as the script tests them, not the engine names saveonmissioncomplete matches
-// on. Kept to the two Scrubah names: firing on every completion would force the HUD up under a
-// mission that ends inside a cinematic still meant to be running.
+// Domino mission ids, as the script tests them rather than the engine names saveonmissioncomplete
+// matches on. Kept to the two Scrubah names: firing on every completion would force the HUD up
+// under a mission that ends inside a cinematic still meant to be running.
 static const char* const StuckHudMissions[] =
 {
     "A1SM01",   // Act 1, town escape

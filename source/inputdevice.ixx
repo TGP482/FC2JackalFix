@@ -53,8 +53,8 @@ export bool IsPadActiveDevice()
     return bPadIsActiveDevice;
 }
 
-// Fires on the flip, not on every input. Anything that only rebuilds when a page changes has no
-// other way to notice the player put the pad down mid screen.
+// Fires on the flip rather than on every input. Anything that only rebuilds when a page changes
+// has no other way to notice the player put the pad down mid screen.
 export JackalFix::Event<>& onInputDeviceChange()
 {
     static JackalFix::Event<> InputDeviceChange;

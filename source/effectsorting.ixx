@@ -29,9 +29,9 @@ static constexpr ptrdiff_t nDrawItemShaderId = 0x10;
 static constexpr uint32_t nTechniqueIndexMask = 0xFF;
 static constexpr uint32_t nFirstDefineBit = 8;
 
-// The shader manager holds both registries: techniques at +0x14 with their count at +0x18, defines at
-// +0x20 with their count at +0x24. Records are pointers in the first and 0x20 byte entries in the
-// second, but both carry their name as a std::string at +0x04.
+// The shader manager holds both registries: techniques at +0x14 with their count at +0x18,
+// defines at +0x20 with their count at +0x24. Records are pointers in the first and 0x20 byte
+// entries in the second, but both carry their name as a std::string at +0x04.
 static constexpr ptrdiff_t nManagerTechniques = 0x14;
 static constexpr ptrdiff_t nManagerTechniqueCount = 0x18;
 static constexpr ptrdiff_t nManagerDefines = 0x20;
@@ -41,8 +41,8 @@ static constexpr size_t nDefineRecordSize = 0x20;
 static constexpr ptrdiff_t nRecordName = 0x04;
 static constexpr ptrdiff_t nRecordNameCapacity = 0x18;
 
-// std::string keeps up to 15 characters inline and only allocates past that, which the capacity says.
-// Same layout the game was built with.
+// std::string keeps up to 15 characters inline and only allocates past that, which the capacity
+// says. Same layout the game was built with.
 static constexpr size_t nShortStringCapacity = 0x10;
 
 // Into the pattern that resolves the shader manager global.
@@ -60,16 +60,16 @@ static constexpr uint8_t nBlendedAfterWater = 0x22;
 static constexpr ptrdiff_t nStraddleBranch = 0x03;
 static constexpr ptrdiff_t nBelowWaterPassId = 0x18;
 
-// The straddling branch is a two byte JZ. Erased rather than retargeted, so the result falls into the
-// decrement below it, misses the entirely-below arm too, and lands on the above-water one.
+// The straddling branch is a two byte JZ. Erased rather than retargeted, so the result falls into
+// the decrement below it, misses the entirely-below arm too, and lands on the above-water one.
 static constexpr uint8_t nShortConditionalJump = 0x74;
 
 // Into each water pattern: the conditional that guards its depth only submission.
 static constexpr ptrdiff_t nRiverPrepassBranch = 0x16;
 static constexpr ptrdiff_t nSectorPrepassBranch = 0x10;
 
-// JZ rel32 is six bytes and JMP rel32 is five, so each displacement gains one over what the original
-// branch carries and the spare byte is padded.
+// JZ rel32 is six bytes and JMP rel32 is five, so each displacement gains one over what the
+// original branch carries and the spare byte is padded.
 static constexpr uint8_t nConditionalJump = 0x0F;
 static constexpr uint8_t nJumpAlways = 0xE9;
 static constexpr uint8_t nNop = 0x90;
@@ -80,8 +80,8 @@ static constexpr int32_t nSectorSkipDistance = 0xB0;
 
 static uint8_t** ppShaderManager = nullptr;
 
-// Both registries fill as shaders load, so neither is available at init. Resolved on first use, with
-// a retry only once something new has actually been registered.
+// Both registries fill as shaders load, so neither is available at init. Resolved on first use,
+// with a retry only once something new has actually been registered.
 static uint32_t nHairTechnique = 0;
 static uint32_t nSkinningLow = 0;
 static uint32_t nSkinningHigh = 0;
@@ -184,7 +184,7 @@ static bool IsCharacterTransparent(uint8_t* pDrawItem)
 static void __fastcall QueueDrawItem(void* pDrawList, void* pEdx, uint8_t* pDrawItem, int32_t nSortKey, float fDistance)
 {
     // Clamped rather than assigned, so a material that already asks to draw further back keeps it.
-    // Harmless in the passes that ignore the key entirely - the opaque ones sort on render state.
+    // Harmless in the passes that ignore the key entirely, the opaque ones sorting on render state.
     if (nSortKey > nCharacterSortKey && IsCharacterTransparent(pDrawItem))
         nSortKey = nCharacterSortKey;
 
@@ -218,7 +218,7 @@ public:
 
                 // CRenderPassList::Add, the one function every draw list append goes through: it is
                 // the only caller of the append itself, so this covers the D3D9 and D3D10 frame
-                // graphs and every submitter feeding them - the plain path, the per light path, and
+                // graphs and every submitter feeding them: the plain path, the per light path, and
                 // the extra copy a sub-mesh straddling a water plane gets. Entry through the three
                 // argument loads, stopping before the first push.
                 auto queuePattern = dunia_pattern("D9 44 24 0C 8B 44 24 08 8B 54 24 04 6A 00 6A 00 51 8B 09 D9 1C 24 50 52 E8");
@@ -226,9 +226,9 @@ public:
                     QueueDrawItemHook = safetyhook::create_inline(queuePattern.get_first(), QueueDrawItem);
             }
 
-            // CSceneParticleEmitterRenderer::Render, across the water plane classifier's return value
-            // being unpicked: zero straddles, one is entirely below, anything else is above. The two
-            // 0x22 stores either side of the target are the above and straddling arms.
+            // CSceneParticleEmitterRenderer::Render, across the water plane classifier's return
+            // value being unpicked: zero straddles, one is entirely below, anything else is above.
+            // The two 0x22 stores either side of the target are the above and straddling arms.
             auto particlePattern = dunia_pattern("83 E8 00 74 19 83 E8 01 74 0A C7 44 24 2C 22 00 00 00 EB 43 C7 44 24 2C 21 00 00 00");
             if (!particlePattern.empty())
             {
@@ -253,10 +253,10 @@ public:
             if (!waterPattern.empty())
                 ForceJump(waterPattern.get_first<uint8_t>(nRiverPrepassBranch), nRiverSkipDistance);
 
-            // CSceneMeshRenderer::Submit, at its own water branch: the draw item is finished, the flag
-            // that asks for a depth copy is tested, and the taken branch lands past the DepthAlpha
-            // submission. The FLDZ and the pushed zero just after are the distance and key a capture
-            // shows for these.
+            // CSceneMeshRenderer::Submit, at its own water branch: the draw item is finished, the
+            // flag that asks for a depth copy is tested, and the taken branch lands past the
+            // DepthAlpha submission. The FLDZ and the pushed zero just after are the distance and
+            // key a capture shows for these.
             auto sectorPattern = dunia_pattern("8B 4B 64 89 44 8B 18 83 43 64 01 80 7C 24 37 00 0F 84 AF 00 00 00 8B 8C 24 8C 00 00 00 6A 01");
             if (!sectorPattern.empty())
                 ForceJump(sectorPattern.get_first<uint8_t>(nSectorPrepassBranch), nSectorSkipDistance);

@@ -25,7 +25,7 @@ static const char* const szMaxFpsSwitch = "-RenderProfile_MaxFps";
 static constexpr int32_t nUnlockedFps = 9999;
 
 // What EnumDisplaySettings answers for a display with no fixed rate. 0 and 1 both mean "the
-// hardware default", not zero and one hertz.
+// hardware default" rather than zero and one hertz.
 static constexpr DWORD nUnknownRefreshRate = 1;
 static constexpr int32_t nFallbackFps = 60;
 
@@ -34,6 +34,38 @@ enum MaxFrameRateSetting
     MAXFPS_UNLOCKED = 0,
     MAXFPS_DISPLAY = 1,
 };
+
+// Where the cap actually lives, so a change can be made to take effect without a restart.
+//
+// MaxFps is a console variable of the RenderProfile group, and a console variable of that kind is
+// not storage: it is a name, a type and a byte offset. Its registration writes 0C8h into the offset
+// field (Dunia+403D7F), and the group's integer setter is *(int*)(block + offset) = value
+// (Dunia+781F0). The block is what the pointer at Dunia+1609560 refers to.
+//
+// The stock Display page settles what to do afterwards. Brightness, contrast and gamma are three
+// floats at 12Ch, 130h and 134h of that same block, and CFCXOptionDisplayPage writes them straight
+// in and then raises the render settings broadcast (Dunia+3F8AB0) with the block as its subject.
+// That is the engine's own way of changing a render setting while it runs, and it is the one taken
+// here, with destination and announcement both read out of the game rather than assumed.
+static constexpr ptrdiff_t nProfileMaxFps = 0xC8;
+
+// mov ecx,eax / call <set prompt enabled> / mov ecx,[<render profile>] / add esp,0Ch /
+// jmp <render settings changed>. The tail of CFCXOptionDisplayPage's apply, which is the only
+// place the block pointer and the broadcast appear together.
+static const char* const szProfileTailPattern = "8B C8 E8 ? ? ? ? 8B 0D ? ? ? ? 83 C4 0C E9";
+static constexpr ptrdiff_t nProfileTailPointer = 9;  // disp32 of mov ecx,[<render profile>]
+static constexpr ptrdiff_t nProfileTailNotify = 16;  // the jmp itself
+
+using NotifyRenderSettings_t = void(__fastcall*)(void* pProfile);
+
+static void** ppRenderProfile = nullptr;
+static NotifyRenderSettings_t NotifyRenderSettings = nullptr;
+
+// The broadcast walks four listener lists and calls a virtual on every entry, so it is only raised
+// from the thread the engine runs on. The file watcher has a thread of its own, and an edit made to
+// the ini outside the game arrives on it; that case writes the field and leaves the announcement to
+// whoever raises one next.
+static DWORD nEngineThread = 0;
 
 static SafetyHookInline RunGameHook{};
 
@@ -77,8 +109,30 @@ static int32_t ResolveMaxFps()
     return nSetting;
 }
 
+// Puts the current setting into the running engine. Does nothing before the render profile exists,
+// which is every call made before the first frame. Start-up is the command line's job and this
+// only has to cover what happens afterwards.
+static void ApplyMaxFps()
+{
+    if (ppRenderProfile == nullptr)
+        return;
+
+    auto pProfile = *ppRenderProfile;
+    if (pProfile == nullptr)
+        return;
+
+    *reinterpret_cast<int32_t*>(static_cast<uint8_t*>(pProfile) + nProfileMaxFps) = ResolveMaxFps();
+
+    if (NotifyRenderSettings != nullptr && GetCurrentThreadId() == nEngineThread)
+        NotifyRenderSettings(pProfile);
+}
+
 static bool __cdecl RunGame(HINSTANCE hInstance, const char* pCmdLine)
 {
+    // RunGame is the engine's own thread and never returns until the game does, so this is the
+    // thread every frame is drawn on.
+    nEngineThread = GetCurrentThreadId();
+
     // Keep alive for the duration of RunGame.
     static std::string cmdLine;
 
@@ -108,8 +162,19 @@ public:
 
             RunGameHook = safetyhook::create_inline(pRunGame, RunGame);
 
-            // The command line is read once, so an ini change lands on the next launch. Nothing is
-            // registered on the file watch for that reason.
+            // The command line is read once, so the switch above only settles the rate the game
+            // starts at. Everything after that goes through the render profile directly.
+            auto tail = dunia_pattern(szProfileTailPattern);
+            if (!tail.empty())
+            {
+                ppRenderProfile = *tail.get_first<void**>(nProfileTailPointer);
+
+                auto pJump = tail.get_first<uint8_t>(nProfileTailNotify);
+                NotifyRenderSettings = reinterpret_cast<NotifyRenderSettings_t>(
+                    pJump + 5 + *reinterpret_cast<int32_t*>(pJump + 1));
+
+                JackalFix::onIniFileChange() += []() { ApplyMaxFps(); };
+            }
         };
     }
 } MaxFrameRate;

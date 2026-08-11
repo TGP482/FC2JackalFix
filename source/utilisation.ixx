@@ -42,8 +42,8 @@
   GPU frame queue
 
   FUN_1037d390 waits each frame on a D3DQUERYTYPE_EVENT query issued a fixed number of frames ago,
-  polling GetData with D3DGETDATA_FLUSH. FUN_1037d120 sizes the ring from the GPU count, not from
-  any latency setting:
+  polling GetData with D3DGETDATA_FLUSH. FUN_1037d120 sizes the ring from the GPU count rather than
+  from any latency setting:
 
         1037d3cd   CALL EAX               backend vtable +0x12C, returns backend+0x08
         1037d3d3   CMP  [ESI+0x34],EAX    ring size still matches?
@@ -121,8 +121,8 @@ static constexpr int32_t nFrameQueueCeilingPerGpu = 5;
 // The GPU count arrives from a virtual call, so it is bounded before being multiplied.
 static constexpr int32_t nMaximumGpus = 8;
 
-// Worker back off. Iterations, not time: the loop body is a critical section round trip, so the
-// PAUSE stage is a few microseconds.
+// Worker back off, counted in iterations rather than time: the loop body is a critical section
+// round trip, so the PAUSE stage is a few microseconds.
 static constexpr uint32_t nPauseIterations = 64;
 static constexpr uint32_t nPausesPerIteration = 8;
 

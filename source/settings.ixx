@@ -66,7 +66,30 @@ export enum Pref
 export class CSettings
 {
 private:
-    static inline std::array<std::variant<int32_t, float, std::string>, static_cast<size_t>(Pref::COUNT)> mPrefs;
+    using PrefValue = std::variant<int32_t, float, std::string>;
+
+    static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mPrefs;
+
+    // Settings moved for this run only, without the file being touched.
+    //
+    // The menu has to be able to change a setting and leave the ini alone. A hand-written
+    // FieldOfView of 91.31 is not one of the round numbers a row offers, and writing the row's
+    // choice would lose that number for good. But the watcher re-reads the whole ini on every save,
+    // including saves the menu makes for other settings, and that read would put the file's value
+    // straight back over the one the player just chose.
+    //
+    // So a held setting remembers two things: what the player chose, and what the file said when it
+    // was taken. A later read that brings back the same file value is that same file coming round
+    // again, and the choice stands. A different one means the file itself was edited, which is the
+    // player speaking more directly than the menu did, and the hold is dropped.
+    static inline std::array<bool, static_cast<size_t>(Pref::COUNT)> mHeld{};
+    static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mHeldValue;
+    static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mHeldFile;
+
+    // What the file itself says, re-read with it every time and never written over by a hold. The
+    // menu shows this alongside the row's own ladder, so a hand-written value that is not a round
+    // number stays on offer for the whole run however far the row has been moved away from it.
+    static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mFile;
 
 public:
     static inline void ReadIniSettings()
@@ -173,6 +196,23 @@ public:
         mPrefs[PREF_DEBUGNOCLIPKEY] = iniReader.ReadString("Debug", "NoclipKey", "F1");
         mPrefs[PREF_DEBUGFREECAMKEY] = iniReader.ReadString("Debug", "FreecamKey", "F2");
 
+        // Taken before the holds go back on, so this is the file and nothing else.
+        mFile = mPrefs;
+
+        // The session's own choices back over what was just read, where the file has not moved
+        // underneath them. Done here rather than by the caller so every read goes through it, the
+        // watcher's as much as the first one.
+        for (size_t i = 0; i < static_cast<size_t>(Pref::COUNT); i++)
+        {
+            if (!mHeld[i])
+                continue;
+
+            if (mPrefs[i] == mHeldFile[i])
+                mPrefs[i] = mHeldValue[i];
+            else
+                mHeld[i] = false;
+        }
+
         static std::once_flag flag;
         std::call_once(flag, [&]()
         {
@@ -197,4 +237,31 @@ public:
     void SetInt(Pref name, int32_t value) { mPrefs[name] = value; }
     void SetFloat(Pref name, float value) { mPrefs[name] = value; }
     void SetString(Pref name, std::string value) { mPrefs[name] = value; }
+
+    // What the ini says, whatever has been applied over it since it was read.
+    int32_t GetFileInt(Pref name) { return std::get<int32_t>(mFile[name]); }
+    float GetFileFloat(Pref name) { return std::get<float>(mFile[name]); }
+
+    // Set for this run without writing the file, and kept across the re-reads the watcher performs.
+    // The file value is noted only the first time a setting is held, so moving the same setting
+    // again does not mistake the previous choice for what the file says.
+    void HoldFloat(Pref name, float value)
+    {
+        if (!mHeld[name])
+            mHeldFile[name] = mPrefs[name];
+
+        mHeldValue[name] = value;
+        mHeld[name] = true;
+        mPrefs[name] = value;
+    }
+
+    void HoldInt(Pref name, int32_t value)
+    {
+        if (!mHeld[name])
+            mHeldFile[name] = mPrefs[name];
+
+        mHeldValue[name] = value;
+        mHeld[name] = true;
+        mPrefs[name] = value;
+    }
 } JackalFixSettings;

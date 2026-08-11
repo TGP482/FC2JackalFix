@@ -15,8 +15,8 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // Splash screens share CFCXSplashPage::Update. Skipping this branch follows the game's existing
-            // SkipIntroMovies path without affecting cutscenes or credits.
+            // Splash screens share CFCXSplashPage::Update. Skipping this branch follows the
+            // game's existing SkipIntroMovies path without affecting cutscenes or credits.
             auto pattern = dunia_pattern("80 BE 64 01 00 00 00 75 1B A1 ? ? ? ? 83 B8 90 00 00 00 00 76 11");
             if (pattern.empty())
                 return;

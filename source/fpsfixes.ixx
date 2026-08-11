@@ -90,7 +90,7 @@ static constexpr uint32_t nInputVelocity = 0x90;
 // Upward m/s relative to the surface below at which the character counts as rising. Sits between
 // two well separated populations: a character at rest carries about 0.02 m/s of residual from the
 // controller pushing itself out of penetration, a jump launches at 6 m/s, and every real landing
-// in the logs arrives strongly negative.
+// measured arrives strongly negative.
 static constexpr float fRisingVelocity = 0.5f;
 
 // hkpStepInfo, as hkpCharacterRigidBody::checkSupport is handed it.
@@ -178,8 +178,8 @@ public:
                 if (!pattern.empty())
                     InAirChangeHook = safetyhook::create_inline(pattern.get_first(), InAirChange);
 
-                // hkpCharacterRigidBody::checkSupport. The two absolute addresses in its prologue are
-                // wildcarded; what makes it unique is the run from the this-pointer save onwards.
+                // hkpCharacterRigidBody::checkSupport. The two absolute addresses in its prologue
+                // are wildcarded; what makes it unique is the run from the this-pointer save on.
                 auto supportPattern = dunia_pattern("55 8B EC 83 E4 F0 81 EC 14 01 00 00 A1 ? ? ? ? 53 8B 1D ? ? ? ? 56 57 8B F1 50 89 74 24 4C FF D3 8B C8 8B 79 04");
                 if (!supportPattern.empty())
                     CheckSupportHook = safetyhook::create_inline(supportPattern.get_first(), CheckSupport);

@@ -116,6 +116,29 @@ export module controllerprompts;
 import common;
 import dunia;
 import inputdevice;
+import settings;
+
+/*
+  The setting, which until now this module never read.
+
+  Every glyph in here is decided from one question, whether the pad is the device in use, and every
+  place that asks it already has the answer for "no" written out: the sprite is cleared, the pill
+  behind the label goes back on, the mouse pointer comes back. So the setting is not a second
+  mechanism, it is the same question with one more term in it, and turning it off puts the menus
+  and the HUD back exactly where a keyboard puts them.
+
+  It needs nothing to make it live. The nav bar is walked once a frame off magma's own draw and the
+  HUD once per prompt update, so the next frame after the value moves is already drawing the answer.
+  The mouse pointer is settled per UI event rather than per frame, which is the same event that
+  carried the keypress that changed it.
+*/
+static bool bControllerPrompts = true;
+
+// The one question this module asks, with the setting folded into it.
+static bool PadPromptsWanted()
+{
+    return bControllerPrompts && IsPadActiveDevice();
+}
 
 // --------------------------------------------------------------------------------------------
 // magma object layout
@@ -522,7 +545,7 @@ static constexpr ptrdiff_t nStringCapacity = 0x18;
 static constexpr uint32_t nStringLocalCapacity = 16;
 static constexpr uint32_t nWideLocalCapacity = 8;
 
-// A .mgb.desc attribute value. Anything longer is a bad read, not a long value.
+// A .mgb.desc attribute value. Anything longer is a bad read rather than a long value.
 static constexpr uint32_t nStringSizeLimit = 0x400;
 
 // Console draws the glyph 30x30 at 720p. Rect units are not pixels, so the square is calibrated
@@ -567,7 +590,7 @@ static constexpr int nMenuGlyphRoundPixels = 31;
 // unknowns against three readings, and the quad comes out 65.0, 65.0 and 64.9 pixels across with
 // the disc at 34.0, 34.0 and 34.3, which is the 34 the disc measures on the capture directly.
 //
-// The disc is the fraction of the quad, not a length, so both hold at any size or aspect: the
+// The disc is a fraction of the quad rather than a length, so both hold at any size or aspect: the
 // margin is half of what the quad has over the disc, taken off whatever the quad works out to.
 static constexpr int nMenuGlyphQuadPixels = 65;
 static constexpr int nMenuGlyphDiscPixels = 34;
@@ -600,7 +623,7 @@ static constexpr int nUiSpaceHigh = 100;
 static constexpr int nFallbackScreenWide = 1280;
 static constexpr int nFallbackScreenHigh = 720;
 
-// Below this a client rect is a window being built or torn down, not a display.
+// Below this a client rect is a window being built or torn down rather than a display.
 static constexpr int nScreenSizeFloor = 64;
 
 // FUN_10AB4F50. Anchored past the SEH prologue, on the two null checks that reach the font
@@ -867,8 +890,9 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
 
     auto nWide = GlyphWidth(nSide);
 
-    // Both come off the width the display worked out, not off the side, so the glyph keeps its
-    // proportions wherever it lands. Taking the margin here leaves the gap measured to the disc.
+    // Both come off the width the display worked out rather than off the side, so the glyph keeps
+    // its proportions wherever it lands. Taking the margin here leaves the gap measured to the
+    // disc.
     auto nDisc = nWide * nMenuGlyphDiscPixels / nMenuGlyphQuadPixels;
     auto nMargin = (nWide - nDisc) / 2;
     auto nGap = nDisc * nMenuGlyphGapPixels / nMenuGlyphRoundPixels - nMargin;
@@ -932,9 +956,9 @@ static bool bShopGlyphsOnPrompts = false;
 
 static void ApplyMenuGlyph(uint8_t* pPrompt)
 {
-    // IsLivePrompt vouches for the prompt, not for what it points at. A prompt can be attached
-    // and still hold a stale element: a crash came back with 0x21 in hand, faulting on 0x5D,
-    // which is that plus the child area offset, read straight through a null check.
+    // IsLivePrompt vouches for the prompt rather than for what it points at. A prompt can be
+    // attached and still hold a stale element: a crash came back with 0x21 in hand, faulting on
+    // 0x5D, which is that plus the child area offset, read straight through a null check.
     auto pElement = *reinterpret_cast<uint8_t**>(pPrompt + nPromptElement);
     if (!IsObject(pElement))
         return;
@@ -967,7 +991,7 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
         }
     }
 
-    if (!IsPadActiveDevice() || nSprite == 0)
+    if (!PadPromptsWanted() || nSprite == 0)
     {
         if (pImage)
             *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = 0;
@@ -1118,7 +1142,7 @@ static void RefreshMenuGlyphs()
       inventory      a_inventory_icons 7A3A3A37 -> stain, i_watch E8B3D151, i_wrench A9264364,
                      i_phone FCF70CAA, i_ied D43D37D9
 
-  Prompt+0x0C is the Area itself, not an element wrapping one; the child search runs straight off
+  Prompt+0x0C is the Area itself rather than an element wrapping one; the child search runs off
   it. Buttons come from the shipped console action map: use -> pad:a and pad:y, reload -> pad:x,
   tryuseied -> pad:right_trigger, heal -> pad:left_shoulder. Console interacts with Y.
 */
@@ -1145,7 +1169,7 @@ static constexpr int nHudGlyphFallbackPercent = 85;
   across x 628..651 and the weapon swap glyph across 624..653, both centred on 639 give or take
   the antialiasing, while the icons underneath are not symmetric about the screen at all: the swap
   arrow's own pixels centre on 653. Centring on the anchor rect, which is what the code below
-  does, therefore lands 2 pixels right on interact and 3 on the swap. Both attempts to close that
+  does, lands 2 pixels right on interact and 3 on the swap. Both attempts to close that
   gap failed and it is left open deliberately; two pixels are not worth a fragile placement.
 
   The first attempt derived screen centre from the glyph calibration. Its own sanity check
@@ -1312,7 +1336,7 @@ static void ApplyHudGlyph(uint8_t* pPrompt, const HudPrompt& prompt)
 
     auto pImage = FindNamedDeep(pSiblingArea, nGlyphName, 0);
 
-    if (!IsPadActiveDevice())
+    if (!PadPromptsWanted())
     {
         if (pImage)
             *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = 0;
@@ -1450,7 +1474,7 @@ static void RestoreCursors()
 
   Placement, counted off a 360 capture: B Cancel, A Add/Remove, Y Checkout, with the glyph to the
   left of the text bar rather than inside it. The bar stays. Hiding crc 0xC03AFD13 to make room
-  takes the label with it: that crc is the whole button visual, not the pill.
+  takes the label with it: that crc is the whole button visual rather than the pill.
 
   The buttons are asked for by name rather than reached from CBazaarComputerUI's cached label
   pointers. Those pointers are not the widgets on screen: searching every area reachable from them
@@ -1509,7 +1533,7 @@ static constexpr uint32_t nBazaarLabelId = 0x81FDCEB5;
   made the glyph vanish: a capture carries the dimming the page put on it and a tint multiplies,
   so feeding it back dims twice. What survives sampling is the channel ratio, 0.30 to 0.70 to
   0.51. Scaled until green reaches full that is 6CFFB7, which in this order is FFB7FF6C. The
-  87FFD0 picked off the bar first was the highlight, not the glyph.
+  87FFD0 picked off the bar first was the highlight rather than the glyph.
 */
 static constexpr uint32_t nBazaarGlyphColour = 0xFFB7FF6C;
 
@@ -1742,8 +1766,8 @@ static uintptr_t ResolveNamedSprite(const char* szName)
     return nSprite;
 }
 
-// The name that last resolved, so a gold button_b standing in for a missing button_b_shop is
-// visible in the log rather than looking identical to it.
+// The first spelling that resolves, suffix outermost, so a missing button_b_shop falls back to
+// the gold button_b rather than to nothing.
 static uintptr_t GetShopSprite(const char* szLetter)
 {
     for (auto szSuffix : sShopSuffixes)
@@ -1762,8 +1786,8 @@ static uintptr_t GetShopSprite(const char* szLetter)
     return 0;
 }
 
-// Left of the bar, not inside it, so the box edge is what the glyph sits against rather than the
-// measured text the menu uses.
+// Left of the bar rather than inside it, so the box edge is what the glyph sits against rather
+// than the measured text the menu uses.
 // The _shop art is a white outline; the green is the tint. All four corners, so no gradient.
 static void TintBazaarGlyph(uint8_t* pState)
 {
@@ -1860,7 +1884,7 @@ static void ApplyBazaarGlyph(const BazaarButton& button)
     auto pImage = FindNamedDeep(pArea, nGlyphName, 0);
 
     // Nothing of the game's is hidden either way: the bar stays on both devices, console keeps it.
-    if (!IsPadActiveDevice())
+    if (!PadPromptsWanted())
     {
         if (pImage)
             *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = 0;
@@ -2022,7 +2046,7 @@ static void ApplyBazaarArrow(const BazaarArrow& arrow, uint8_t* pList)
     auto bContent = ArrowContentBox(pArea, nGlyphName, content);
 
     auto nSprite = uintptr_t{ 0 };
-    if (IsPadActiveDevice())
+    if (PadPromptsWanted())
     {
         nSprite = GetShopSprite(arrow.szLetter);
         if (nSprite == 0 && GetPadButtonImage)
@@ -2124,6 +2148,17 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
+            bControllerPrompts = JackalFixSettings.GetInt(PREF_CONTROLLERPROMPTS) != 0;
+
+            // Nothing is pushed anywhere from here. The nav bar is walked once a frame and the HUD
+            // once per prompt update, both on the engine's own threads, so the value is read where
+            // it is used, which is also what keeps this off the file watcher's thread, where
+            // touching a widget tree is not safe.
+            JackalFix::onIniFileChange() += []()
+            {
+                bControllerPrompts = JackalFixSettings.GetInt(PREF_CONTROLLERPROMPTS) != 0;
+            };
+
             // FUN_105362E0, the 360 glyph loader. Anchored on the two null checks inside it; its
             // prologue is std::string boilerplate shared with unrelated functions.
             //
@@ -2445,7 +2480,7 @@ public:
 
                     bInCursorUpdate = true;
 
-                    if (IsPadActiveDevice())
+                    if (PadPromptsWanted())
                         DisableCursors();
                     else
                         RestoreCursors();

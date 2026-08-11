@@ -16,7 +16,8 @@
   fLifeTime + fFadeOutDuration, at +0x0C of the 0x40 byte record) and CDecalManager::Update destroys
   the decal against that, while OnSerializationEvent has already copied desc+0x68 to material+0x90
   (then +0x94 fadeIn, +0x98 1/fadeIn, +0x9C 1/fadeOut) where it drives the shader fade. Patching one
-  leaves an invisible hole holding a pool slot. Writing desc+0x68 on entry fixes both with one store.
+  leaves an invisible hole holding a pool slot. Writing desc+0x68 on entry fixes both with one
+  store.
 
   The value has to stay finite. The pool is capped (defaultrenderconfig.xml MaxDecalCount, stock
   200) and CDecalManager::EvictOldest scans for the smallest expiry, seeding its running minimum

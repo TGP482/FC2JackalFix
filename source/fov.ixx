@@ -307,6 +307,10 @@ static constexpr float fWidescreenStretch = 0.75f;
 // down, reading as FieldOfView overwriting ViewmodelFieldOfView. It also left the weapon unscaled
 // in vehicles, whose camera sits below the window whenever VehicleFieldOfView is under
 // FieldOfView.
+// How far the sights are up, sampled once a frame from the blend. Zero on foot with the weapon
+// down, one with the sights fully raised.
+static std::atomic<float> fIronsightBlend = 0.0f;
+
 static float ViewmodelScaleFor(float fovRad, float aspect)
 {
     auto fCameraTan = std::tan(fovRad * 0.5f);
@@ -316,38 +320,198 @@ static float ViewmodelScaleFor(float fovRad, float aspect)
     auto fViewmodelTan = std::tan(fViewmodelFieldOfView * (fPi / 360.0f)) * fWidescreenStretch * aspect;
     auto fScale = fViewmodelTan / fCameraTan;
 
-    return fScale > 1.0f ? 1.0f : fScale;
+    if (fScale <= 1.0f)
+        return fScale;
+
+    // Wider than the world, which is a setting the player is allowed to ask for. A Viewmodel FOV
+    // above Field of View pushes the gun away, and there is nothing wrong with that. A flat ceiling
+    // of one forbade it outright.
+    //
+    // Except with the sights up. There the gun belongs where the sights put it, and the world FOV
+    // has already been pulled in to the ironsight FOV, so widening the near pass back out is
+    // exactly the thing that would hold the gun away from the eye. That case is what the ceiling
+    // was really for; it is kept, and only for as long as the sights are actually raised.
+    return fIronsightBlend.load(std::memory_order_relaxed) > 0.0f ? 1.0f : fScale;
 }
-
-// Dunia identifies properties by CRC-32 hash, so one can be intercepted without knowing its
-// owning class or offset.
-static constexpr uint32_t PropertyHash(std::string_view name)
-{
-    uint32_t nCrc = 0xFFFFFFFF;
-    for (auto c : name)
-    {
-        nCrc ^= static_cast<uint8_t>(c);
-        for (auto nBit = 0; nBit < 8; ++nBit)
-            nCrc = (nCrc >> 1) ^ (0xEDB88320 & (0u - (nCrc & 1u)));
-    }
-    return ~nCrc;
-}
-
-// Sanity check that we're using Dunia's CRC variant.
-static_assert(PropertyHash("fFOVAngle") == 0x49745480);
-
-// Vehicle camera FOV (degrees).
-static constexpr uint32_t nVehicleFovProperty = PropertyHash("fFOVAngle");
-
-// Weapon ironsight FOV (radians), unlike the vehicle FOV above.
-static constexpr uint32_t nIronsightFovProperty = PropertyHash("fIronsightFOV");
 
 // Only rewrite unmagnified sights, magnified optics use the same property.
 static constexpr float fMagnifiedOpticCutoff = 40.0f;
 
-// The descriptor is overwritten before the second hook runs, so cache the hash. Thread-local
-// because property streams are parsed on multiple threads.
-static thread_local uint32_t nPendingProperty = 0;
+// The weapon property object the ironsight FOV lives in, at the one place the game reads it.
+//
+// Radians, unlike the vehicle's, which is stored in degrees and converted by the seat on the way
+// out. Nothing converts on this path, the weapon setup copying the field straight into the pawn's
+// ironsight channel, so both ends of it are radians and the magnified-optic cutoff has to be
+// compared in degrees against the converted value rather than against the raw one.
+static constexpr uintptr_t nWeaponIronsightFieldOfView = 0xE4;
+
+// Past the FLD and the FSTP that copy it into the channel, six bytes and three, so the hook lands
+// where the copy has happened and both registers are still the ones it used.
+static constexpr size_t nIronsightFovCopied = 9;
+
+static float RadiansToDegrees(float fRadians)
+{
+    return fRadians * (180.0f / fPi);
+}
+
+// The first person camera's own FOV, on the primary base.
+//
+// Not 6Ch. The bone camera's update is handed the secondary base, so its fFOV is reached at 6Ch and
+// the constant above says so. But CCameraPawnComponent::Update is handed the primary base, and
+// there 6Ch is a different field entirely: the first person model's FOV. Its else branch is the
+// proof, storing 104h into the world half of the camera state and 6Ch into the model half:
+//
+//     10694334  D9 87 04 01..   FLD  [EDI+0x104]    ; world
+//     1069433a  D9 5E 28        FSTP [ESI+0x28]
+//     1069433d  D9 47 6C        FLD  [EDI+0x6C]     ; first person model
+//     10694344  D9 5E 30        FSTP [ESI+0x30]
+//
+// Writing 6Ch there is writing the world FOV into the model's, which is what stopped Field of View
+// and Viewmodel FOV being independent of each other. 70h is the one the setter writes and the one
+// the blend below starts from.
+static constexpr uintptr_t nPawnCameraFieldOfView = 0x70;
+
+// ---------------------------------------------------------------------------------------------
+// The pawn's FOV channels.
+//
+// Ironsight FOV and Vehicle FOV are not read where they are set. Both are pushed into a CPawnFOV
+// struct, the weapon pushing its ironsight FOV when the weapon is set up and the seat pushing the
+// vehicle's when somebody gets in, and the engine blends from there. Overriding either push only
+// reaches the next weapon setup or the next time a seat is taken, which is what left
+// the ironsight setting doing nothing at all in a session and the vehicle setting waiting for the
+// player to get out and back in.
+//
+// The struct is two channel records of 0x1C bytes each, laid out
+//
+//     +0x00  a fixed pointer, written once by the constructor
+//     +0x04  two flags
+//     +0x08  transition time
+//     +0x0C  running state, stepped by the blend
+//     +0x10  running state
+//     +0x14  the target value
+//     +0x18  the transition curve
+//
+// with record A at 0x08 (ironsight, target at 0x1C, degrees) and record B at 0x24 (base, target at
+// 0x38, radians). Both boundaries are the constructor's own: it writes the same pointer to 0x08 and
+// 0x24 and the same curve global to 0x20 and 0x3C, exactly 0x1C apart.
+//
+// So the values can be re-pushed from outside, which is what happens below: the same two writes
+// the seat makes, with a new number and at the moment the player asks for it.
+static constexpr uintptr_t nPawnFovIronsightValue = 0x1C;   // radians
+static constexpr uintptr_t nPawnFovIronsightArmed = 0x0D;
+
+// Record A's blend weight, the third field the blend reads: how far this channel has taken over,
+// nought to one. Read and never written, since it is the engine's own running state.
+static constexpr uintptr_t nPawnFovIronsightWeight = 0x18;
+static constexpr uintptr_t nPawnFovBaseValue      = 0x38;   // radians
+static constexpr uintptr_t nPawnFovBaseArmed      = 0x29;
+static constexpr size_t    nPawnFovSize           = 0x60;
+
+// Taken from the two places the engine hands the struct over. There is no path to it from a global,
+// so it is remembered rather than looked up, and checked against its own vtable before it is used
+// again, because the pawn that owns it does not survive a load.
+static std::atomic<uintptr_t> nPawnFieldOfView = 0;
+static std::atomic<uintptr_t> nPawnFieldOfViewVTable = 0;
+
+static bool IsReadableStruct(uintptr_t nAddress, size_t nSize)
+{
+    if (nAddress == 0)
+        return false;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery((const void*)nAddress, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
+        return false;
+
+    if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+        return false;
+
+    auto nEnd = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    return nAddress + nSize <= nEnd;
+}
+
+static void RememberPawnFieldOfView(uintptr_t nStruct)
+{
+    // Called once a frame from the blend, so the same pointer arriving again costs a compare rather
+    // than a page query.
+    if (nStruct == 0 || nStruct == nPawnFieldOfView.load(std::memory_order_relaxed))
+        return;
+
+    if (!IsReadableStruct(nStruct, nPawnFovSize))
+        return;
+
+    nPawnFieldOfView.store(nStruct, std::memory_order_relaxed);
+
+    // Learned from the first struct the engine hands over, which is one by construction, so no
+    // pattern has to be spent finding the class's vtable to recognise a later one.
+    if (nPawnFieldOfViewVTable.load(std::memory_order_relaxed) == 0)
+        nPawnFieldOfViewVTable.store(*(uintptr_t*)nStruct, std::memory_order_relaxed);
+}
+
+// The struct as it stands, or nothing if the pawn that owned it has gone. A freed one either fails
+// the page test or no longer carries CPawnFOV's vtable.
+static uintptr_t LivePawnFieldOfView()
+{
+    auto nStruct = nPawnFieldOfView.load(std::memory_order_relaxed);
+    auto nVTable = nPawnFieldOfViewVTable.load(std::memory_order_relaxed);
+
+    if (nStruct == 0 || nVTable == 0 || !IsReadableStruct(nStruct, nPawnFovSize))
+        return 0;
+
+    return *(uintptr_t*)nStruct == nVTable ? nStruct : 0;
+}
+
+// Re-pushes both channels with what the settings now say. The armed flags are what the seat sets
+// after it writes its value, so they are set the same way here, and only where they are already
+// set, so a player on foot is never handed a vehicle's FOV and the ironsight channel is only
+// restarted if something is already using it. The targets themselves are written either way, so the
+// next aim or the next seat reads the new number even when nothing is running now.
+/*
+  Whether the weapon in the player's own hands is a magnified optic.
+
+  The cutoff was only ever applied on the weapon setup path, and there are two paths. The other one
+  is here: a change to the setting pushes straight into the pawn's channel so it takes hold without
+  waiting for the next weapon, and that push had no cutoff on it at all, so changing Ironsight FOV
+  while holding a scoped rifle wrote the ironsight number over the scope's own, which is exactly the
+  scope moving with the ironsight setting.
+
+  The push cannot make the judgement itself: all it has is the channel, and the channel is the
+  thing being written, so a value already pushed would read back as a scope. The setup hook can,
+  because it is handed the weapon's own field and never touches it. So the answer is worked out
+  there, where it is a fact, and remembered for the push to use.
+
+  The word "player's" is the rest of it. CWeapon's setup is not the player's alone: every pawn in
+  the level runs it, and a village full of AI runs it constantly. Answering the question from
+  whichever pawn happened to arm itself last means the flag reads "assault rifle" a second after
+  the player raised a scope, and the next push then writes the ironsight setting over the scope's
+  own FOV. That is the scope following the setting. It reads the other way round too: an AI drawing
+  a scoped rifle sets the flag and the player's ironsight setting stops applying until something
+  else moves it.
+*/
+static std::atomic<bool> bIronsightIsMagnifiedOptic = false;
+
+static void PushPawnFieldOfView()
+{
+    auto nStruct = LivePawnFieldOfView();
+    if (nStruct == 0)
+        return;
+
+    if (fIronsightFieldOfView > 0.0f && !bIronsightIsMagnifiedOptic.load(std::memory_order_relaxed))
+    {
+        // Radians. This channel is a straight copy of the weapon's own field, which is radians, so
+        // writing degrees here is writing an FOV of about three and a half thousand degrees, which
+        // is what stopped the viewmodel matching the sights.
+        *(float*)(nStruct + nPawnFovIronsightValue) = DegreesToRadians(fIronsightFieldOfView);
+
+        if (*(uint8_t*)(nStruct + nPawnFovIronsightArmed) != 0)
+            *(uint8_t*)(nStruct + nPawnFovIronsightArmed) = 1;
+    }
+
+    if (fVehicleFieldOfView > 0.0f && *(uint8_t*)(nStruct + nPawnFovBaseArmed) != 0)
+    {
+        *(float*)(nStruct + nPawnFovBaseValue) = DegreesToRadians(fVehicleFieldOfView);
+        *(uint8_t*)(nStruct + nPawnFovBaseArmed) = 1;
+    }
+}
 
 // Map markers (archPlayerMarker, archDiamondMarker, etc.) are 3D entities owned by
 // CCompassObjectives. In a vehicle the map moves to the world pass while the markers stay in the
@@ -369,12 +533,22 @@ static bool MapIsInVehicle()
 }
 
 // Shared by the two inlined copies of the seat FOV push.
-static void ClampGliderFieldOfView(uintptr_t nVehicle)
+//
+// The paraglider is clamped down to the glider ceiling; every other vehicle takes the setting
+// outright. Doing it here rather than during deserialization is what makes Vehicle FOV live: the
+// archive value is copied into each vehicle as it spawns, so an override at load only ever reaches
+// vehicles that have not been built yet, which is why the setting used to need a reload. The seat
+// reads the field afresh every time somebody gets in.
+static void ApplySeatFieldOfView(uintptr_t nVehicle)
 {
-    if (*(uint32_t*)(nVehicle + nVehicleName) != nVehicleNameParaglider)
+    if (*(uint32_t*)(nVehicle + nVehicleName) == nVehicleNameParaglider)
+    {
+        NarrowFieldOfView((float*)(nVehicle + nVehicleFieldOfViewAngle), fGliderFieldOfView);
         return;
+    }
 
-    NarrowFieldOfView((float*)(nVehicle + nVehicleFieldOfViewAngle), fGliderFieldOfView);
+    if (fVehicleFieldOfView > 0.0f)
+        *(float*)(nVehicle + nVehicleFieldOfViewAngle) = fVehicleFieldOfView;
 }
 
 class FieldOfView
@@ -396,8 +570,8 @@ public:
                 *(float*)(regs.esp + 4) = fFieldOfView;
             });
 
-            // Near pass uses a separate projection for weapons and arms, allowing viewmodel FOV changes
-            // without affecting the world.
+            // Near pass uses a separate projection for weapons and arms, allowing viewmodel FOV
+            // changes without affecting the world.
             pattern = dunia_pattern("D9 86 28 02 00 00 D9 1C 24 E8 ? ? ? ? D9 45 14");
             if (pattern.empty())
                 return;
@@ -427,6 +601,10 @@ public:
                 fVehicleFieldOfView = JackalFixSettings.GetFloat(PREF_VEHICLEFIELDOFVIEW);
                 fGliderFieldOfView = std::clamp(fFieldOfView, fFieldOfViewFloor, fGliderFieldOfViewMax);
                 fNarrowFieldOfView = std::clamp(fFieldOfView, fFieldOfViewFloor, fNarrowFieldOfViewMax);
+
+                // Straight into the pawn, rather than waiting for the next weapon setup or the next
+                // time a seat is taken to carry it there.
+                PushPawnFieldOfView();
             };
 
             FieldOfViewCB();
@@ -453,7 +631,8 @@ public:
             {
                 static auto ViewmodelFovHook = safetyhook::create_mid(viewmodelPattern.get_first(9), [](SafetyHookContext& regs)
                 {
-                    // In vehicles, keep the near-pass FOV at the world FOV so map markers stay aligned.
+                    // In vehicles the near-pass FOV stays at the world FOV, so map markers keep
+                    // their alignment.
                     if (MapIsInVehicle())
                         return;
 
@@ -521,8 +700,9 @@ public:
             // ladder at the top or the bottom, jumping off, a scene ending, dying and loading a
             // save all change the context and clear it on the next frame.
             //
-            // Hooked at CPawnBeautifierComponent::Update's entry, not the reselect it calls, whose
-            // body is wrapped in "if the context tag differs" and runs only on transitions. ECX is
+            // Hooked at CPawnBeautifierComponent::Update's entry rather than the reselect it
+            // calls, whose body is wrapped in "if the context tag differs" and runs only on
+            // transitions. ECX is
             // the component's secondary base: [EBP+4] two instructions in is the entity ref at
             // component+0x08 and [EBP+0x10] later on is the Enable bool at component+0x14, so the
             // primary base is ECX-4. ContextBeautifier read here is one frame old, which the blend
@@ -552,6 +732,44 @@ public:
 
                     nNarrowContext.store(nContext, std::memory_order_relaxed);
                     nNarrowStamp.store(GetTickCount(), std::memory_order_relaxed);
+                });
+            }
+
+            // Field of View, live, at the head of the blend that produces the FOV the frame is
+            // drawn with. CCameraPawnComponent::Update calls this once a frame and then stores its
+            // result:
+            //
+            //     10692e4c  MOVSS XMM1,[ESI+0x70]     ; the camera's own FOV, the base of it all
+            //     10692e51  MOVSS XMM0,[EDI+0x14]     ; CPawnFOV record B target = +38h, vehicle
+            //     10692e5d  MULSS XMM0,[EDI+0x10]     ; ...by record B's weight = +34h
+            //               then the same again with record A, = +1Ch ironsight over +18h weight
+            //     ->        [ESI+0x108], which the update stores into the camera state
+            //
+            // So the FOV is rebuilt from ESI+70h every frame, and the setter the mod hooks only
+            // ever seeds it. Holding it here is what makes the setting live, and it is the base
+            // the two channels lerp away from, so a vehicle or a pair of sights still wins over it
+            // exactly as the engine intends.
+            //
+            // Two things follow from the same listing. Both channel targets are read on every call,
+            // so writing them from outside, which is what PushPawnFieldOfView does, lands on the
+            // next frame rather than waiting for the next push. And +14h/+18h and +30h/+34h are the
+            // blend weights, which is why nothing must be written to them.
+            //
+            // Anchored on the load of the camera's own FOV rather than the function's entry,
+            // because by then both calls to the channel getter have returned: ESI is the camera
+            // and EAX is the CPawnFOV struct, freshly fetched and certainly alive. One hook, three
+            // jobs: hold the FOV, take a valid handle on the channels, and read how far the sights
+            // are up.
+            auto cameraFovBlendPattern = dunia_pattern("F3 0F 10 4E 70 F3 0F 10 47 14 0F 57 D2 F3 0F 5C C1 F3 0F 59 47 10");
+            if (!cameraFovBlendPattern.empty())
+            {
+                static auto CameraFovBlendHook = safetyhook::create_mid(cameraFovBlendPattern.get_first(), [](SafetyHookContext& regs)
+                {
+                    // Before the MOVSS this stands on, so the blend uses it on this frame.
+                    *(float*)(regs.esi + nPawnCameraFieldOfView) = DegreesToRadians(fFieldOfView);
+
+                    RememberPawnFieldOfView(regs.eax);
+                    fIronsightBlend.store(*(float*)(regs.eax + nPawnFovIronsightWeight), std::memory_order_relaxed);
                 });
             }
 
@@ -643,7 +861,10 @@ public:
             {
                 static auto GliderFovHook = safetyhook::create_mid(gliderFovPattern.get_first(0x19), [](SafetyHookContext& regs)
                 {
-                    ClampGliderFieldOfView(regs.esi);
+                    // EAX is the pawn's FOV channels; the store into its curve slot is three
+                    // instructions back. Same struct the weapon setup hands over.
+                    RememberPawnFieldOfView(regs.eax);
+                    ApplySeatFieldOfView(regs.esi);
                 });
             }
 
@@ -652,40 +873,102 @@ public:
             {
                 static auto GliderSeatFovHook = safetyhook::create_mid(gliderSeatFovPattern.get_first(0x1D), [](SafetyHookContext& regs)
                 {
-                    ClampGliderFieldOfView(regs.esi);
+                    // EAX is the pawn's FOV channels; the store into its curve slot is three
+                    // instructions back. Same struct the weapon setup hands over.
+                    RememberPawnFieldOfView(regs.eax);
+                    ApplySeatFieldOfView(regs.esi);
                 });
             }
 
-            // Weapon and vehicle FOV come from FCB archives, so override them during property
-            // deserialization. Installed only when enabled, since this is a hot load path.
-            if (fIronsightFieldOfView > 0.0f || fVehicleFieldOfView > 0.0f)
+            // Ironsight FOV, where the weapon hands it to the pawn rather than where the archive
+            // hands it to the weapon.
+            //
+            // fIronsightFOV is declared at offset E4h of the weapon's property object, and there is
+            // exactly one place in the whole module that reads it, the weapon setup that copies
+            // it, the transition time at ECh and the look sensitivity factor at D0h, into the
+            // pawn's FOV channel:
+            //
+            //     10131613  8B 46 04        MOV  EAX,[ESI+0x04]   ; the weapon's property object
+            //     10131616  D9 80 E4 ...    FLD  [EAX+0xE4]       ; fIronsightFOV, radians
+            //     1013161c  D9 5F 1C        FSTP [EDI+0x1C]       ; CPawnFOV, ironsight channel
+            //
+            // Overriding it during deserialization instead only ever reached weapons that had not
+            // been built yet, which is what made the setting need a reload. Here it lands the next
+            // time a weapon is set up, and PushPawnFieldOfView above covers the rest.
+            //
+            // Nothing converts on this path: the field is radians and so is the channel it lands
+            // in. That matters twice over. The cutoff has to be converted before it is compared,
+            // or a radian value never clears forty and the override silently never happens, and
+            // the write has to be converted, or the sights are handed a number in the thousands of
+            // degrees and the viewmodel stops matching them.
+            /*
+              The write goes to the channel rather than to the weapon.
+
+              This used to overwrite the weapon's own fIronsightFOV, and that is what broke scopes.
+              The cutoff is the only thing keeping a magnified optic out of this, a scope's field
+              being a genuinely small number that widening undoes, and the cutoff was being
+              compared against the very field the override had already written. So an ironsight FOV
+              below forty came back on the next setup looking exactly like a scope, the weapon was
+              skipped from then on, and raising the setting afterwards could not rescue it either
+              because the test still read the old low number. The row goes down to twenty, so this
+              was reachable by anyone who tried it.
+
+              Nothing is written to the weapon now. The hook sits three bytes further on, after
+
+                  10131616  FLD  [EAX+0xE4]      ; the weapon's own value, radians
+                  1013161c  FSTP [EDI+0x1C]      ; the pawn's ironsight channel
+
+              has already run, where EAX is still the property object and EDI is still the channel,
+              and it replaces what landed in the channel. The weapon's field is read and never
+              touched, so the cutoff is always compared against the game's own number: a scope stays
+              a scope for the life of the process, and the ironsight setting can be anything the row
+              allows without ever being mistaken for one.
+            */
+            auto ironsightFovPattern = dunia_pattern("D9 80 E4 00 00 00 D9 5F 1C");
+            if (!ironsightFovPattern.empty())
             {
-                auto dataPropertyPattern = dunia_pattern("8B 54 24 04 8D 44 24 04 50 83 C2 04 52 E8 ? ? ? ? 85 C0 74 0D 8B 00 8B 4C 24 08 89 01 B0 01 C2 08 00");
-                if (!dataPropertyPattern.empty())
+                static auto IronsightFovHook = safetyhook::create_mid(ironsightFovPattern.get_first(nIronsightFovCopied), [](SafetyHookContext& regs)
                 {
-                    // Entry: the descriptor is still at [ESP+4].
-                    static auto DataPropertyNameHook = safetyhook::create_mid(dataPropertyPattern.get_first(), [](SafetyHookContext& regs)
-                    {
-                        nPendingProperty = *(uint32_t*)(*(uintptr_t*)(regs.esp + 4) + 4);
-                    });
+                    /*
+                      Whose sights these are, before anything is decided from them.
 
-                    // Property found. Replace the parsed value in EAX before it is written out.
-                    static auto DataPropertyFovHook = safetyhook::create_mid(dataPropertyPattern.get_first(0x18), [](SafetyHookContext& regs)
-                    {
-                        auto pValue = (float*)&regs.eax;
+                      Every pawn in the level arms itself through here, a village full of AI
+                      running it constantly, and both things taken below are answers about the
+                      player specifically: the channel a later change will be written into, and
+                      whether what is in hand is a magnified optic. Taken from whichever pawn armed
+                      itself last, the optic answer reads "assault rifle" a second after the player
+                      raised a scope, and the next push then writes the ironsight setting over the
+                      scope's own FOV. That is the scope following the setting.
 
-                        if (nPendingProperty == nIronsightFovProperty)
-                        {
-                            if (fIronsightFieldOfView > 0.0f && *pValue * (180.0f / fPi) >= fMagnifiedOpticCutoff)
-                                *pValue = fIronsightFieldOfView * (fPi / 180.0f);
-                        }
-                        else if (nPendingProperty == nVehicleFovProperty)
-                        {
-                            if (fVehicleFieldOfView > 0.0f)
-                                *pValue = fVehicleFieldOfView;
-                        }
-                    });
-                }
+                      EDI is the channel being filled. The player's is the one the first person
+                      camera reads every frame, and the blend hook above is the only thing that
+                      writes it, so comparing against it is exact rather than a guess. Nothing has
+                      been learned yet on the very first setup of a session and that one is the
+                      player's, so an unset handle is accepted rather than refused.
+                    */
+                    const auto nPlayer = nPawnFieldOfView.load(std::memory_order_relaxed);
+                    if (nPlayer != 0 && regs.edi != nPlayer)
+                        return;
+
+                    // EDI is the pawn's FOV channels, which nothing else in the module can reach.
+                    // Taken here whether or not the setting is in use, because it is the handle a
+                    // later change needs.
+                    RememberPawnFieldOfView(regs.edi);
+
+                    // In degrees for the comparison, since both ends of this path are radians.
+                    // Decided whether or not the setting is in use, because the push above needs
+                    // the answer for whatever is in hand and this is the only place it can be
+                    // known.
+                    const auto fWeapon = *(const float*)(regs.eax + nWeaponIronsightFieldOfView);
+                    const auto bOptic = RadiansToDegrees(fWeapon) < fMagnifiedOpticCutoff;
+
+                    bIronsightIsMagnifiedOptic.store(bOptic, std::memory_order_relaxed);
+
+                    if (fIronsightFieldOfView <= 0.0f || bOptic)
+                        return;
+
+                    *(float*)(regs.edi + nPawnFovIronsightValue) = DegreesToRadians(fIronsightFieldOfView);
+                });
             }
         };
     }

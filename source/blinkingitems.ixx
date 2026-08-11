@@ -20,9 +20,10 @@ import settings;
 static bool bNoBlinkingItems = false;
 
 // A marker carries ten archetype slots at this+0x10, stride 0x1C, registered by name in
-// FUN_1004EFC0: 0 archMapEnabled, 1 archMapAvailable, 2 archMapDir, 3 archCompass, 4 archCompassDir,
-// 5 archBlink, 6 archBlinkCompass, 7 archCompassVehicle, 8 archCompassDirVehicle,
-// 9 archBlinkCompassVehicle. Leave the blink slots unset and the marker draws only its steady icon.
+// FUN_1004EFC0: 0 archMapEnabled, 1 archMapAvailable, 2 archMapDir, 3 archCompass,
+// 4 archCompassDir, 5 archBlink, 6 archBlinkCompass, 7 archCompassVehicle,
+// 8 archCompassDirVehicle, 9 archBlinkCompassVehicle. Leave the blink slots unset and the marker
+// draws only its steady icon.
 static constexpr uint32_t BLINK_SLOT_MAP = 5;
 static constexpr uint32_t BLINK_SLOT_COMPASS = 6;
 static constexpr uint32_t BLINK_SLOT_COMPASS_VEHICLE = 9;
@@ -57,48 +58,62 @@ public:
             };
 
             // Half one, the pulsing outline on pickups. Two interventions, since the branch gate
-            // below covers fewer objects than the effect itself.
+            // below is compiled twice and only one copy was being patched.
             //
-            // The mesh renderer's constructor (FUN_103C9830) calls FUN_10433500("Mesh_Highlight")
-            // into [ESI+0x68]/[ESI+0x6C], then FUN_10433DB0 for the SPECIALPICKUP permutation into
-            // [ESI+0x50]/[ESI+0x54]. Zeroing the returned effect id (1-based, 0 = not found) leaves
-            // all four at 0, since FUN_10433DB0 returns 0 for effect 0. Runs once at construction,
-            // so this half needs a restart.
-            {
-                auto pattern = dunia_pattern("E8 ? ? ? ? 53 8B CA 68 ? ? ? ? 89 56 6C 51 8B D0 89 46 68");
-                if (!pattern.empty())
-                {
-                    static auto MeshHighlightLookupHook = safetyhook::create_mid(pattern.get_first(5), [](SafetyHookContext& regs)
-                    {
-                        if (!bNoBlinkingItems)
-                            return;
-
-                        regs.eax = 0; // effect id: not found
-                        regs.edx = 0;
-                    });
-                }
-            }
-
-            // Second, the branch that emits the highlight draw at all, which the zeroed effect
-            // above does not stop:
-            //
-            //   TEST byte ptr [EDX+0x9C], 4      ; entity flags: highlighted
+            //   TEST byte ptr [reg+0x9C], 4      ; entity flags: highlighted
             //   JZ   skip
             //
-            // Clearing the immediate makes TEST always set ZF, so the JZ always takes. This half
-            // re-reads the ini live.
+            // Clearing the immediate makes TEST always set ZF, so the JZ always takes and the extra
+            // highlight draw command is never allocated or submitted.
+            //
+            // There are two of these gates. The mesh pass exists twice: FUN_103C6260
+            // draws the items that are not instancing candidates, and FUN_103C7750 draws the ones
+            // that are but turn up in runs of fewer than five. Which of the two an object takes is
+            // decided by an early divert inside FUN_103C6260 and has nothing to do with what the
+            // object is, which is why patching only the first left ammo piles and grenades glowing
+            // while weapons stopped. Runs of five or more go through FUN_103C45F0, which carries no
+            // highlight code at all.
+            //
+            // The effect lookup itself is deliberately left alone. The mesh renderer resolves
+            // "Mesh_Highlight" once in its constructor into +68h/+6Ch and the SPECIALPICKUP
+            // permutation into +50h/+54h. An earlier version of this zeroed those, which cannot be
+            // undone while the game runs, so the setting could be turned on and never off again.
+            // It is also unnecessary: those four fields have exactly two readers in the whole image
+            // and both sit behind the gates below.
             {
+                static raw_mem* pGates[2]{};
+                static size_t nGates = 0;
+
+                // FUN_103C6260, the plain pass. The item is in EDX and the effect spills at
+                // +40/+44.
                 auto pattern = dunia_pattern("8B 44 24 40 8B 4C 24 44 8B 54 24 18 89 43 10 89 4B 14 F6 82 9C 00 00 00 04 0F 84");
                 if (!pattern.empty())
                 {
-                    static raw_mem fnItemHighlight(pattern.get_first(24), { 0x00 }); // TEST ...,4 -> TEST ...,0
+                    // TEST ...,4 -> TEST ...,0
+                    static raw_mem fnItemHighlight(pattern.get_first(24), { 0x00 });
+                    pGates[nGates++] = &fnItemHighlight;
+                }
 
+                // FUN_103C7750, the short-run instancing pass. The same code with the registers
+                // the other way round: item in ECX, effect spilled at +30/+34.
+                pattern = dunia_pattern("8B 54 24 30 8B 44 24 34 8B 4C 24 18 89 53 10 89 43 14 F6 81 9C 00 00 00 04 0F 84");
+                if (!pattern.empty())
+                {
+                    static raw_mem fnItemHighlightInstanced(pattern.get_first(24), { 0x00 });
+                    pGates[nGates++] = &fnItemHighlightInstanced;
+                }
+
+                if (nGates != 0)
+                {
                     static auto ItemHighlightCB = []()
                     {
-                        if (bNoBlinkingItems)
-                            fnItemHighlight.Write();
-                        else
-                            fnItemHighlight.Restore();
+                        for (size_t i = 0; i < nGates; i++)
+                        {
+                            if (bNoBlinkingItems)
+                                pGates[i]->Write();
+                            else
+                                pGates[i]->Restore();
+                        }
                     };
 
                     ItemHighlightCB();
@@ -126,7 +141,7 @@ public:
                             return;
 
                         if (IsBlinkSlot(regs.eax))
-                            regs.eax = 10; // out of range, so the CMP/JA two instructions down bails
+                            regs.eax = 10; // out of range, so the CMP/JA below bails
                     });
                 }
             }
@@ -140,7 +155,7 @@ public:
             // this+0x10. Which one carries the value in and which out is unsettled, so both are
             // suppressed for the blink names; either way the slot keeps its empty state.
             //
-            // Filtered on the descriptor name at +4, not the index, since both serve every
+            // Filtered on the descriptor name at +4 rather than the index, since both serve every
             // archetype-reference property. Redirecting EIP to the function's own RET 8 is safe
             // from the entry hook: nothing has been pushed yet.
             {

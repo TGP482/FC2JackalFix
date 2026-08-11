@@ -215,7 +215,8 @@ static void Arm()
 {
     auto nNow = GetTickCount64();
 
-    // Rejects hooks that ran while the game was stalled; they cannot know their session still exists.
+    // Rejects hooks that ran while the game was stalled; they cannot know their session still
+    // exists.
     if (nLastTick == 0 || (nNow - nLastTick) >= GAMEPLAY_GAP_MS)
         return;
 
@@ -335,7 +336,7 @@ static void PollLedger()
 
             known[i] = sample[i];
 
-            // Cleared rather than set is a reload, not a completion.
+            // A set is a completion; a clear is a reload.
             if (sample[i])
                 nFound++;
         }
@@ -402,7 +403,7 @@ public:
             //
 
             // 0x10751200, the only assignment of selType; all six callers go through it. __thiscall
-            // on the manager, new selType at [ESP+4] on entry, index at [ESP+8]. A mission ending is
+            // on the manager, new selType at [ESP+4] on entry, index at [ESP+8]. A mission end is
             // {Story, Library, Buddy} -> None. FUN_10753060 (reset) and FUN_10752FA0 (per-faction
             // recount) also clear selType at load; the settle window in Arm() covers those.
             //
@@ -427,8 +428,8 @@ public:
             }
 
             // 0x107532A0, CFCXMissionManager::MissionCompleted. __thiscall, MSVC8 std::string by
-            // value at [esp+4], cleans 0x1C. Arms directly only before the manager pointer is known;
-            // the name test cannot tell a first completion from a script re-announcing one.
+            // value at [esp+4], cleans 0x1C. Arms directly only before the manager pointer is
+            // known; the name test cannot tell a first completion from a script re-announcing one.
             if (auto p = Resolve("83 EC 5C 53 55 56 57 33 ED 55 8D 44 24 24 8B F1 89 6C 24 18"))
             {
                 static auto MissionCompletedHook = safetyhook::create_mid(p, [](SafetyHookContext& regs)
@@ -476,8 +477,8 @@ public:
             }
 
             // 0x101F1A30, CGameMission::OnStateChanged (vtable slot +0x2C). The runtime mission
-            // system, separate from the board: CGameMission objects owned by CGameMissionMgr (global
-            // 0x10FEFFF0, list at +0x1C, stride 0x28), state a bitmask at +0x08 set through
+            // system, separate from the board: CGameMission objects owned by CGameMissionMgr
+            // (global 0x10FEFFF0, list at +0x1C, stride 0x28), state a bitmask at +0x08 set through
             // CBaseMission::SetState (vtable slot +0x24).
             //
             // Every transition from every source funnels through here, and only on a real change:
@@ -497,9 +498,10 @@ public:
                         return;
                     }
 
-                    // Handler 0x10584DD0 only accepts flag 2 when bit 0 was set, so this mission was
-                    // running and has ended. Too common to arm from alone: a save restore ends a
-                    // pile in one tick. It only counts once the board reacts; see SelectMission.
+                    // Handler 0x10584DD0 only accepts flag 2 when bit 0 was set, so this mission
+                    // was running and has ended. Too common to arm from alone, since a save
+                    // restore ends a pile in one tick. It only counts once the board reacts; see
+                    // SelectMission.
                     if (nFlag == MISSIONSTATE_ENDED)
                         nMissionEndedAt = GetTickCount64();
                 });
@@ -566,7 +568,8 @@ public:
                     auto nNow = GetTickCount64();
                     auto nGap = nLastTick ? (nNow - nLastTick) : 0;
 
-                    // A new component is a new session. This, not the clock, invalidates the ledger.
+                    // A new component is a new session, and that rather than the clock is what
+                    // invalidates the ledger.
                     if (pPlayerFX != pPlayerFXSeen)
                     {
                         pPlayerFXSeen = pPlayerFX;
@@ -579,13 +582,13 @@ public:
                     }
                     else if (nGap > GAMEPLAY_GAP_MS && nArmedAt)
                     {
-                        // A hitch, not a load. The banner did not advance either, so push the delay
-                        // out by the gap.
+                        // A hitch rather than a load. The banner did not advance either, so the
+                        // delay is pushed out by the gap.
                         nArmedAt += nGap;
                     }
                     nLastTick = nNow;
 
-                    // After nLastTick so Arm() sees a running tick rather than the gap just measured.
+                    // After nLastTick, so Arm() sees a running tick rather than the measured gap.
                     PollLedger();
 
                     if (!nArmedAt)

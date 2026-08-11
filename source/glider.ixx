@@ -11,7 +11,7 @@
   That needs a repacked patch.dat, which collides with every other mod that ships one. All three
   are engine fields at fixed offsets, so they are written as the engine reaches for them instead.
 
-  fMass - CVehicleParagliderPhysComponent + 0x1B0. FUN_10492430 registers the ParagliderParams
+  fMass, at CVehicleParagliderPhysComponent + 0x1B0. FUN_10492430 registers the ParagliderParams
   schema on CPhysParagliderVehicleEntityCreateParams with fMass at +0x90, and FUN_10073ED0 embeds
   that struct in the component at +0x120. Its consumer FUN_104A15B0 (inertia tensor, then
   hkpRigidBody::setMass) is no use as a hook site: five physics-entity vtables reference it, and
@@ -22,14 +22,14 @@
   slot at +0x190. The hook sits on MOV ESI,EAX / ADD ESP,8, five bytes exactly, where EBX already
   holds params and EAX still holds the allocation the MOV wants.
 
-  fDiscardedMass - CVehicleParagliderPhysComponent + 0x220. Registered by FUN_10073ED0, seeded to
+  fDiscardedMass, at CVehicleParagliderPhysComponent + 0x220. Registered by FUN_10073ED0, seeded to
   75.0 by the component constructor at 0x1006D678, and named from that one schema. Only reader is
   FUN_1006A230, slot +0x11C of the component vtable, called by the get-out-vehicle handler
   FUN_100E5B40 once the player has walked two metres away: FLD [ESI+0x220] into
   hkpRigidBody::setMass. 75kg is what lets an abandoned canopy skitter across water. The hook
   covers the six-byte FLD and writes the field first, so the FLD reads 825 from the trampoline.
 
-  fUnderWaterMaxDepth - CVehicle + 0x114. Registered by FUN_100DEA10, seeded to -1.0 by the
+  fUnderWaterMaxDepth, at CVehicle + 0x114. Registered by FUN_100DEA10, seeded to -1.0 by the
   CVehicle constructor at 0x100E11BE. Belongs to every vehicle in the game (the big truck ships
   1.95), so it cannot be rewritten blind. Only reader is FUN_100DA270, CVehicle::IsSubmerged:
 

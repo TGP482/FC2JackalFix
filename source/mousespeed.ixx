@@ -22,8 +22,8 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // Hook after maxOutput is loaded so the cap can be raised. The filter is shared with gamepads,
-            // so check the input type first.
+            // Hooked after maxOutput is loaded, so the cap can be raised. The filter is shared
+            // with gamepads, so the input type is checked first.
             auto pattern = dunia_pattern("F3 0F 10 4F 0C F3 0F 5E C2 F3 0F 59 47 10 F3 0F 59 C4 0F 28 F8 0F 54 FD 0F 2F F9 76");
             if (pattern.empty())
                 return;

@@ -28,7 +28,8 @@ public:
                 auto pattern = dunia_pattern("8B 49 0C 85 C9 74 16 8B 44 24 04 50 E8 ? ? ? ? 84 C0 74 08 B8 01 00 00 00 C2 04 00");
                 if (!pattern.empty())
                 {
-                    static raw_mem fnPredecessorTapes(pattern.get_first(5), { 0xEB, 0x0E }); // JZ fail -> JMP success
+                    // JZ fail -> JMP success
+                    static raw_mem fnPredecessorTapes(pattern.get_first(5), { 0xEB, 0x0E });
 
                     static auto PredecessorTapesCB = []()
                     {
@@ -53,7 +54,8 @@ public:
                 auto pattern = dunia_pattern("75 02 B3 01 8B 54 24 08 52 FF 15 ? ? ? ? 8A C3 5B 83 C4 10 C3");
                 if (!pattern.empty())
                 {
-                    static raw_mem fnMachetes(pattern.get_first(15), { 0xB0, 0x01 }); // MOV AL, BL -> MOV AL, 1
+                    // MOV AL, BL -> MOV AL, 1
+                    static raw_mem fnMachetes(pattern.get_first(15), { 0xB0, 0x01 });
 
                     static auto MachetesCB = []()
                     {
