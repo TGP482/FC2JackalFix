@@ -115,15 +115,16 @@ static constexpr float fStockKillLodScale = 1.0f;
 // bottoming out at 0. Only RealTreeCapsMaxDistance and the two decal counts are plain quantities
 // that double.
 //
-// Two columns are pinned rather than scaled.
+// One column is pinned rather than scaled.
 //
 // KillLodScale holds at 0.7 from step 1 on. It is the distance at which an object stops being
 // drawn at all, and below 0.7 scenery pops in on map 2, which is where Boggalog stops as well.
 // Halving it would put step 1 past his maximum, so the column is clamped rather than left to
 // overshoot.
 //
-// LodScale holds at its stock 1.0 for every step. Lowering it is what makes road surfaces break
-// up, and no terrain setting compensates for it, so the column stays where the game put it.
+// LodScale halves with the rest. It could not before: lowering it broke road surfaces up, because
+// the spline pass reads it the opposite way round from every other LOD path. That is the polarity
+// patch further down, and steps 1 and 2 only carry a LodScale at all because it is in.
 //
 // RealTreeNodeMinSize starts at 0.002, small enough that halving it changes nothing visible, so it
 // goes straight to 0 at step 1.
@@ -147,8 +148,8 @@ static constexpr GeometryStep GeometrySteps[] =
 {
     //  CapsDist RealTrees Clusters   Lod    Kill    Leaf     HLeaf     Node   Cluster   Scene   Decals PerType
     {    100.0f,   1.0f,    0.8f,    1.0f,   1.0f,  0.02f,   0.015f,   0.002f,  0.02f,   0.01f,    200,     50 }, // 0 stock
-    {    200.0f,   0.5f,    0.4f,    1.0f,   0.7f,  0.01f,   0.0075f,  0.0f,    0.01f,   0.005f,   400,    100 }, // 1 twice
-    {    400.0f,   0.25f,   0.2f,    1.0f,   0.7f,  0.005f,  0.00375f, 0.0f,    0.005f,  0.0025f,  800,    200 }, // 2 four times
+    {    200.0f,   0.5f,    0.4f,    0.5f,   0.7f,  0.01f,   0.0075f,  0.0f,    0.01f,   0.005f,   400,    100 }, // 1 twice
+    {    400.0f,   0.25f,   0.2f,    0.25f,  0.7f,  0.005f,  0.00375f, 0.0f,    0.005f,  0.0025f,  800,    200 }, // 2 four times
     {   1000.0f,   0.1f,    0.1f,    0.0f,   0.7f,  0.0f,    0.0f,     0.0f,    0.0f,    0.0f,    2000,   1000 }, // 3 maximum
 };
 
@@ -1055,6 +1056,62 @@ static void __fastcall SerialiseInt(const RenderProperty* pProperty, void* pEdx,
     OnPropertySerialised(pProperty, pObject);
 }
 
+/*
+  Roads and LodScale, which the spline pass reads the wrong way round.
+
+  Roads are CSceneSplinePrimitive ribbons drawn by their own pass at Dunia+3C18A0, and each segment
+  chooses between exactly two meshes at Dunia+3C1A5B:
+
+      MOVSS  XMM1, [EBP+44h]      ; LOD0Distance, 92 for every road in spline_inventory.xml
+      MULSS  XMM1, [EBX+48h]      ; * the frame's composed LOD scale
+      MOVAPS XMM2, XMM1
+      MULSS  XMM2, XMM1           ; squared
+      COMISS XMM2, XMM0           ; against squared distance to the segment
+      JBE    3C1A6E               ; threshold <= distance, stay on LOD1
+
+  Every other LOD path scales the distance and leaves the threshold alone. Scene objects at
+  Dunia+3C20E0 test scale * distance < lodDistance[i], so a switch sits at threshold / scale, and
+  clusters at Dunia+3BB6B0 cache (threshold / scale) squared to reach the same place. The spline
+  pass scales the threshold instead, putting its switch at threshold * scale. Lowering LodScale
+  moves every other switch out and pulls the road's LOD0 radius in: 92m at 1.0, 46m at 0.5, and at
+  0.0 no segment is ever LOD0 at any distance.
+
+  Losing LOD0 does not just coarsen the ribbon. Both meshes are built on demand, and the fallback at
+  Dunia+3C1A9F runs one way, LOD0 -> LOD1: take lodMesh[chosen], if null queue a build, if still
+  null and chosen is 0 take lodMesh[1], if still null skip the segment. A segment that has been near
+  the camera since it came into range has only ever had LOD0 built, so asking it for LOD1 asks for a
+  mesh that does not exist, and with no LOD1 -> LOD0 fallback it is not drawn at all. What is left
+  on screen is the terrain it was covering, painted with the *_Roadside textures.
+
+  MULSS to DIVSS is one opcode byte and puts the pass on the polarity everything else already uses.
+  It is identity at the stock 1.0, and at 0.0 the threshold becomes +INF so every segment holds
+  LOD0, which is what the rest of the maximum step asks for anyway. The one-way fallback then runs
+  in the safe direction: an unbuilt LOD0 drops to LOD1 and the road is coarse for a frame instead of
+  missing. A spline carrying LOD0Distance 0 divides to a NaN, COMISS reports unordered and JBE is
+  taken, which is the LOD1 the multiply already gave it.
+*/
+
+// From MOV EDI,1 at Dunia+3C1A49 through MOV EAX,[ESI+EDI*4+4] at Dunia+3C1A6E. Anchored across the
+// whole decision rather than on the MULSS, which as F3 0F 59 4B 48 occurs all over the image.
+static const char* const szSplineLodPattern =
+    "BF 01 00 00 00 F3 0F 11 44 24 3C 74 18 F3 0F 10 4D 44 F3 0F 59 4B 48 0F 28 D1 F3 0F 59 D1 "
+    "0F 2F D0 76 02 33 FF 8B 44 BE 04";
+
+// The 59 of MULSS XMM1,[EBX+48h], measured from the start of the pattern above.
+static constexpr ptrdiff_t nSplineScaleOpcode = 0x14;
+
+static constexpr uint8_t nOpcodeDivss = 0x5E;
+
+static void PatchRoadLodPolarity()
+{
+    auto pattern = dunia_pattern(szSplineLodPattern);
+    if (pattern.empty())
+        return;
+
+    auto* pOpcode = pattern.get_first<uint8_t>(nSplineScaleOpcode);
+    injector::WriteMemory<uint8_t>(pOpcode, nOpcodeDivss, true);
+}
+
 class RenderConfig
 {
 public:
@@ -1063,6 +1120,10 @@ public:
         JackalFix::onDuniaInitEvent() += []()
         {
             TakeSettings();
+
+            // A fix rather than a setting, and it shares nothing with the property hooks, so it
+            // goes in ahead of their early out.
+            PatchRoadLodPolarity();
 
             // No early out: the shadow scale fix has no setting, so the hooks always go in.
 

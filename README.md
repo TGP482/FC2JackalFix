@@ -81,10 +81,11 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2J
 ### Jackal Fixes
 - Fixed an issue where jump height was reduced at high FPS
 - Fixed an issue where NPCs would bounce at high FPS without disabling rigid characters
+- Fixed an issue where character's hair, glasses and water rendered over certain smoke, dust and other 2D effects
+- Fixed an issue where road textures would break when increasing the LodScale config
 - Fixed an issue where the game could crash when changing the resolution at the main menu
 - Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution
 - Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner
-- Fixed an issue where character's hair, glasses and water rendered over certain smoke, dust and other 2D effects
 ### Community Fixes
 - Fixed an issue with hang gliders falling out of the sky when shot
 - Fixed an issue gliders bouncing on water
