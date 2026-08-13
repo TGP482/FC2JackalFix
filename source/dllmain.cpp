@@ -48,6 +48,7 @@ import lookback;
 import glassdecals;
 import fpsfixes;
 import guiduplicates;
+import hudfixes;
 import debug;
 import dx10fixes;
 import effectsorting;

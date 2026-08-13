@@ -250,17 +250,32 @@ static uint32_t NameId(std::string_view sName)
     return ~nCrc;
 }
 
+// A pointer that could be one. Non-null was the only test the walks below applied to a child, and a
+// crash dump says it is not enough: 0xFFFFFFFF passed, and 0xFFFFFFFF + nNodeNameId wraps to
+// 0x00000007, which is the fault address, under ForEachChild+0x98 / FindNamedDeep+0x64 /
+// ApplyBazaarArrow+0x97. A poisoned entry in the child vector rather than a wild pointer.
+//
+// Arithmetic and not IsReadable: these walks recurse over whole subtrees from a per frame refresh,
+// so a VirtualQuery per child buys a syscall per node to answer what the address already answers.
+static bool IsPlausiblePointer(const void* pAddress)
+{
+    const auto n = reinterpret_cast<uintptr_t>(pAddress);
+
+    // Above the null page, below the end of the user half, and aligned - every magma object is.
+    return n >= 0x10000 && n < 0x7FFF0000 && (n & 3) == 0;
+}
+
 // Walks an Area's direct children. The 64 cap is a sanity bound on a vector that may be garbage,
 // not a format limit.
 template <typename F>
 static void ForEachChild(uint8_t* pArea, F&& fn)
 {
-    if (!pArea)
+    if (!IsPlausiblePointer(pArea))
         return;
 
     auto ppBegin = *reinterpret_cast<uint8_t***>(pArea + nAreaChildBegin);
     auto ppEnd = *reinterpret_cast<uint8_t***>(pArea + nAreaChildEnd);
-    if (!ppBegin || ppEnd < ppBegin)
+    if (!IsPlausiblePointer(ppBegin) || !IsPlausiblePointer(ppEnd) || ppEnd < ppBegin)
         return;
 
     auto nCount = static_cast<size_t>(ppEnd - ppBegin);
@@ -270,12 +285,12 @@ static void ForEachChild(uint8_t* pArea, F&& fn)
     for (size_t i = 0; i < nCount; ++i)
     {
         auto pNode = ppBegin[i];
-        if (!pNode)
+        if (!IsPlausiblePointer(pNode))
             continue;
 
         auto nId = *reinterpret_cast<uint32_t*>(pNode + nNodeNameId);
         auto pDrawable = *reinterpret_cast<uint8_t**>(pNode + nNodeDrawable);
-        if (pDrawable)
+        if (IsPlausiblePointer(pDrawable))
             fn(nId, pDrawable);
     }
 }
@@ -285,12 +300,12 @@ static void ForEachChild(uint8_t* pArea, F&& fn)
 template <typename F>
 static void ForEachChildNode(uint8_t* pArea, F&& fn)
 {
-    if (!pArea)
+    if (!IsPlausiblePointer(pArea))
         return;
 
     auto ppBegin = *reinterpret_cast<uint8_t***>(pArea + nAreaChildBegin);
     auto ppEnd = *reinterpret_cast<uint8_t***>(pArea + nAreaChildEnd);
-    if (!ppBegin || ppEnd < ppBegin)
+    if (!IsPlausiblePointer(ppBegin) || !IsPlausiblePointer(ppEnd) || ppEnd < ppBegin)
         return;
 
     auto nCount = static_cast<size_t>(ppEnd - ppBegin);
@@ -300,11 +315,11 @@ static void ForEachChildNode(uint8_t* pArea, F&& fn)
     for (size_t i = 0; i < nCount; ++i)
     {
         auto pNode = ppBegin[i];
-        if (!pNode)
+        if (!IsPlausiblePointer(pNode))
             continue;
 
         auto pDrawable = *reinterpret_cast<uint8_t**>(pNode + nNodeDrawable);
-        if (pDrawable)
+        if (IsPlausiblePointer(pDrawable))
             fn(*reinterpret_cast<uint32_t*>(pNode + nNodeNameId), pNode, pDrawable);
     }
 }

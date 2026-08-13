@@ -1319,3 +1319,33 @@ public:
 } InternalResolutionDX10;
 
 } // namespace dx10
+
+// ---------------------------------------------------------------------------------------------
+// What shape the frame the engine composes into actually is
+//
+// hudfixes needs it and nothing else can answer. The HUD is drawn into the internal frame along
+// with the scene and the frame is then fitted to the output whole, so the shape the player sees
+// the HUD at is the internal frame's and not the window's. The engine's own display descriptor
+// describes the window, which is the same answer only when the two shapes agree.
+//
+// Whichever backend is live has filled its own pair and the other's stays zero. Both stay zero
+// until the first device is made, and false then means the caller should fall back to the
+// descriptor rather than assume anything.
+export bool GetInternalFrameSize(uint32_t& nWidth, uint32_t& nHeight)
+{
+    if (::nInternalW != 0 && ::nInternalH != 0)
+    {
+        nWidth = ::nInternalW;
+        nHeight = ::nInternalH;
+        return true;
+    }
+
+    if (dx10::nInternalW != 0 && dx10::nInternalH != 0)
+    {
+        nWidth = dx10::nInternalW;
+        nHeight = dx10::nInternalH;
+        return true;
+    }
+
+    return false;
+}

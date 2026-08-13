@@ -159,8 +159,8 @@ static constexpr int32_t nMaxGeometryStep = static_cast<int32_t>(sizeof(Geometry
 // touched at all: a shadow map is sized when the device builds it, so a setting for it could only
 // ever be read at startup, and the one that was here never took effect. SunShadowFadeRange and
 // SunShadowRange1 already carry his values in the stock ultrahigh block, so only three fields move.
-static constexpr float fBeyondUltraSunShadowRange0 = 6.0f;   // stock 4
-static constexpr float fBeyondUltraSunShadowRange2 = 999.0f; // stock 140, which flickers
+static constexpr float fBeyondUltraSunShadowRange0 = 8.0f;   // stock 4
+static constexpr float fBeyondUltraSunShadowRange2 = 135.0f; // stock 140, which flickers
 static constexpr float fBeyondUltraLeavesShadowRatio = 1.0f; // stock 0.5
 
 // Static ambient shadow distance, the Ambient High half of the same claim.
