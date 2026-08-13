@@ -116,29 +116,6 @@ export module controllerprompts;
 import common;
 import dunia;
 import inputdevice;
-import settings;
-
-/*
-  The setting, which until now this module never read.
-
-  Every glyph in here is decided from one question, whether the pad is the device in use, and every
-  place that asks it already has the answer for "no" written out: the sprite is cleared, the pill
-  behind the label goes back on, the mouse pointer comes back. So the setting is not a second
-  mechanism, it is the same question with one more term in it, and turning it off puts the menus
-  and the HUD back exactly where a keyboard puts them.
-
-  It needs nothing to make it live. The nav bar is walked once a frame off magma's own draw and the
-  HUD once per prompt update, so the next frame after the value moves is already drawing the answer.
-  The mouse pointer is settled per UI event rather than per frame, which is the same event that
-  carried the keypress that changed it.
-*/
-static bool bControllerPrompts = true;
-
-// The one question this module asks, with the setting folded into it.
-static bool PadPromptsWanted()
-{
-    return bControllerPrompts && IsPadActiveDevice();
-}
 
 // --------------------------------------------------------------------------------------------
 // magma object layout
@@ -250,32 +227,17 @@ static uint32_t NameId(std::string_view sName)
     return ~nCrc;
 }
 
-// A pointer that could be one. Non-null was the only test the walks below applied to a child, and a
-// crash dump says it is not enough: 0xFFFFFFFF passed, and 0xFFFFFFFF + nNodeNameId wraps to
-// 0x00000007, which is the fault address, under ForEachChild+0x98 / FindNamedDeep+0x64 /
-// ApplyBazaarArrow+0x97. A poisoned entry in the child vector rather than a wild pointer.
-//
-// Arithmetic and not IsReadable: these walks recurse over whole subtrees from a per frame refresh,
-// so a VirtualQuery per child buys a syscall per node to answer what the address already answers.
-static bool IsPlausiblePointer(const void* pAddress)
-{
-    const auto n = reinterpret_cast<uintptr_t>(pAddress);
-
-    // Above the null page, below the end of the user half, and aligned - every magma object is.
-    return n >= 0x10000 && n < 0x7FFF0000 && (n & 3) == 0;
-}
-
 // Walks an Area's direct children. The 64 cap is a sanity bound on a vector that may be garbage,
 // not a format limit.
 template <typename F>
 static void ForEachChild(uint8_t* pArea, F&& fn)
 {
-    if (!IsPlausiblePointer(pArea))
+    if (!pArea)
         return;
 
     auto ppBegin = *reinterpret_cast<uint8_t***>(pArea + nAreaChildBegin);
     auto ppEnd = *reinterpret_cast<uint8_t***>(pArea + nAreaChildEnd);
-    if (!IsPlausiblePointer(ppBegin) || !IsPlausiblePointer(ppEnd) || ppEnd < ppBegin)
+    if (!ppBegin || ppEnd < ppBegin)
         return;
 
     auto nCount = static_cast<size_t>(ppEnd - ppBegin);
@@ -285,12 +247,12 @@ static void ForEachChild(uint8_t* pArea, F&& fn)
     for (size_t i = 0; i < nCount; ++i)
     {
         auto pNode = ppBegin[i];
-        if (!IsPlausiblePointer(pNode))
+        if (!pNode)
             continue;
 
         auto nId = *reinterpret_cast<uint32_t*>(pNode + nNodeNameId);
         auto pDrawable = *reinterpret_cast<uint8_t**>(pNode + nNodeDrawable);
-        if (IsPlausiblePointer(pDrawable))
+        if (pDrawable)
             fn(nId, pDrawable);
     }
 }
@@ -300,12 +262,12 @@ static void ForEachChild(uint8_t* pArea, F&& fn)
 template <typename F>
 static void ForEachChildNode(uint8_t* pArea, F&& fn)
 {
-    if (!IsPlausiblePointer(pArea))
+    if (!pArea)
         return;
 
     auto ppBegin = *reinterpret_cast<uint8_t***>(pArea + nAreaChildBegin);
     auto ppEnd = *reinterpret_cast<uint8_t***>(pArea + nAreaChildEnd);
-    if (!IsPlausiblePointer(ppBegin) || !IsPlausiblePointer(ppEnd) || ppEnd < ppBegin)
+    if (!ppBegin || ppEnd < ppBegin)
         return;
 
     auto nCount = static_cast<size_t>(ppEnd - ppBegin);
@@ -315,11 +277,11 @@ static void ForEachChildNode(uint8_t* pArea, F&& fn)
     for (size_t i = 0; i < nCount; ++i)
     {
         auto pNode = ppBegin[i];
-        if (!IsPlausiblePointer(pNode))
+        if (!pNode)
             continue;
 
         auto pDrawable = *reinterpret_cast<uint8_t**>(pNode + nNodeDrawable);
-        if (IsPlausiblePointer(pDrawable))
+        if (pDrawable)
             fn(*reinterpret_cast<uint32_t*>(pNode + nNodeNameId), pNode, pDrawable);
     }
 }
@@ -560,7 +522,7 @@ static constexpr ptrdiff_t nStringCapacity = 0x18;
 static constexpr uint32_t nStringLocalCapacity = 16;
 static constexpr uint32_t nWideLocalCapacity = 8;
 
-// A .mgb.desc attribute value. Anything longer is a bad read rather than a long value.
+// A .mgb.desc attribute value. Anything longer is a bad read, not a long value.
 static constexpr uint32_t nStringSizeLimit = 0x400;
 
 // Console draws the glyph 30x30 at 720p. Rect units are not pixels, so the square is calibrated
@@ -592,7 +554,7 @@ static constexpr int nMenuGlyphSideFallback = 409;
 // leaves it growing with the display's width while the glyph grows with its height, which reads
 // loose on an ultrawide.
 static constexpr int nMenuGlyphGapPixels = 6;
-static constexpr int nMenuGlyphRoundPixels = 31;
+static constexpr int nMenuGlyphRoundPixels = 30;
 
 // The quad is not the glyph, so the gap cannot be counted against the side. The sprite carries
 // its own transparent margin, and the rect sizes the quad the sprite draws into rather than the
@@ -605,41 +567,10 @@ static constexpr int nMenuGlyphRoundPixels = 31;
 // unknowns against three readings, and the quad comes out 65.0, 65.0 and 64.9 pixels across with
 // the disc at 34.0, 34.0 and 34.3, which is the 34 the disc measures on the capture directly.
 //
-// The disc is a fraction of the quad rather than a length, so both hold at any size or aspect: the
+// The disc is the fraction of the quad, not a length, so both hold at any size or aspect: the
 // margin is half of what the quad has over the disc, taken off whatever the quad works out to.
 static constexpr int nMenuGlyphQuadPixels = 65;
 static constexpr int nMenuGlyphDiscPixels = 34;
-
-/*
-  The unit space is not square on screen, which is the whole of the stretch.
-
-  A rect as wide as it is tall does not draw that way. Differencing two captures for a clean edge
-  puts the disc at 34 across against 31 down, from a square rect, and it holds from a tenth of the
-  sprite's peak up through a third of it. Console draws the same sprite round, so the sprite is
-  not carrying an oval and the space is.
-
-  The space is fixed and stretched to whatever the display is, so the correction is one aspect
-  against the other and nothing else needs measuring. 16 over 9 of display against the 34 over 31
-  the glyph came out at leaves the space itself at 1.62 wide to 1 tall. Counting the width against
-  that puts a 4:3 display wider in units and a 21:9 display narrower, both landing square, and
-  leaves the height alone so the glyph still scales with the screen the way the rest of the UI
-  does.
-
-  Every round glyph takes it, the nav bar, the HUD and the bazaar alike, since all three write a
-  square rect and all three came out oval. The bazaar's category arrows do not: that quad is a
-  pill counted whole off a capture with this stretch already in it, and it wants its own capture
-  before it moves.
-*/
-static constexpr int nUiSpaceWide = 162;
-static constexpr int nUiSpaceHigh = 100;
-
-// If the window cannot be measured. The space was solved at 1280x720, so falling back to it
-// leaves the glyph exactly where the capture put it.
-static constexpr int nFallbackScreenWide = 1280;
-static constexpr int nFallbackScreenHigh = 720;
-
-// Below this a client rect is a window being built or torn down rather than a display.
-static constexpr int nScreenSizeFloor = 64;
 
 // FUN_10AB4F50. Anchored past the SEH prologue, on the two null checks that reach the font
 // through Text+0x58, since the prologue itself is shared with every other guarded function.
@@ -826,63 +757,6 @@ static int32_t CalibrateGlyphSide(uint8_t* pArea)
     return nCalibratedGlyphSide;
 }
 
-// The surface the unit space is stretched across. Walked out of this process rather than asked
-// for as the active window, since the glyph is placed from the input thread as well as the game
-// thread and the active window is per thread.
-static HWND hGameWindow = nullptr;
-
-static BOOL CALLBACK TakeGameWindow(HWND hWindow, LPARAM)
-{
-    DWORD nProcess = 0;
-    GetWindowThreadProcessId(hWindow, &nProcess);
-
-    if (nProcess != GetCurrentProcessId() || !IsWindowVisible(hWindow))
-        return TRUE;
-
-    hGameWindow = hWindow;
-    return FALSE;
-}
-
-static void ScreenSize(int32_t& nWide, int32_t& nHigh)
-{
-    nWide = nFallbackScreenWide;
-    nHigh = nFallbackScreenHigh;
-
-    if (!IsWindow(hGameWindow))
-    {
-        hGameWindow = nullptr;
-        EnumWindows(TakeGameWindow, 0);
-    }
-
-    RECT client{};
-    if (!hGameWindow || !GetClientRect(hGameWindow, &client))
-        return;
-
-    auto nClientWide = static_cast<int32_t>(client.right - client.left);
-    auto nClientHigh = static_cast<int32_t>(client.bottom - client.top);
-
-    if (nClientWide < nScreenSizeFloor || nClientHigh < nScreenSizeFloor)
-        return;
-
-    nWide = nClientWide;
-    nHigh = nClientHigh;
-}
-
-// The width that draws as square as the side is tall, whatever the display is shaped like. It
-// takes the side rather than reading the calibrated one, since the three pages size their glyphs
-// differently and only the shape is shared.
-static int32_t GlyphWidth(int32_t nSide)
-{
-    int32_t nScreenWide = 0;
-    int32_t nScreenHigh = 0;
-    ScreenSize(nScreenWide, nScreenHigh);
-
-    auto nWide = nSide * nUiSpaceWide / nUiSpaceHigh;
-    nWide = nWide * nScreenHigh / nScreenWide;
-
-    return nWide > 0 ? nWide : nSide;
-}
-
 static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
 {
     static const auto nLabelName = NameId("t_button_text");
@@ -903,13 +777,9 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
         nCalibratedGlyphSide = nSide;
     }
 
-    auto nWide = GlyphWidth(nSide);
-
-    // Both come off the width the display worked out rather than off the side, so the glyph keeps
-    // its proportions wherever it lands. Taking the margin here leaves the gap measured to the
-    // disc.
-    auto nDisc = nWide * nMenuGlyphDiscPixels / nMenuGlyphQuadPixels;
-    auto nMargin = (nWide - nDisc) / 2;
+    // Taking the margin here leaves the gap measured to the disc.
+    auto nDisc = nSide * nMenuGlyphDiscPixels / nMenuGlyphQuadPixels;
+    auto nMargin = (nSide - nDisc) / 2;
     auto nGap = nDisc * nMenuGlyphGapPixels / nMenuGlyphRoundPixels - nMargin;
 
     auto nCentreY = (box.nTop + box.nBottom) / 2;
@@ -933,8 +803,8 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
     auto nTextLeft = bMeasured ? box.nLeft + TextLeftInBox(nAlign, nBoxWidth, nTextWidth) : box.nLeft;
     auto nTextRight = bMeasured ? nTextLeft + nTextWidth : box.nRight;
 
-    out.nLeft = static_cast<int16_t>(bRightSide ? nTextRight + nGap : nTextLeft - nGap - nWide);
-    out.nRight = static_cast<int16_t>(out.nLeft + nWide);
+    out.nLeft = static_cast<int16_t>(bRightSide ? nTextRight + nGap : nTextLeft - nGap - nSide);
+    out.nRight = static_cast<int16_t>(out.nLeft + nSide);
     return true;
 }
 
@@ -971,9 +841,9 @@ static bool bShopGlyphsOnPrompts = false;
 
 static void ApplyMenuGlyph(uint8_t* pPrompt)
 {
-    // IsLivePrompt vouches for the prompt rather than for what it points at. A prompt can be
-    // attached and still hold a stale element: a crash came back with 0x21 in hand, faulting on
-    // 0x5D, which is that plus the child area offset, read straight through a null check.
+    // IsLivePrompt vouches for the prompt, not for what it points at. A prompt can be attached
+    // and still hold a stale element: a crash came back with 0x21 in hand, faulting on 0x5D,
+    // which is that plus the child area offset, read straight through a null check.
     auto pElement = *reinterpret_cast<uint8_t**>(pPrompt + nPromptElement);
     if (!IsObject(pElement))
         return;
@@ -1006,7 +876,7 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
         }
     }
 
-    if (!PadPromptsWanted() || nSprite == 0)
+    if (!IsPadActiveDevice() || nSprite == 0)
     {
         if (pImage)
             *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = 0;
@@ -1157,7 +1027,7 @@ static void RefreshMenuGlyphs()
       inventory      a_inventory_icons 7A3A3A37 -> stain, i_watch E8B3D151, i_wrench A9264364,
                      i_phone FCF70CAA, i_ied D43D37D9
 
-  Prompt+0x0C is the Area itself rather than an element wrapping one; the child search runs off
+  Prompt+0x0C is the Area itself, not an element wrapping one; the child search runs straight off
   it. Buttons come from the shipped console action map: use -> pad:a and pad:y, reload -> pad:x,
   tryuseied -> pad:right_trigger, heal -> pad:left_shoulder. Console interacts with Y.
 */
@@ -1184,7 +1054,7 @@ static constexpr int nHudGlyphFallbackPercent = 85;
   across x 628..651 and the weapon swap glyph across 624..653, both centred on 639 give or take
   the antialiasing, while the icons underneath are not symmetric about the screen at all: the swap
   arrow's own pixels centre on 653. Centring on the anchor rect, which is what the code below
-  does, lands 2 pixels right on interact and 3 on the swap. Both attempts to close that
+  does, therefore lands 2 pixels right on interact and 3 on the swap. Both attempts to close that
   gap failed and it is left open deliberately; two pixels are not worth a fragile placement.
 
   The first attempt derived screen centre from the glyph calibration. Its own sanity check
@@ -1221,6 +1091,10 @@ static constexpr int nHudGlyphFallbackPercent = 85;
 // So the offset rate is measured rather than modelled. Every distance that positions the glyph
 // halves; the square does not.
 static constexpr int nHudOffsetHalving = 2;
+
+// The HUD area draws larger than the nav bar's. Counted on a 1280x720 capture: the menu's side
+// measured 30 pixels where the same side measured 34 here.
+static constexpr int nHudGlyphMeasured = 34;
 
 // szAbove is both the sibling the glyph is added next to and the rect it is measured from.
 // nPixels is the square and nDown a downward nudge on top of the gap, both in 720p pixels.
@@ -1309,7 +1183,7 @@ static bool ComputeHudGlyphRect(uint8_t* pAnchor, const HudPrompt& prompt, Rect&
     auto nHeight = anchor.nBottom - anchor.nTop;
 
     auto nSide = nCalibratedGlyphSide > 0
-        ? nCalibratedGlyphSide * prompt.nPixels / nMenuGlyphPixels
+        ? nCalibratedGlyphSide * prompt.nPixels / nHudGlyphMeasured
         : nHeight * nHudGlyphFallbackPercent / 100;
 
     if (nSide < 1)
@@ -1323,11 +1197,8 @@ static bool ComputeHudGlyphRect(uint8_t* pAnchor, const HudPrompt& prompt, Rect&
         ? prompt.nDown * nCalibratedGlyphSide / (nMenuGlyphPixels * nHudOffsetHalving)
         : 0;
 
-    // Centred on the anchor, so the narrower width costs nothing but the stretch.
-    auto nWide = GlyphWidth(nSide);
-
-    out.nLeft = static_cast<int16_t>(nCentreX - nWide / 2);
-    out.nRight = static_cast<int16_t>(out.nLeft + nWide);
+    out.nLeft = static_cast<int16_t>(nCentreX - nSide / 2);
+    out.nRight = static_cast<int16_t>(out.nLeft + nSide);
     out.nBottom = static_cast<int16_t>(anchor.nTop - nGap + nDrop);
     out.nTop = static_cast<int16_t>(out.nBottom - nSide);
     return true;
@@ -1351,7 +1222,7 @@ static void ApplyHudGlyph(uint8_t* pPrompt, const HudPrompt& prompt)
 
     auto pImage = FindNamedDeep(pSiblingArea, nGlyphName, 0);
 
-    if (!PadPromptsWanted())
+    if (!IsPadActiveDevice())
     {
         if (pImage)
             *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = 0;
@@ -1489,7 +1360,7 @@ static void RestoreCursors()
 
   Placement, counted off a 360 capture: B Cancel, A Add/Remove, Y Checkout, with the glyph to the
   left of the text bar rather than inside it. The bar stays. Hiding crc 0xC03AFD13 to make room
-  takes the label with it: that crc is the whole button visual rather than the pill.
+  takes the label with it: that crc is the whole button visual, not the pill.
 
   The buttons are asked for by name rather than reached from CBazaarComputerUI's cached label
   pointers. Those pointers are not the widgets on screen: searching every area reachable from them
@@ -1548,13 +1419,17 @@ static constexpr uint32_t nBazaarLabelId = 0x81FDCEB5;
   made the glyph vanish: a capture carries the dimming the page put on it and a tint multiplies,
   so feeding it back dims twice. What survives sampling is the channel ratio, 0.30 to 0.70 to
   0.51. Scaled until green reaches full that is 6CFFB7, which in this order is FFB7FF6C. The
-  87FFD0 picked off the bar first was the highlight rather than the glyph.
+  87FFD0 picked off the bar first was the highlight, not the glyph.
 */
 static constexpr uint32_t nBazaarGlyphColour = 0xFFB7FF6C;
 
 // Counted on a 1280x720 capture: the calibrated square written whole came out 63 pixels across.
 static constexpr int nBazaarGlyphPixels = 30;
 static constexpr int nBazaarGlyphMeasured = 63;
+
+// The glyph's own count off the same page, taken after the UI scaling was corrected: 65 units
+// drew 26 pixels where 30 are wanted. The arrows keep the 63 above, which is their own count.
+static constexpr int nBazaarGlyphSideMeasured = 55;
 
 // Counted off Xenia: the glyph clears the bar's left edge by two pixels.
 static constexpr int nBazaarGapPixels = 2;
@@ -1781,8 +1656,8 @@ static uintptr_t ResolveNamedSprite(const char* szName)
     return nSprite;
 }
 
-// The first spelling that resolves, suffix outermost, so a missing button_b_shop falls back to
-// the gold button_b rather than to nothing.
+// The name that last resolved, so a gold button_b standing in for a missing button_b_shop is
+// visible in the log rather than looking identical to it.
 static uintptr_t GetShopSprite(const char* szLetter)
 {
     for (auto szSuffix : sShopSuffixes)
@@ -1801,8 +1676,8 @@ static uintptr_t GetShopSprite(const char* szLetter)
     return 0;
 }
 
-// Left of the bar rather than inside it, so the box edge is what the glyph sits against rather
-// than the measured text the menu uses.
+// Left of the bar, not inside it, so the box edge is what the glyph sits against rather than the
+// measured text the menu uses.
 // The _shop art is a white outline; the green is the tint. All four corners, so no gradient.
 static void TintBazaarGlyph(uint8_t* pState)
 {
@@ -1829,7 +1704,7 @@ static bool ComputeBazaarGlyphRect(uint8_t* pLabel, Rect& out)
     */
     auto nBase = nCalibratedGlyphSide > 0 ? nCalibratedGlyphSide : nMenuGlyphSideFallback;
 
-    auto nSide = nBase * nBazaarGlyphPixels / nBazaarGlyphMeasured;
+    auto nSide = nBase * nBazaarGlyphPixels / nBazaarGlyphSideMeasured;
     if (nSide < 1)
         return false;
 
@@ -1848,17 +1723,13 @@ static bool ComputeBazaarGlyphRect(uint8_t* pLabel, Rect& out)
       inside its bar and on top of the cart while the others sat outside. The bar is the button,
       so the button's edge is the one console measures from.
     */
-    auto nGap = nBase * nBazaarGapPixels / nBazaarGlyphMeasured;
+    auto nGap = nBase * nBazaarGapPixels / nBazaarGlyphSideMeasured;
     auto nCentreY = (box.nTop + box.nBottom) / 2;
-
-    // Hung off the bar's edge, so the narrower width takes the glyph in from the left and leaves
-    // the counted two pixels where they were.
-    auto nWide = GlyphWidth(nSide);
 
     out.nTop = static_cast<int16_t>(nCentreY - nSide / 2);
     out.nBottom = static_cast<int16_t>(out.nTop + nSide);
-    out.nLeft = static_cast<int16_t>(-(nGap + nWide));
-    out.nRight = static_cast<int16_t>(out.nLeft + nWide);
+    out.nLeft = static_cast<int16_t>(-(nGap + nSide));
+    out.nRight = static_cast<int16_t>(out.nLeft + nSide);
     return true;
 }
 
@@ -1899,7 +1770,7 @@ static void ApplyBazaarGlyph(const BazaarButton& button)
     auto pImage = FindNamedDeep(pArea, nGlyphName, 0);
 
     // Nothing of the game's is hidden either way: the bar stays on both devices, console keeps it.
-    if (!PadPromptsWanted())
+    if (!IsPadActiveDevice())
     {
         if (pImage)
             *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = 0;
@@ -2061,7 +1932,7 @@ static void ApplyBazaarArrow(const BazaarArrow& arrow, uint8_t* pList)
     auto bContent = ArrowContentBox(pArea, nGlyphName, content);
 
     auto nSprite = uintptr_t{ 0 };
-    if (PadPromptsWanted())
+    if (IsPadActiveDevice())
     {
         nSprite = GetShopSprite(arrow.szLetter);
         if (nSprite == 0 && GetPadButtonImage)
@@ -2163,17 +2034,6 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            bControllerPrompts = JackalFixSettings.GetInt(PREF_CONTROLLERPROMPTS) != 0;
-
-            // Nothing is pushed anywhere from here. The nav bar is walked once a frame and the HUD
-            // once per prompt update, both on the engine's own threads, so the value is read where
-            // it is used, which is also what keeps this off the file watcher's thread, where
-            // touching a widget tree is not safe.
-            JackalFix::onIniFileChange() += []()
-            {
-                bControllerPrompts = JackalFixSettings.GetInt(PREF_CONTROLLERPROMPTS) != 0;
-            };
-
             // FUN_105362E0, the 360 glyph loader. Anchored on the two null checks inside it; its
             // prologue is std::string boilerplate shared with unrelated functions.
             //
@@ -2495,7 +2355,7 @@ public:
 
                     bInCursorUpdate = true;
 
-                    if (PadPromptsWanted())
+                    if (IsPadActiveDevice())
                         DisableCursors();
                     else
                         RestoreCursors();
