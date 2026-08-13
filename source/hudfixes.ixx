@@ -105,18 +105,31 @@ static constexpr int nContentOffsetY = 0;
 // bar. Measured on the text body instead - a dense run of bright rows, and nothing else in the frame
 // is - console puts it at rows 195..203 against 161..169 here, so 34 px short.
 //
-// 620 rather than 540 for the bottom boundary. Every element origin y the gameplay HUD has emitted
-// across four dumps:
+// 580 for the bottom boundary, and the two numbers before it were both wrong the same way: the
+// element census they were placed against was incomplete. Every element origin y the gameplay HUD
+// has been seen to emit:
 //
 //     -274.4                                          the banner's backing
 //     444.0  516.0  520.0  532.4  534.5  539.4  541.5  the reticle and the weapon swap prompt
+//     612 .. 635, then 663, 677, 682                  the incoming call icon, animating
 //     702.0  712.0  713.0  715.0  720.0  729.0  733.0  the ammo block and the health bar
 //
 // 540 fell inside the weapon swap prompt at 532..541.5 and cut it in two: the arrow and one half of
-// each icon stayed while the 541.5 half went up 72 and landed beside the button glyph. 620 sits in
-// the middle of the gap, clearing the prompt by 78 and the ammo block by 82.
+// each icon stayed while the 541.5 half went up 72 and landed beside the button glyph.
+//
+// 620 then fell inside the call icon, which was not in the census because no dump had caught a
+// ringing phone. It does not sit still: its origin walks from 612 to 635 as it animates, so it
+// crosses 620 while it is on screen and snaps between the two bands frame by frame. From a dump
+// taken with it up, one unit of origin against 230 px of screen:
+//
+//     group y 620    screen y 1886.90 .. 2054.48    unshifted
+//     group y 621    screen y 1657.24 .. 1818.62    shifted -75
+//
+// It is anchored to the same corner as the ammo block, so it belongs in the bottom band and the
+// boundary goes below it rather than above. The real gaps are 541.5 to 612 and 682 to 702; 580 sits
+// in the first, clearing the weapon swap prompt by 38.5 and the call icon by 32.
 static constexpr int nTopZoneMax = 270;
-static constexpr int nBottomZoneMin = 620;
+static constexpr int nBottomZoneMin = 580;
 static constexpr int nShiftTop = 62;
 static constexpr int nShiftBottom = -72;
 
