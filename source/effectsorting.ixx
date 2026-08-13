@@ -19,9 +19,11 @@ import dunia;
 static constexpr const char* pHairTechnique = "Mesh_Hair";
 static constexpr const char* pSkinningDefine = "SKINNING";
 
-// Ahead of the particle layer at 0, behind the water surface at -1000, alongside the engine's own
-// blended props. Signed: the comparator tests the key with SETL.
-static constexpr int32_t nCharacterSortKey = -1;
+// Ahead of the particle layer at 0 and ahead of the water surface at -1000, so a body lying in a
+// river is drawn under the surface rather than through it. The water's depth only submission is
+// skipped below, so nothing else stops a blended draw from showing over it. Signed: the comparator
+// tests the key with SETL.
+static constexpr int32_t nCharacterSortKey = -2000;
 
 // A draw item's 64 bit shader id: the low byte is a one based index into the technique array, and
 // everything from bit 8 up is one bit per registered define.
