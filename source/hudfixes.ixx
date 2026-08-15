@@ -125,11 +125,48 @@ static constexpr int nContentOffsetY = 0;
 //     group y 620    screen y 1886.90 .. 2054.48    unshifted
 //     group y 621    screen y 1657.24 .. 1818.62    shifted -75
 //
-// It is anchored to the same corner as the ammo block, so it belongs in the bottom band and the
-// boundary goes below it rather than above. The real gaps are 541.5 to 612 and 682 to 702; 580 sits
-// in the first, clearing the weapon swap prompt by 38.5 and the call icon by 32.
+// One boundary cannot serve the three columns, and three builds proved it. The bottom of the screen
+// is not one cluster starting at one height; each column starts its own at a different one:
+//
+//     left      diamond pickup 548 and 580, syringes 620 to 692, health bar 702 to 733
+//     centre    weapon swap prompt 532.4 to 541.5, and nothing below it
+//     right     call icon from 612, grenade and ammo block from 702
+//
+// So the boundary is per column. What each one has to clear:
+//
+// Left, 400. The whole column belongs to the bottom cluster and moves with it. Counted off a Xenia
+// capture against a PC one at the same frame size, console leaves 100 px between the diamond block
+// and the health bar and this left 18, because the health bar and syringes took the -72 and the
+// diamond block did not. Solving those PC rows back through the HUD canvas puts the pair at content
+// 548 and 580, which is also why an earlier 580 split it: one half took the shift, the other did
+// not, and the pair drew in the wrong order. 400 is below both halves and well above the banner's
+// left bar at 105, which is the only other thing this column has.
+//
+// Centre, 620. The weapon swap prompt has to stay out: 540 cut it in two once already.
+//
+// Right, 600. Below the call icon's lowest origin of 612, so it cannot cross while it animates.
 static constexpr int nTopZoneMax = 270;
-static constexpr int nBottomZoneMin = 580;
+static constexpr int nBottomZoneMinLeft = 400;
+static constexpr int nBottomZoneMin = 620;
+static constexpr int nBottomZoneMinRight = 600;
+
+// The diamond pickup block moves with the left column but not by the same amount as the rest of it.
+// With the column's shift applied it lands 13 px high and about 4 px right of console, while the
+// health bar it is banded with is on console exactly, so the difference is the block's own and not
+// the band's. Counted off the two captures at the same frame size:
+//
+//     white pickup amount    console y 500    PC 487    13 px high
+//     diamond count row      console y 538    PC 528    10 px high
+//
+// 13 px reads as 12.6 units at this canvas, and 12 overshot by about 4 px the other way, so the
+// vertical takes back 8 of the -72. Both reads are off a screenshot rather than a correlation, so
+// the residual is the measurement's, not the model's. The horizontal is the smaller read of the two
+// and 4 units is the round number nearest it.
+//
+// Bounded above by the syringes at 620, which are on the column's own shift and correct there.
+static constexpr int nDiamondZoneMax = 620;
+static constexpr int nDiamondShiftX = -6;
+static constexpr int nDiamondShiftY = 11;
 static constexpr int nShiftTop = 62;
 static constexpr int nShiftBottom = -72;
 
@@ -473,6 +510,28 @@ static void* PageAt(uint8_t* pDisplay, uint32_t nIndex)
 // The page currently being drawn, latched by the canvas hook for the quad hook to attribute to.
 static void* pCurrentPage = nullptr;
 
+// The reticle, and anything else small and centred. Its marks are two to eight units and sit a few
+// units either side of the content box's centre, and they spread apart as the weapon sways, so the
+// element origin walks up and down the frame. Jumping, and holding a sniper rifle, take it far
+// enough up to cross nTopZoneMax, which threw the top mark 62 units down into the middle of the
+// screen. Nothing centred and this small belongs to a corner cluster, so none of it takes a shift.
+//
+// 150 either side of the centre covers the marks at 459 to 484 and stops well short of the ammo
+// block at 981 and the health bar at -140. 24 units is above the marks and below the weapon swap
+// prompt's icons.
+static constexpr float fCentreDetailMargin = 150.0f;
+static constexpr float fCentreDetailExtent = 24.0f;
+
+static bool IsCentredDetail(float fGroupX, float fWidth, float fHeight)
+{
+    if (fContentCentre <= 0.0f)
+        return false;
+
+    const float fOffset = fGroupX - fContentCentre;
+    return fOffset > -fCentreDetailMargin && fOffset < fCentreDetailMargin
+        && fWidth <= fCentreDetailExtent && fHeight <= fCentreDetailExtent;
+}
+
 // How far outside the content box an element has to be authored before it counts as anchored to a
 // screen edge. The two clusters that qualify clear it comfortably - the health bar starts at -146 and
 // the ammo block at 981 against a box of 0..960 - so the margin only keeps an element that merely
@@ -633,12 +692,18 @@ static void Remap(uint8_t* pRender, const ptrdiff_t (&nOffsets)[4], float fOffse
 // Both axes have to cover, not merely be large: the pop-up's widest row of text is 660 units, and
 // its vignette, authored at 1536 x 1024 to over-scan on purpose, is carried out to -111..780 rather
 // than clamped, so it keeps over-scanning by the proportion it was drawn with.
-static bool IsBackdrop(float fWidth, float fHeight)
+// Per axis, because the two do not have to arrive together. The developer console is the case: a
+// band authored across the whole canvas width and about a third of its height, so a test that
+// wanted both axes missed it and it was drawn in content space, leaving the canvas margins either
+// side of it uncovered. An axis that spans the authored canvas is laid out against the canvas on
+// that axis whatever the other one does.
+//
+// Width alone is still a safe test at this threshold. The widest thing on any page that is content
+// rather than canvas is the tutorial pop-up's longest row at 660 units and a subtitle line at about
+// 784, against an authored canvas of 1280.
+static bool IsBackdropAxis(float fExtent, float fAuthoredExtent)
 {
-    if (fAuthoredCanvasWidth <= 0.0f || fAuthoredCanvasHeight <= 0.0f)
-        return false;
-
-    return fWidth >= fAuthoredCanvasWidth && fHeight >= fAuthoredCanvasHeight;
+    return fAuthoredExtent > 0.0f && fExtent >= fAuthoredExtent;
 }
 
 // 0x105FAD67, between the last vertex write and the divide. ESI is magma::Render and the four
@@ -690,10 +755,14 @@ static void ShiftQuad(SafetyHookContext& regs)
         bAnchorPage = true;
     }
 
-    if (IsBackdrop(fRight - fLeft, fBottom - fTop))
+    const bool bBackdropX = IsBackdropAxis(fRight - fLeft, fAuthoredCanvasWidth);
+    const bool bBackdropY = IsBackdropAxis(fBottom - fTop, fAuthoredCanvasHeight);
+    if (bBackdropX || bBackdropY)
     {
-        Remap(pRender, nRenderVertexX, fBackdropOffsetX, fBackdropScaleX);
-        Remap(pRender, nRenderVertexY, fBackdropOffsetY, fBackdropScaleY);
+        if (bBackdropX)
+            Remap(pRender, nRenderVertexX, fBackdropOffsetX, fBackdropScaleX);
+        if (bBackdropY)
+            Remap(pRender, nRenderVertexY, fBackdropOffsetY, fBackdropScaleY);
         return;
     }
 
@@ -701,16 +770,30 @@ static void ShiftQuad(SafetyHookContext& regs)
     if (!bGameplayHudPage || !bAnchorPage)
         return;
 
-    const int nBandX = BandOf(fGroupX, static_cast<float>(nLeftZoneMax), static_cast<float>(nRightZoneMin));
-    const int nBandY = BandOf(fGroupY, static_cast<float>(nTopZoneMax), static_cast<float>(nBottomZoneMin));
+    if (IsCentredDetail(fGroupX, fRight - fLeft, fBottom - fTop))
+        return;
 
-    const float fDeltaX = (nBandX < 0) ? fDeltaLeft : (nBandX > 0) ? fDeltaRight : 0.0f;
+    const int nBandX = BandOf(fGroupX, static_cast<float>(nLeftZoneMax), static_cast<float>(nRightZoneMin));
+
+    // The bottom boundary is per column.
+    const int nBottomBoundary = (nBandX < 0) ? nBottomZoneMinLeft
+        : (nBandX > 0) ? nBottomZoneMinRight
+        : nBottomZoneMin;
+    const int nBandY = BandOf(fGroupY, static_cast<float>(nTopZoneMax), static_cast<float>(nBottomBoundary));
+
+    float fDeltaX = (nBandX < 0) ? fDeltaLeft : (nBandX > 0) ? fDeltaRight : 0.0f;
 
     float fDeltaY = 0.0f;
     if (nBandY < 0)
         fDeltaY = static_cast<float>(nShiftTop);
     else if (nBandY > 0)
         fDeltaY = static_cast<float>((nBandX > 0) ? nShiftBottomRight : nShiftBottom);
+
+    if (nBandX < 0 && nBandY > 0 && fGroupY < nDiamondZoneMax)
+    {
+        fDeltaX += nDiamondShiftX;
+        fDeltaY += nDiamondShiftY;
+    }
 
     Move(pRender, nRenderVertexX, fDeltaX);
     Move(pRender, nRenderVertexY, fDeltaY);

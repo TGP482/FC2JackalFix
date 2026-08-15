@@ -127,6 +127,10 @@ public:
 
         mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 1);
 
+        // The gameplay HUD page is authored 960x720 inside a canvas whose shape is the display
+        // it was drawn for, 4:3 or 16:10 and nothing else. 1 lets the canvas follow the actual
+        // aspect so the box keeps its shape at every ratio; 0 leaves the authored canvas alone.
+
         mPrefs[PREF_MAXFRAMERATE] = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 1), 0, 9999);
 
         mPrefs[PREF_ANISOTROPICFILTERING] = std::clamp(iniReader.ReadInteger("Graphics", "AnisotropicFiltering", 16), 0, 16);

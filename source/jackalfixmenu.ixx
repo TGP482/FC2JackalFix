@@ -466,6 +466,14 @@ static constexpr MenuRow Tick(const wchar_t* pLabel, Pref nPref, const char* pSe
              0, 1, 1, 1.0f, nullptr, nullptr, nullptr, 0, Pref::COUNT, nullptr, nullptr };
 }
 
+// Boolean over a setting the ini carries as a float, so the two states write 0 and 1 rather than
+// an integer the reader would not recognise.
+static constexpr MenuRow BooleanFloat(const wchar_t* pLabel, Pref nPref, const char* pSection, const char* pKey)
+{
+    return { ROW_BOOL, pLabel, nPref, pSection, pKey, VALUE_FLOAT,
+             0, 1, 1, 1.0f, nullptr, nullptr, nullptr, 0, Pref::COUNT, nullptr, nullptr };
+}
+
 template<size_t N>
 static constexpr MenuRow Enumeration(const wchar_t* pLabel, Pref nPref, const char* pSection, const char* pKey,
                                      const int (&Values)[N], const wchar_t* const (&Labels)[N])
@@ -591,7 +599,7 @@ static const MenuRow GraphicsRows[]
                 AnisotropyValues, AnisotropyLabels),
     Boolean(L"Xbox 360 Gamma", PREF_X360GAMMA,     "Graphics", "Xbox360Gamma"),
     Boolean(L"No Rim Lighting", PREF_NORIMLIGHTING, "Graphics", "NoRimLighting"),
-    Range  (L"Saturation", PREF_SATURATION, "Graphics", "Saturation", VALUE_FLOAT, 0, 200, 5, 100.0f, L"%.2f"),
+    Range  (L"Saturation", PREF_SATURATION, "Graphics", "Saturation", VALUE_FLOAT, 0, 100, 5, 100.0f, L"%.2f"),
 };
 
 static const MenuRow BeyondUltraRows[]
@@ -608,8 +616,7 @@ static const MenuRow GameplayRows[]
     Boolean(L"Remove Mouse Speed Cap", PREF_MOUSESPEEDCAP, "Gameplay", "RemoveMouseSpeedCap"),
     Range  (L"Mouse Look Sensitivity", PREF_MOUSELOOKSENSITIVITY, "Gameplay", "MouseLookSensitivity",
             VALUE_FLOAT, 10, 500, 5, 100.0f, L"%.2f"),
-    Range  (L"Sprint Turn Modifier", PREF_SPRINTTURNMODIFIER, "Gameplay", "SprintTurnModifier",
-            VALUE_FLOAT, 0, 200, 5, 100.0f, L"%.2f"),
+    BooleanFloat(L"Sprint Turn Modifier", PREF_SPRINTTURNMODIFIER, "Gameplay", "SprintTurnModifier"),
     Boolean(L"Aim Toggle",        PREF_AIMTOGGLE,        "Gameplay", "AimToggle"),
     Boolean(L"Sprint Toggle",     PREF_SPRINTTOGGLE,     "Gameplay", "SprintToggle"),
     Boolean(L"Limited Saving",    PREF_LIMITEDSAVING,    "Gameplay", "LimitedSaving"),
@@ -847,13 +854,13 @@ static const PrefDefault PrefDefaults[]
     { PREF_NORIMLIGHTING,           0   },
     { PREF_SATURATION,              50  }, // 0.50
 
-    { PREF_BEYONDULTRAGEOMETRY,     3   },
-    { PREF_BEYONDULTRASHADOWS,      1   },
-    { PREF_BEYONDULTRATERRAIN,      3   },
+    { PREF_BEYONDULTRAGEOMETRY,     0   },
+    { PREF_BEYONDULTRASHADOWS,      0   },
+    { PREF_BEYONDULTRATERRAIN,      0   },
 
     { PREF_MOUSESPEEDCAP,           1   },
     { PREF_MOUSELOOKSENSITIVITY,    100 }, // 1.00
-    { PREF_SPRINTTURNMODIFIER,      100 }, // 1.00
+    { PREF_SPRINTTURNMODIFIER,      0   },
     { PREF_AIMTOGGLE,               1   },
     { PREF_SPRINTTOGGLE,            1   },
     { PREF_LIMITEDSAVING,           0   },
@@ -2312,6 +2319,13 @@ static uint32_t BuildSteps(size_t nLine, const MenuRow& row, int nCurrent)
         else
         {
             swprintf(StepText[nLine][nCount], nStepTextLength, row.pFormat, nValue);
+        }
+
+        if (row.nPref == PREF_SATURATION && nValue == DefaultForRow(row))
+        {
+            wchar_t szValue[nStepTextLength]{};
+            wcsncpy_s(szValue, StepText[nLine][nCount], _TRUNCATE);
+            swprintf(StepText[nLine][nCount], nStepTextLength, L"%s (Default)", szValue);
         }
 
         StepLabels[nLine][nCount] = StepText[nLine][nCount];
