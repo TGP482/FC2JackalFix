@@ -13,6 +13,7 @@ import dunia;
 import settings;
 import borderless;    // the game window, for measuring what a render resolution percentage is of
 import renderconfig;  // which of the game's own quality presets are in force
+import debug;         // whether a network session is up, which locks the debug rows
 
 // The options menu is not data driven. options.mgb carries the page artwork and the navbar prompts;
 // the rows under OPTIONS are built in code. CFCXOptionPage::BuildEntries appends one row per sub
@@ -2200,7 +2201,8 @@ static bool IsSessionOnly(Pref nPref)
 // display options. So with Shadow on High, Beyond Ultra Shadows is a row that moves and changes
 // nothing, and the honest thing is to say so rather than let it be set. Each row answers for its
 // own section: Geometry on Ultra High and Shadow on High greys the second and leaves the first
-// alone.
+// alone. renderconfig gates its own writes on the same three answers, so a greyed row is a row
+// that is not being applied either.
 //
 // Unavailable is not the same as off. The value in the ini is untouched, the row still shows what
 // it holds, and it comes back by itself the moment the game's own setting is raised.
@@ -2211,6 +2213,19 @@ static bool IsRowAvailable(const MenuRow& row)
     case PREF_BEYONDULTRAGEOMETRY: return JackalFixGeometryIsUltra();
     case PREF_BEYONDULTRASHADOWS:  return JackalFixShadowsAreUltra();
     case PREF_BEYONDULTRATERRAIN:  return JackalFixTerrainIsUltra();
+
+    // The shipped ini has a [Debug] section and nothing under it, so these are on the page and
+    // greyed until the player writes a key by hand. A network session locks all six whatever the
+    // file says, and debug holds them off for as long as the match lasts, so a greyed row and a
+    // hand written key reach a match by the same route, which is none.
+    case PREF_DEBUGINVINCIBILITY:
+    case PREF_DEBUGINFINITEAMMO:
+    case PREF_DEBUGUNLOCKALLWEAPONS:
+    case PREF_DEBUGNOCLIP:
+    case PREF_DEBUGFREECAM:
+    case PREF_DEBUGDIAMONDS:
+        return !JackalFixInMultiplayer() && JackalFixSettings.IsInFile(row.nPref);
+
     default:                       return true;
     }
 }
@@ -3738,6 +3753,12 @@ static void __fastcall JackalFixDefaultPage(void* pPage, void*)
         if (pRow == nullptr || pRow->nKind == ROW_HEADING || pRow->nPref == Pref::COUNT)
             continue;
 
+        // An unavailable row is the one place a staged value can differ from the setting without
+        // the player having touched it, and DEFAULT would then write a greyed row's ini key. It is
+        // left holding what it holds, which is what the row on screen is showing.
+        if (!IsRowAvailable(*pRow))
+            continue;
+
         PendingValues[i] = DefaultForRow(*pRow);
         nRestored++;
     }
@@ -3805,18 +3826,6 @@ static void __fastcall JackalFixOpenPage(void* pPage, void* pEdx)
     SettleRenderResolutionChoices();
 
     PlanSlots();
-
-    // Said once per opening, and in this log rather than only the other one: a Beyond Ultra row
-    // that will not grey out is either a quality that really does read as ultra or a profile that
-    // was never found, and from the row alone the two look the same.
-    {
-        const auto* pGeometry = JackalFixGeometryQuality();
-        const auto* pShadow = JackalFixShadowQuality();
-        const auto* pTerrain = JackalFixTerrainQuality();
-
-    }
-
-    JackalFixTraceQualities();
 
     if (!bPendingValid)
         ResetPendingValues();

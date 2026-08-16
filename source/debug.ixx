@@ -407,6 +407,53 @@ static bool bFreecamEnabled = false;
 static int nNoclipKey = 0;
 static int nFreecamKey = 0;
 
+/*
+  The multiplayer gate.
+
+  Every setting in this module is a cheat, so none of them may be live in a match. The engine's
+  answer is the session type, an int at +18h on the session object, and its names are in the binary:
+  the status line at 101F3450 switches on it for
+
+      0 Invalid   1 Offline   2 Online   3 Lan   4 Split   5 Single
+
+  so a match is 2 or 3. FUN_107BDD00 agrees from the other side, handing out the network session
+  object for those two and null for every other value.
+
+  Dead end. An 8 byte singleton made at engine init carries a flag at +4 that the gameplay code
+  tests everywhere and reads like "this session is networked". It is not. It is derived from this
+  same type as "not Offline", at 107A3D9A:
+
+      8B 8E E4 00 00 00   MOV ECX,[ESI+0E4h]     ; the session
+      E8 ? ? ? ?          CALL <get session type>
+      83 F8 01            CMP EAX,1
+      0F 95 C1            SETNZ CL               ; Single and the main menu are not Offline either
+
+  so it stands at 1 in singleplayer and on the main menu, and greys every row all the time.
+
+  The pattern is that same MOV, in the handler the engine runs on every session change. The type is
+  read there and kept, rather than the slot address being kept and read later: the object does not
+  outlive the session, and +18h through a dead one is whatever the allocator left behind.
+*/
+static const char* const szSessionSlotPattern =
+    "8B 8E E4 00 00 00 E8 ? ? ? ? 83 F8 01 0F 95 C1 88 4C 24 50";
+static constexpr uintptr_t nOwnerSession = 0xE4; // disp of mov ecx,[esi+0E4h]
+static constexpr uintptr_t nSessionType = 0x18;
+
+static constexpr int32_t nSessionOnline = 2;
+static constexpr int32_t nSessionLan = 3;
+
+// Written from the engine's thread inside the handler, read from the menu's.
+static std::atomic<int32_t> nLiveSessionType = 0;
+
+// The ini's own answers, before the gate. The mirrors above are what the rest of the module reads,
+// so those carry the gated values and a match turns everything off without the file moving.
+static bool bIniInvincibility = false;
+static bool bIniInfiniteAmmo = false;
+static bool bIniUnlockAllWeapons = false;
+static bool bIniNoclipEnabled = false;
+static bool bIniFreecamEnabled = false;
+static int32_t nIniDiamondTarget = 0;
+
 // ------------------------------------------------------------------------------------------------
 // Key names.
 
@@ -1186,16 +1233,72 @@ static void __fastcall FreeCameraUpdate(void* pInterface, void* pEdx, float fDel
 
 // ------------------------------------------------------------------------------------------------
 
+export bool JackalFixInMultiplayer()
+{
+    const auto nType = nLiveSessionType.load();
+
+    return nType == nSessionOnline || nType == nSessionLan;
+}
+
+// The two act gates, patched only while Unlock All Weapons is live. Null until init has matched the
+// pattern they sit in.
+static raw_mem* pFirstActGate = nullptr;
+static raw_mem* pSecondActGate = nullptr;
+
+// -1 rather than a bool so the first call always writes, whichever way it goes.
+static int nActGateWritten = -1;
+
+static void ApplyActGate()
+{
+    if (pFirstActGate == nullptr)
+        return;
+
+    const auto nWanted = bUnlockAllWeapons ? 1 : 0;
+    if (nWanted == nActGateWritten)
+        return;
+
+    nActGateWritten = nWanted;
+
+    if (nWanted != 0)
+    {
+        pFirstActGate->Write();
+        pSecondActGate->Write();
+    }
+    else
+    {
+        pFirstActGate->Restore();
+        pSecondActGate->Restore();
+    }
+}
+
+// Run every frame as well as on an ini change, because a match starts and ends without the file
+// moving. Turning the settings off is all it does: the paths that own them already handle one going
+// off underneath, so a camera mode puts the player back and a diamond target of zero retires the
+// grant, handing the granted diamonds back rather than leaving them banked.
+static void ApplySessionGate()
+{
+    const auto bLocked = JackalFixInMultiplayer();
+
+    bInvincibility = bIniInvincibility && !bLocked;
+    bInfiniteAmmo = bIniInfiniteAmmo && !bLocked;
+    bUnlockAllWeapons = bIniUnlockAllWeapons && !bLocked;
+    bNoclipEnabled = bIniNoclipEnabled && !bLocked;
+    bFreecamEnabled = bIniFreecamEnabled && !bLocked;
+    nDiamondTarget = bLocked ? 0 : nIniDiamondTarget;
+
+    ApplyActGate();
+}
+
 static void ReadSettings()
 {
-    bInvincibility = JackalFixSettings.GetInt(PREF_DEBUGINVINCIBILITY) != 0;
-    bInfiniteAmmo = JackalFixSettings.GetInt(PREF_DEBUGINFINITEAMMO) != 0;
-    bUnlockAllWeapons = JackalFixSettings.GetInt(PREF_DEBUGUNLOCKALLWEAPONS) != 0;
+    bIniInvincibility = JackalFixSettings.GetInt(PREF_DEBUGINVINCIBILITY) != 0;
+    bIniInfiniteAmmo = JackalFixSettings.GetInt(PREF_DEBUGINFINITEAMMO) != 0;
+    bIniUnlockAllWeapons = JackalFixSettings.GetInt(PREF_DEBUGUNLOCKALLWEAPONS) != 0;
 
-    nDiamondTarget = JackalFixSettings.GetInt(PREF_DEBUGDIAMONDS);
+    nIniDiamondTarget = JackalFixSettings.GetInt(PREF_DEBUGDIAMONDS);
 
-    bNoclipEnabled = JackalFixSettings.GetInt(PREF_DEBUGNOCLIP) != 0;
-    bFreecamEnabled = JackalFixSettings.GetInt(PREF_DEBUGFREECAM) != 0;
+    bIniNoclipEnabled = JackalFixSettings.GetInt(PREF_DEBUGNOCLIP) != 0;
+    bIniFreecamEnabled = JackalFixSettings.GetInt(PREF_DEBUGFREECAM) != 0;
 
     nNoclipKey = ParseKeyName(JackalFixSettings.GetString(PREF_DEBUGNOCLIPKEY));
     nFreecamKey = ParseKeyName(JackalFixSettings.GetString(PREF_DEBUGFREECAMKEY));
@@ -1203,6 +1306,8 @@ static void ReadSettings()
     // One key cannot mean two modes. Noclip is first in the ini, so it keeps the key.
     if (nFreecamKey != 0 && nFreecamKey == nNoclipKey)
         nFreecamKey = 0;
+
+    ApplySessionGate();
 }
 
 // Once a frame from CPawnInputListener::Update, on the branch taken when gameplay input is enabled.
@@ -1225,6 +1330,8 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
 
     if (fFrameDelta < 0.0f || fFrameDelta > 0.25f)
         fFrameDelta = 0.0f;
+
+    ApplySessionGate();
 
     ApplyProfileFlags();
     ApplyDiamonds();
@@ -1338,6 +1445,21 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
+            // The session-changed handler, at the load of the session whose type it is about to
+            // ask for. Nothing is assumed about the class ESI belongs to.
+            auto sessionSlot = dunia_pattern(szSessionSlotPattern);
+            if (!sessionSlot.empty())
+            {
+                static auto SessionSlotHook = safetyhook::create_mid(sessionSlot.get_first(), [](SafetyHookContext& regs)
+                {
+                    auto* pSession = *reinterpret_cast<uint8_t**>(regs.esi + nOwnerSession);
+                    const auto nType = pSession != nullptr
+                        ? *reinterpret_cast<int32_t*>(pSession + nSessionType) : 0;
+
+                    nLiveSessionType = nType;
+                });
+            }
+
             ReadSettings();
 
             // CWeaponBazaar::IsWeaponUnlocked, at the AllWeaponsUnlock test. Read only for the
@@ -1365,29 +1487,10 @@ public:
                 static raw_mem fnFirstActGate(actGatePattern.get_first(3), { 0xFF });
                 static raw_mem fnSecondActGate(actGatePattern.get_first(18), { 0xFF });
 
-                // Read from the settings, not bUnlockAllWeapons: this and ReadSettings are both on
-                // the file-watch event, which runs in registration order, so the mirror is a change
-                // behind when this fires.
-                static auto ActGateCB = []()
-                {
-                    if (JackalFixSettings.GetInt(PREF_DEBUGUNLOCKALLWEAPONS) != 0)
-                    {
-                        fnFirstActGate.Write();
-                        fnSecondActGate.Write();
-                    }
-                    else
-                    {
-                        fnFirstActGate.Restore();
-                        fnSecondActGate.Restore();
-                    }
-                };
+                pFirstActGate = &fnFirstActGate;
+                pSecondActGate = &fnSecondActGate;
 
-                ActGateCB();
-
-                JackalFix::onIniFileChange() += []()
-                {
-                    ActGateCB();
-                };
+                ApplyActGate();
 
                 JackalFix::onShutdownEvent() += []()
                 {

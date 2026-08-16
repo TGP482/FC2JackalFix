@@ -2,13 +2,13 @@ module;
 
 #include <common.hxx>
 #include <d3d9.h>
+#include <intrin.h>
 
 export module borderless;
 
 import common;
 import dunia;
 import settings;
-import jflog;
 
 // Fullscreen, borderless and windowed, chosen by DisplayMode and driven entirely through the
 // engine's own code paths rather than around them.
@@ -243,21 +243,13 @@ export HWND JackalFixGameWindow()
 static void ApplyWindowMode(HWND hWnd)
 {
     if (hWnd == nullptr || !IsWindow(hWnd) || IsFullscreen())
-    {
-        JFTrace("borderless: ApplyWindowMode SKIPPED - hWnd %p, window %d, fullscreen %d",
-            hWnd, hWnd != nullptr && IsWindow(hWnd) ? 1 : 0, IsFullscreen() ? 1 : 0);
         return;
-    }
 
     const auto bBorderlessNow = IsBorderless();
     const auto nStyle = GetWindowLongA(hWnd, GWL_STYLE);
     const auto nWanted = (nStyle & ~nModeStyles) | (bBorderlessNow ? nBorderlessStyle : nWindowedStyle);
 
     SetWindowLongA(hWnd, GWL_STYLE, nWanted);
-
-    JFTrace("borderless: ApplyWindowMode hWnd %p, mode %d, borderless %d, style %08X -> %08X",
-        hWnd, nDisplayMode, bBorderlessNow ? 1 : 0,
-        static_cast<uint32_t>(nStyle), static_cast<uint32_t>(nWanted));
 
     if (bBorderlessNow)
     {
@@ -367,11 +359,158 @@ static void ClipCursorThread()
     }
 }
 
+
+// ------------------------------------------------------------------------------------------------
+// Making a display setting take effect without a restart.
+//
+// DisplayMode, InternalResolution and ScalingFilter are all decided while the device is being
+// built, so every hook above runs inside the engine's own mode change. What was missing is anything
+// to make the engine perform one once the game is up.
+//
+// The machinery is the engine's. CFCXOptionDisplayPage's apply raises the render settings broadcast
+// at Dunia+3F8AB0, and one observer on it belongs to the render manager and is two instructions,
+// MOV byte ptr [ECX+30h],1 / RET. The per-frame device tick at Dunia+34CA80 tests that byte and
+// calls Dunia+354B30, which asks FUN_1033C7E0 whether the mode differs and only on a yes invokes
+// the functor at manager+10Ch, ending in the renderer's SetMode. The reset lands on the following
+// tick, between frames, on the thread the engine owns the device from. Two things follow: set the
+// byte, and answer that question with yes once.
+//
+// FUN_1033C7E0 is called rather than stubbed. It measures the window and writes the size override
+// at manager+330h/+334h that the mode change then uses, so only its answer is overridden.
+//
+// The yes has to reach the right caller. FUN_1033C7E0 has exactly two and a yes means different
+// things to them:
+//
+//     10354B30   the functor at manager+10Ch, which ends in SetMode
+//     10358410   Dunia+33E2B0, which rebuilds nothing
+//
+// Both ask on the same tick, so a yes handed to the second is lost and the mode never changes. That
+// is what "the setting does nothing until a restart" was. Handler install order was blamed for it
+// twice and is not the cause. The override is spent only on the call at 10354B3C, recognised by the
+// address it returns to; every other caller gets the engine's own answer and the request stays
+// pending until the right one asks.
+
+// The render manager's "the profile moved" byte: what the broadcast observer sets, and what the
+// device tick looks at before it asks anything else.
+static constexpr ptrdiff_t nRenderManagerDirty = 0x30;
+
+// push 0 / push 3B8h / call <alloc> / add esp,8 / test eax,eax / jz / mov ecx,eax /
+// call <render manager ctor> / mov [<render manager>],eax. The manager's only construction.
+static const char* const szRenderManagerPattern =
+    "6A 00 68 B8 03 00 00 E8 ? ? ? ? 83 C4 08 85 C0 74 0D 8B C8 E8 ? ? ? ? A3 ? ? ? ?";
+static constexpr ptrdiff_t nRenderManagerPointer = 27; // disp32 of mov [<render manager>],eax
+
+// The head of Dunia+354B30: it loads the render profile, hands it to the comparison and then tests
+// the dirty byte. Both of the things wanted here are in that one sequence.
+static const char* const szModeCheckPattern = "53 56 57 8B 3D ? ? ? ? 57 8B F1 E8 ? ? ? ? 80 7E 30 00";
+static constexpr ptrdiff_t nModeCheckCall = 12;       // call <does the mode differ>
+
+static void** ppRenderManager = nullptr;
+
+// The instruction after the call at 10354B3C, which is the only return address a forced yes may be
+// spent on.
+static const void* pModeCheckReturn = nullptr;
+
+static SafetyHookInline ModeDiffersHook{};
+
+// Raised when one of the settings below moves, lowered once the engine has actually gone through
+// with the mode change. Read from the engine's threads, written from the file watcher's.
+static std::atomic<bool> bModeChangePending = false;
+
+// What was in force the last time the engine built its device, so a broadcast is only asked for
+// when something that matters has really moved rather than on every APPLY.
+static int32_t nAppliedDisplayMode = 0;
+static int32_t nAppliedBaseW = 0;
+static int32_t nAppliedBaseH = 0;
+static int32_t nAppliedScalingFilter = 0;
+
+static uint8_t __fastcall ModeDiffers(void* pRenderManager, void* pEdx, void* pProfile)
+{
+    const auto* pReturn = _ReturnAddress();
+
+    const auto nStock = ModeDiffersHook.fastcall<uint8_t>(pRenderManager, pEdx, pProfile);
+
+    if (pModeCheckReturn != nullptr && pReturn != pModeCheckReturn)
+        return nStock;
+
+    const auto bPending = bModeChangePending.exchange(false);
+
+    if (!bPending)
+        return nStock;
+
+    return 1;
+}
+
+// Asks the engine to rebuild its device at the next opportunity. Writing the byte is all this does:
+// the tick that reads it belongs to the engine, and so does the thread it runs on.
+static void RequestModeChange()
+{
+    if (ppRenderManager == nullptr)
+        return;
+
+    auto* pRenderManager = static_cast<uint8_t*>(*ppRenderManager);
+    if (pRenderManager == nullptr)
+        return;
+
+    bModeChangePending = true;
+    *(pRenderManager + nRenderManagerDirty) = 1;
+}
+
+// Nothing here depends on running before or after the mode hooks or internalres. The rebuild is not
+// performed now; it is asked for, and the engine gets to it on its next tick, by which time every
+// handler on the init event has had its turn.
+static void InstallModeReapply()
+{
+    auto manager = dunia_pattern(szRenderManagerPattern);
+    if (!manager.empty())
+        ppRenderManager = *manager.get_first<void**>(nRenderManagerPointer);
+
+    auto modeCheck = dunia_pattern(szModeCheckPattern);
+    if (!modeCheck.empty())
+    {
+        auto* pCall = modeCheck.get_first<uint8_t>(nModeCheckCall);
+        auto* pDiffers = pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1);
+        pModeCheckReturn = pCall + 5;
+        ModeDiffersHook = safetyhook::create_inline(pDiffers, ModeDiffers);
+    }
+
+    static auto Remember = []()
+    {
+        nAppliedDisplayMode = JackalFixSettings.GetInt(PREF_DISPLAYMODE);
+        nAppliedBaseW = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONX);
+        nAppliedBaseH = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONY);
+        nAppliedScalingFilter = JackalFixSettings.GetInt(PREF_SCALINGFILTER);
+    };
+
+    Remember();
+
+    JackalFix::onIniFileChange() += []()
+    {
+        const auto bMoved =
+            nAppliedDisplayMode != JackalFixSettings.GetInt(PREF_DISPLAYMODE)
+            || nAppliedBaseW != JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONX)
+            || nAppliedBaseH != JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONY)
+            || nAppliedScalingFilter != JackalFixSettings.GetInt(PREF_SCALINGFILTER);
+
+        Remember();
+
+        if (bMoved)
+            RequestModeChange();
+    };
+}
+
 class Borderless
 {
 public:
     Borderless()
     {
+        // Registered ahead of the handler below because that one gives up on a missing pattern and
+        // this shares none of them.
+        JackalFix::onDuniaInitEvent() += []()
+        {
+            InstallModeReapply();
+        };
+
         JackalFix::onDuniaInitEvent() += []()
         {
             // The strstr result for "-borderless", on its way to the window creator's ninth
@@ -380,24 +519,17 @@ public:
             // (-(arg != 0) & 0x7F360000) + 0xCA0000. Overwriting the result of the test rather than
             // patching the SETNZ keeps the switch working in both directions, so windowed and
             // fullscreen get a real title bar back even on a command line that asked for neither.
-            JFTrace("borderless: handler entered, DisplayMode %d", nDisplayMode);
 
             auto borderlessSwitch = dunia_pattern("85 C0 8B 84 24 50 04 00 00 0F 95 C1 3B C3 88 4C 24 30");
             if (borderlessSwitch.empty())
-            {
-                JFTrace("borderless: ABORTED - the -borderless switch pattern matched nothing");
                 return;
-            }
 
             // Where the mode flag is born, one instruction after the SETNZ that derives it from the
             // render config's Fullscreen property and one before the store that everything
             // downstream reads. EAX holds the render config here, ECX's low byte holds the flag.
             auto modeFlag = dunia_pattern("39 58 28 89 5C 24 78 0F 95 C1 39 58 2C 88 4C 24 30 0F 95 C0 3A CB");
             if (modeFlag.empty())
-            {
-                JFTrace("borderless: ABORTED - the mode flag pattern matched nothing");
                 return;
-            }
 
             // The window is created at 640x480 and sized once during engine init by this helper,
             // SetWindowMode(hWnd, title, x, y, width, height, hideCursor, maximized). Overriding
@@ -405,19 +537,13 @@ public:
             // window handle is available without reading a global.
             auto setWindowMode = dunia_pattern("83 EC 10 8B 44 24 18 56 8B 74 24 18 57 50 56 FF 15 ? ? ? ?");
             if (setWindowMode.empty())
-            {
-                JFTrace("borderless: ABORTED - the SetWindowMode pattern matched nothing");
                 return;
-            }
 
             // SetResolution loading its device config, one instruction before the three-branch
             // block reads the fullscreen byte out of it.
             auto deviceConfig = dunia_pattern("8B AC 24 64 02 00 00 80 7D 08 00 74 24 8B 8C 24 5C 02 00 00");
             if (deviceConfig.empty())
-            {
-                JFTrace("borderless: ABORTED - the device config pattern matched nothing");
                 return;
-            }
 
             static auto BorderlessSwitchHook = safetyhook::create_mid(borderlessSwitch.get_first(), [](SafetyHookContext& regs)
             {
@@ -433,8 +559,6 @@ public:
             static auto SetWindowModeHook = safetyhook::create_mid(setWindowMode.get_first(), [](SafetyHookContext& regs)
             {
                 hGameWindow = *(HWND*)(regs.esp + 0x04);
-
-                JFTrace("borderless: SetWindowMode hWnd %p, mode %d", hGameWindow, nDisplayMode);
 
                 if (!IsBorderless())
                     return;
@@ -461,9 +585,6 @@ public:
 
                 pConfig[8] = IsFullscreen() ? 1 : 0;
 
-                JFTrace("borderless: device config %p, fullscreen byte %d, mode %d",
-                    pConfig, pConfig[8], nDisplayMode);
-
                 // Maximized is the engine's own desktop-sized-window mode. Its branch at
                 // 0x104234D1 overwrites the requested resolution with the largest mode
                 // EnumDisplaySettings reports and sets renderer+0x90, which swaps Present's NULL
@@ -478,10 +599,6 @@ public:
             if (!isDeviceFullscreen.empty())
                 IsDeviceFullscreenHook = safetyhook::create_inline(isDeviceFullscreen.get_first(), IsDeviceFullscreen);
 
-            JFTrace("borderless: switch/flag/window/config hooks in, fullscreen query %s (%p)",
-                IsDeviceFullscreenHook.enabled() ? "hooked" : "FAILED",
-                isDeviceFullscreen.empty() ? nullptr : isDeviceFullscreen.get_first<void>());
-
             // FUN_10422630, at the arguments of the SetWindowPos that follows a successful device
             // Reset, with ECX and EDX holding cy and cx. Anchored on the PUSH of uFlags because the
             // call itself is two bytes shared with the SetWindowPos before it. uFlags carries
@@ -494,9 +611,6 @@ public:
                     // The device has just been reset. If the mode moved since the window was made,
                     // this is where the window is put into it, before the engine's own resize, so
                     // that one lands on a window already wearing the right frame.
-                    JFTrace("borderless: device reset, window mode %d, setting %d, hWnd %p",
-                        nWindowMode, nDisplayMode, hGameWindow);
-
                     if (nWindowMode != nDisplayMode)
                         ApplyWindowMode(hGameWindow);
 
@@ -520,9 +634,6 @@ public:
             {
                 static auto FullscreenLatchHook = safetyhook::create_mid(fullscreenLatch.get_first(), [](SafetyHookContext& regs)
                 {
-                    JFTrace("borderless: fullscreen latch, engine said %u, writing %u",
-                        static_cast<uint32_t>(regs.eax & 0xFFu), IsFullscreen() ? 1u : 0u);
-
                     regs.eax = (regs.eax & ~0xFFu) | (IsFullscreen() ? 1u : 0u);
                 });
             }
@@ -660,25 +771,12 @@ public:
             // nothing to do until the setting actually moves.
             nWindowMode = nDisplayMode;
 
-            JFTrace("borderless: patterns reset=%d latch=%d pump=%d resizeTarget=%d rebuild=%d "
-                    "frameTail=%d resizeDemand=%d present=%d maximized=%d",
-                resetWindowSize.empty() ? 0 : 1, fullscreenLatch.empty() ? 0 : 1,
-                pumpDemand.empty() ? 0 : 1, resizeTarget.empty() ? 0 : 1,
-                rebuildViews.empty() ? 0 : 1, frameTail.empty() ? 0 : 1,
-                resizeDemand.empty() ? 0 : 1,
-                (presentParams.empty() || presentTail.empty()) ? 0 : 1,
-                maximized.empty() ? 0 : 1);
-
-            JFTrace("borderless: handler finished, window mode %d", nWindowMode);
-
             // The window style, its rect and the boot resolution path are all read while the engine
             // starts up, so an ini change lands on the next launch rather than the current one. The
             // device's fullscreen byte and the cursor clip do follow it live.
             JackalFix::onIniFileChange() += []()
             {
                 DisplayModeCB();
-                JFTrace("borderless: ini changed, DisplayMode now %d (window mode %d)",
-                    nDisplayMode, nWindowMode);
             };
 
             JackalFix::onShutdownEvent() += []()

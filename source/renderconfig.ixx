@@ -618,7 +618,7 @@ export const char* JackalFixProfileFinds()
     return szList[0] != '\0' ? szList : "none";
 }
 
-// The manager's only construction, the same anchor the mode reapply module resolves it from.
+// The manager's only construction, the same anchor borderless resolves it from.
 static const char* const szRenderManagerPattern =
     "6A 00 68 B8 03 00 00 E8 ? ? ? ? 83 C4 08 85 C0 74 0D 8B C8 E8 ? ? ? ? A3 ? ? ? ?";
 static constexpr ptrdiff_t nRenderManagerPointer = 27;
@@ -870,14 +870,6 @@ export const char* JackalFixQualityDump()
     return szQualityDump;
 }
 
-export void JackalFixTraceQualities()
-{
-    const auto* pGeometry = SectionQuality(nProfileGeometryQuality);
-    const auto* pShadow = SectionQuality(nProfileShadowQuality);
-    const auto* pTerrain = SectionQuality(nProfileTerrainQuality);
-
-}
-
 // What the live apply has actually managed, for the log the menu writes. A Beyond Ultra row that
 // appears to do nothing is either a block that was never recognised at load, a rewrite that never
 // happened, or a rewrite the renderer was never told about, and from the game those look identical.
@@ -1004,16 +996,31 @@ static void WriteBeyondUltraBlocks()
     if (pHighAmbient != nullptr)
         ApplyAmbient(static_cast<uint8_t*>(const_cast<void*>(pHighAmbient)));
 
-    if (pProfileGeometry != nullptr)
+    /*
+      The profile's own blocks are gated on its qualities; the parsed ones above are not.
+
+      Those are the ultrahigh and high templates, read only through the copy the engine makes when a
+      level is applied, so writing them at any quality costs nothing and leaves the values ready for
+      the moment the player raises the level. The blocks embedded in the profile in force are what
+      the renderer reads and they hold whichever preset the profile names, so below ultrahigh they
+      are a lower preset's numbers and writing Beyond Ultra into them applied a row the menu had
+      already greyed out.
+
+      The gate is the same SectionIsUltra the menu greys from, so the row and the write cannot
+      disagree, including where the profile cannot be reached and both fall open.
+    */
+    if (pProfileGeometry != nullptr && SectionIsUltra(nProfileGeometryQuality))
         ApplyGeometry(pProfileGeometry);
 
-    if (pProfileTerrain != nullptr)
+    if (pProfileTerrain != nullptr && SectionIsUltra(nProfileTerrainQuality))
         ApplyTerrain(pProfileTerrain);
 
-    if (pProfileShadow != nullptr)
+    // Shadow ranges and the static ambient distance are one setting, so both follow the shadow
+    // quality rather than the ambient one.
+    if (pProfileShadow != nullptr && SectionIsUltra(nProfileShadowQuality))
         ApplyShadow(pProfileShadow);
 
-    if (pProfileAmbient != nullptr)
+    if (pProfileAmbient != nullptr && SectionIsUltra(nProfileShadowQuality))
         ApplyAmbient(pProfileAmbient);
 }
 

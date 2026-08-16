@@ -91,6 +91,10 @@ private:
     // number stays on offer for the whole run however far the row has been moved away from it.
     static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mFile;
 
+    // Whether the ini carries the key at all, as opposed to the reader having handed back a
+    // default. Only the debug keys fill it; the menu greys their rows until one is written.
+    static inline std::array<bool, static_cast<size_t>(Pref::COUNT)> mInFile{};
+
 public:
     static inline void ReadIniSettings()
     {
@@ -200,6 +204,20 @@ public:
         mPrefs[PREF_DEBUGNOCLIPKEY] = iniReader.ReadString("Debug", "NoclipKey", "F1");
         mPrefs[PREF_DEBUGFREECAMKEY] = iniReader.ReadString("Debug", "FreecamKey", "F2");
 
+        // ReadString is the only reader that can tell an absent key from a written one: it hands
+        // the default straight back, and the default here is the empty string.
+        auto DebugKeyWritten = [&](const char* pKey)
+        {
+            return !iniReader.ReadString("Debug", pKey, "").empty();
+        };
+
+        mInFile[PREF_DEBUGINVINCIBILITY] = DebugKeyWritten("Invincibility");
+        mInFile[PREF_DEBUGINFINITEAMMO] = DebugKeyWritten("InfiniteAmmo");
+        mInFile[PREF_DEBUGUNLOCKALLWEAPONS] = DebugKeyWritten("UnlockAllWeapons");
+        mInFile[PREF_DEBUGDIAMONDS] = DebugKeyWritten("Diamonds");
+        mInFile[PREF_DEBUGNOCLIP] = DebugKeyWritten("Noclip");
+        mInFile[PREF_DEBUGFREECAM] = DebugKeyWritten("Freecam");
+
         // Taken before the holds go back on, so this is the file and nothing else.
         mFile = mPrefs;
 
@@ -241,6 +259,8 @@ public:
     void SetInt(Pref name, int32_t value) { mPrefs[name] = value; }
     void SetFloat(Pref name, float value) { mPrefs[name] = value; }
     void SetString(Pref name, std::string value) { mPrefs[name] = value; }
+
+    bool IsInFile(Pref name) { return mInFile[name]; }
 
     // What the ini says, whatever has been applied over it since it was read.
     int32_t GetFileInt(Pref name) { return std::get<int32_t>(mFile[name]); }
