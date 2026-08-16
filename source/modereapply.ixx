@@ -28,20 +28,30 @@
   effects the mode change depends on: it measures the window, and it writes the size override at
   renderMgr+330h/+334h when the requested resolution does not fit the desktop.
 
-  The forced answer is given once and only once. Dunia+33C7E0 has exactly two callers, Dunia+354B30
-  and Dunia+358410, and they are the same three lines: ask, and on a yes run the SetMode functor. So
-  a single forced yes cannot be spent on anything other than a mode change.
+  The forced answer has to be given to the right caller. Dunia+33C7E0 has exactly two, and they do
+  not treat a yes the same way:
+
+    10354B30   yes -> the functor at renderMgr+10Ch, which is the one that ends in SetMode
+    10358410   yes -> Dunia+33E2B0, which rebuilds nothing
+
+  Both ask on the same tick, so a yes handed to the second is simply lost and the mode never
+  changes. That is what "the setting does nothing until a restart" was. The override is spent only
+  on the call at 10354B3C, recognised by the address it returns to; every other caller gets the
+  engine's own answer and the request stays pending until the right one asks.
+
 */
 
 module;
 
 #include <common.hxx>
+#include <intrin.h>
 
 export module modereapply;
 
 import common;
 import dunia;
 import settings;
+import jflog;
 
 // The render manager's "the profile moved" byte: what the broadcast observer sets, and what the
 // device tick looks at before it asks anything else.
@@ -59,6 +69,16 @@ static const char* const szModeCheckPattern = "53 56 57 8B 3D ? ? ? ? 57 8B F1 E
 static constexpr ptrdiff_t nModeCheckCall = 12;       // call <does the mode differ>
 
 static void** ppRenderManager = nullptr;
+
+// 1033C7E0 has two callers and they do not treat a yes the same way.
+//
+//   10354B30   yes -> the functor at manager+10Ch, which is the one that ends in SetMode
+//   10358410   yes -> 1033E2B0, which rebuilds nothing
+//
+// Both ask on the same tick, so a forced yes handed to the second is simply lost and the mode never
+// changes. The override is therefore spent only on the call at 10354B3C, recognised by the address
+// it returns to.
+static const void* pModeCheckReturn = nullptr;
 
 static SafetyHookInline ModeDiffersHook{};
 
@@ -78,11 +98,20 @@ static int32_t nAppliedScalingFilter = 0;
 // forced yes is spent on a real mode change and cannot be wasted anywhere else.
 static uint8_t __fastcall ModeDiffers(void* pRenderManager, void* pEdx, void* pProfile)
 {
+    const auto* pReturn = _ReturnAddress();
+
     // Called rather than skipped: it measures the window and settles the size override the mode
     // change then uses. Only the answer is overridden.
     const auto nStock = ModeDiffersHook.fastcall<uint8_t>(pRenderManager, pEdx, pProfile);
 
-    if (!bModeChangePending.exchange(false))
+    if (pModeCheckReturn != nullptr && pReturn != pModeCheckReturn)
+        return nStock;
+
+    const auto bPending = bModeChangePending.exchange(false);
+    JFTrace("mode: ModeDiffers ret=%p stock=%u pending=%u -> %u",
+        pReturn, nStock, bPending ? 1u : 0u, bPending ? 1u : nStock);
+
+    if (!bPending)
         return nStock;
 
     return 1;
@@ -93,16 +122,22 @@ static uint8_t __fastcall ModeDiffers(void* pRenderManager, void* pEdx, void* pP
 static void RequestModeChange()
 {
     if (ppRenderManager == nullptr)
+    {
+        JFTrace("mode: RequestModeChange SKIPPED - no render manager slot");
         return;
+    }
 
     auto* pRenderManager = static_cast<uint8_t*>(*ppRenderManager);
     if (pRenderManager == nullptr)
     {
+        JFTrace("mode: RequestModeChange SKIPPED - the manager has not been made yet");
         return;
     }
 
     bModeChangePending = true;
     *(pRenderManager + nRenderManagerDirty) = 1;
+
+    JFTrace("mode: RequestModeChange - dirty byte set on manager %p", pRenderManager);
 
 }
 
@@ -113,16 +148,29 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
+            JFTrace("mode: handler entered");
+
             auto manager = dunia_pattern(szRenderManagerPattern);
             if (!manager.empty())
                 ppRenderManager = *manager.get_first<void**>(nRenderManagerPointer);
+
+            JFTrace("mode: render manager pattern %s, slot %p",
+                manager.empty() ? "NO MATCH" : "matched", ppRenderManager);
 
             auto modeCheck = dunia_pattern(szModeCheckPattern);
             if (!modeCheck.empty())
             {
                 auto* pCall = modeCheck.get_first<uint8_t>(nModeCheckCall);
                 auto* pDiffers = pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1);
+                pModeCheckReturn = pCall + 5;
                 ModeDiffersHook = safetyhook::create_inline(pDiffers, ModeDiffers);
+                JFTrace("mode: mode check %p, differs %p, return %p, hook %s",
+                    modeCheck.get_first<void>(), pDiffers, pModeCheckReturn,
+                    ModeDiffersHook.enabled() ? "installed" : "FAILED TO INSTALL");
+            }
+            else
+            {
+                JFTrace("mode: mode check pattern NO MATCH - nothing can force a rebuild");
             }
 
             static auto Remember = []()
@@ -140,6 +188,13 @@ public:
             // tick, by which time every handler on this event has had its turn.
             JackalFix::onIniFileChange() += []()
             {
+                JFTrace("mode: ini changed, mode %d->%d, base %dx%d->%dx%d, filter %d->%d",
+                    nAppliedDisplayMode, JackalFixSettings.GetInt(PREF_DISPLAYMODE),
+                    nAppliedBaseW, nAppliedBaseH,
+                    JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONX),
+                    JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONY),
+                    nAppliedScalingFilter, JackalFixSettings.GetInt(PREF_SCALINGFILTER));
+
                 const auto bMoved =
                     nAppliedDisplayMode != JackalFixSettings.GetInt(PREF_DISPLAYMODE)
                     || nAppliedBaseW != JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONX)
@@ -147,6 +202,8 @@ public:
                     || nAppliedScalingFilter != JackalFixSettings.GetInt(PREF_SCALINGFILTER);
 
                 Remember();
+
+                JFTrace("mode: %s", bMoved ? "something moved, asking for a rebuild" : "nothing moved");
 
                 if (bMoved)
                     RequestModeChange();
