@@ -2,7 +2,7 @@
 <img width="2000" height="877" alt="image (2)" src="https://github.com/user-attachments/assets/2d9357dc-5c84-432a-b452-7413448e9937" />
 
 ## Installation
-The latest version of [Far Cry 2: Jackal Fix](https://github.com/Joshhhuaaa/FC2JackalFix/releases) can be found in the Releases page.
+The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2JackalFix/releases) can be found in the Releases page.
 
 ### Game Setup
 - After downloading Far Cry 2: Jackal Fix, extract the contents to your Far Cry 2 directory and overwrite all existing files when prompted.

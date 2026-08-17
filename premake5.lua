@@ -19,7 +19,7 @@ workspace "FC2JackalFix"
    defines { "rsc_LegalCopyright=\"MIT license\""}
    defines { "rsc_InternalName=\"%{prj.name}\"", "rsc_ProductName=\"%{prj.name}\"", "rsc_OriginalFilename=\"%{cfg.buildtarget.name}\"" }
    defines { "rsc_FileDescription=\"Far Cry 2 Jackal Fix\"" }
-   defines { "rsc_UpdateUrl=\"https://github.com/joshhhuaaa/FC2JackalFix\"" }
+   defines { "rsc_UpdateUrl=\"https://github.com/TGP482/FC2JackalFix\"" }
 
    local major = os.date("%d")
    local minor = os.date("%m")

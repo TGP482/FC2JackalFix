@@ -22,9 +22,9 @@ import common;
 static constexpr auto szTitle = L"FC2JackalFix";
 
 // Same address rsc_UpdateUrl puts in the version resource, read through the API.
-static constexpr auto szUpdateUrl = L"https://github.com/Joshhhuaaa/FC2JackalFix";
+static constexpr auto szUpdateUrl = L"https://github.com/TGP482/FC2JackalFix";
 static constexpr auto szApiHost = L"api.github.com";
-static constexpr auto szApiPath = L"/repos/Joshhhuaaa/FC2JackalFix/releases/latest";
+static constexpr auto szApiPath = L"/repos/TGP482/FC2JackalFix/releases/latest";
 
 static constexpr auto szCacheName = L"FC2JackalFix.update";
 static constexpr auto nCacheTTLSeconds = 24 * 60 * 60;
@@ -310,11 +310,11 @@ static bool AskAboutUpdate(const std::wstring& instruction, const std::wstring& 
     return nAnswer == IDYES;
 }
 
-static void ShowUpdateMessage(const std::string& latest, bool& bSilence)
+static void ShowUpdateMessage(const std::string& installed, const std::string& latest, bool& bSilence)
 {
     const auto instruction = std::wstring(L"A new version of FC2JackalFix is available.");
 
-    const auto content = std::wstring(L"Installed: ") + FormatVersion(szInstalledVersion) + L"\n"
+    const auto content = std::wstring(L"Installed: ") + FormatVersion(installed) + L"\n"
         + L"Latest: " + FormatVersion(latest) + L"\n\n"
         + L"Releases are published on GitHub at\n" + szUpdateUrl + L"\n\n"
         + L"Open the download page now?";
@@ -367,7 +367,7 @@ static void CheckForUpdates()
     SaveCache(latest, latest, silenced);
 
     auto bSilence = false;
-    ShowUpdateMessage(latest, bSilence);
+    ShowUpdateMessage(szInstalledVersion, latest, bSilence);
 
     if (bSilence)
         SaveCache(latest, latest, latest);
