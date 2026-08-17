@@ -7,7 +7,6 @@ module;
 
 #include <common.hxx>
 #include <atomic>
-#include <cstring>
 
 export module fov;
 
@@ -163,6 +162,19 @@ static std::atomic<uint32_t> nNarrowStamp = 0;
 // player has a frame to look at.
 static constexpr uint32_t nNarrowFreshnessMs = 250;
 
+// Whether the near pass follows the camera outright this frame. Published by the pawn camera hook,
+// which is the only place that knows whether the clamp is being applied; see NearPassFieldOfView.
+static std::atomic<bool> bNearPassFollowsCamera = false;
+
+// CPawnFOV+0x34, the vehicle channel weight, sampled once a frame off the blend. Nought on foot,
+// one in a seat, and the engine's own answer to whether a vehicle drives the field of view.
+static std::atomic<float> fVehicleFovWeight = 0.0f;
+
+static bool VehicleOwnsFieldOfView()
+{
+    return fVehicleFovWeight.load(std::memory_order_relaxed) > 0.0f;
+}
+
 static bool NarrowStateIsStale()
 {
     return GetTickCount() - nNarrowStamp.load(std::memory_order_relaxed) > nNarrowFreshnessMs;
@@ -311,13 +323,45 @@ static constexpr float fWidescreenStretch = 0.75f;
 // down, one with the sights fully raised.
 static std::atomic<float> fIronsightBlend = 0.0f;
 
+// How far the ladder or cutscene clamp has pulled the world in, in tangent space, and the ceiling
+// that clamp is heading for. One is nought when the other is.
+//
+// The near pass FOV is an absolute number, ViewmodelFieldOfView, so on a ladder the weapon kept its
+// gameplay width while the world narrowed around it and the clamp read as never applying. Following
+// the camera instead is no better: it shows the world's FieldOfView rather than the setting, and it
+// cannot tell a ladder from a pair of sights, both leaving the camera under ViewmodelFieldOfView.
+// Scaling by the clamp keeps the weapon and the world at the same tangent ratio on a ladder as in
+// gameplay. The ceiling is the second half, for a ViewmodelFieldOfView wide enough that even the
+// scaled result would sit above the band the clamp exists to hold.
+static std::atomic<float> fNarrowTangentScale = 1.0f;
+static std::atomic<float> fNarrowViewmodelCeiling = 0.0f;
+
+static void ClearNarrowViewmodel()
+{
+    fNarrowTangentScale.store(1.0f, std::memory_order_relaxed);
+    fNarrowViewmodelCeiling.store(0.0f, std::memory_order_relaxed);
+}
+
 static float ViewmodelScaleFor(float fovRad, float aspect)
 {
     auto fCameraTan = std::tan(fovRad * 0.5f);
     if (fCameraTan <= 0.0f)
         return 1.0f;
 
-    auto fViewmodelTan = std::tan(fViewmodelFieldOfView * (fPi / 360.0f)) * fWidescreenStretch * aspect;
+    auto fViewmodelTan = std::tan(fViewmodelFieldOfView * (fPi / 360.0f))
+                       * fNarrowTangentScale.load(std::memory_order_relaxed)
+                       * fWidescreenStretch * aspect;
+
+    // The camera state is clamped before the widescreen stretch, so the ceiling is measured in the
+    // same place and takes the stretch here rather than carrying it.
+    auto fCeiling = fNarrowViewmodelCeiling.load(std::memory_order_relaxed);
+    if (fCeiling > 0.0f)
+    {
+        auto fCeilingTan = std::tan(fCeiling * 0.5f) * fWidescreenStretch * aspect;
+        if (fViewmodelTan > fCeilingTan)
+            fViewmodelTan = fCeilingTan;
+    }
+
     auto fScale = fViewmodelTan / fCameraTan;
 
     if (fScale <= 1.0f)
@@ -404,6 +448,7 @@ static constexpr uintptr_t nPawnFovIronsightArmed = 0x0D;
 // nought to one. Read and never written, since it is the engine's own running state.
 static constexpr uintptr_t nPawnFovIronsightWeight = 0x18;
 static constexpr uintptr_t nPawnFovBaseValue      = 0x38;   // radians
+static constexpr uintptr_t nPawnFovBaseWeight     = 0x34;
 static constexpr uintptr_t nPawnFovBaseArmed      = 0x29;
 static constexpr size_t    nPawnFovSize           = 0x60;
 
@@ -489,6 +534,10 @@ static uintptr_t LivePawnFieldOfView()
 */
 static std::atomic<bool> bIronsightIsMagnifiedOptic = false;
 
+// Which seat is in hand, for the push below. ApplySeatFieldOfView runs once when a seat is taken
+// and is the only place the paraglider is identified, so the answer is kept rather than re-derived.
+static std::atomic<bool> bSeatIsParaglider = false;
+
 static void PushPawnFieldOfView()
 {
     auto nStruct = LivePawnFieldOfView();
@@ -506,11 +555,278 @@ static void PushPawnFieldOfView()
             *(uint8_t*)(nStruct + nPawnFovIronsightArmed) = 1;
     }
 
-    if (fVehicleFieldOfView > 0.0f && *(uint8_t*)(nStruct + nPawnFovBaseArmed) != 0)
+    if (*(uint8_t*)(nStruct + nPawnFovBaseArmed) == 0)
+        return;
+
+    // The paraglider takes the glider ceiling, never VehicleFieldOfView. ApplySeatFieldOfView
+    // clamps the vehicle's own fFOVAngle at mount, which was the whole clamp until this push
+    // existed; the push writes the pawn channel the seat feeds and lands after it, so a live
+    // VehicleFieldOfView overwrote the clamped value and the glider ceiling stopped applying.
+    //
+    // Written outright, not narrowed. fGliderFieldOfView is already clamp(FieldOfView, 45, 75), and
+    // narrowing only ever lowers the channel: once it sat at the ceiling, raising FieldOfView in
+    // the menu could not move it back up, since nothing rewrites the target mid flight.
+    if (bSeatIsParaglider.load(std::memory_order_relaxed) &&
+        fVehicleFovWeight.load(std::memory_order_relaxed) > 0.0f)
+    {
+        *(float*)(nStruct + nPawnFovBaseValue) = DegreesToRadians(fGliderFieldOfView);
+        *(uint8_t*)(nStruct + nPawnFovBaseArmed) = 1;
+        return;
+    }
+
+    if (fVehicleFieldOfView > 0.0f)
     {
         *(float*)(nStruct + nPawnFovBaseValue) = DegreesToRadians(fVehicleFieldOfView);
         *(uint8_t*)(nStruct + nPawnFovBaseArmed) = 1;
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Muzzle particles.
+//
+// The first person weapon draws with the near pass projection and ViewmodelFieldOfView. Its muzzle
+// flash and smoke draw with the world one. In stock the two FOVs are the same number so nothing
+// showed; setting them apart takes the weapon off the effects, by more the wider the gap.
+//
+// The renderer already has the machinery. A particle takes a near bucket when the emitter's layer
+// mask intersects the render context's, tested in CSceneParticleEmitterRenderer::Render at
+// 0x103cbcfb and 0x103cbe55. The emitter's copy is refreshed every frame from the instance's
+// +0x1A4, which nothing writes but CParticlesSystemInstance::SetFirstPersonLayerMask, and only five
+// call sites reach that. The weapon's spawners are not among them, so a muzzle emitter keeps the
+// constructor's zero for the life of the process and buckets 4 and 0x24 are unreachable. Measured
+// in game: context mask 1, emitter mask 0, on every emitter in a session.
+//
+// The spawners were found by census rather than by reading. Hooking Start and counting return
+// addresses named FUN_10111e40 and FUN_10111f80, which fire in equal bursts with the trigger.
+// CMuzzleFlashManager's own blocks were hooked first and measured never to run at all, and
+// FUN_1015b970 is a third block of the same shape whose bytes differ enough to miss a shared
+// pattern, so naming them one at a time was the wrong approach.
+//
+// The anim notify spawner FUN_1013a800 has the sequence the weapon spawners are missing the middle
+// of:
+//
+//     1013aac2  E8 ? ? ? ?      CALL 0x1032ecd0        ; SetTransform
+//     1013aac7  8B BF 2C 01..   MOV  EDI,[EDI+0x12C]   ; the owner's own layer mask
+//     1013aacd  57              PUSH EDI
+//     1013aad2  E8 ? ? ? ?      CALL 0x1032f410        ; resolve the system handle
+//     1013aad9  E8 ? ? ? ?      CALL 0x1032ead0        ; SetFirstPersonLayerMask
+//
+// Reading the mask from the owner rather than deciding one here is what keeps this off everything
+// else. CGraphicComponent carries 1 on the first person weapon and 0 on every AI, so an AI's flash
+// is handed back the zero it already had. Nothing in the module identifies an emitter's owner at
+// render time, so overriding at the bucket test instead would have needed a rule of our own.
+static constexpr uintptr_t nGraphicFirstPersonMask = 0x12C;
+
+using tSetFirstPersonLayerMask = void (__thiscall*)(void*, uint32_t);
+
+static tSetFirstPersonLayerMask SetFirstPersonLayerMask = nullptr;
+
+// EAX is the resolved CParticlesSystemInstance, one instruction before the Start that consumes it.
+// EBX is the owner's CGraphicComponent, which both spawners fetched for GetBoneMatrix and do not
+// touch again, so the mask is one read away and no walk from the entity is needed.
+static void MuzzleFirstPersonMask(SafetyHookContext& regs)
+{
+    if (regs.eax == 0)
+        return;
+
+    auto pGraphic = (void*)regs.ebx;
+    if (!IsReadableStruct((uintptr_t)pGraphic, nGraphicFirstPersonMask + sizeof(uint32_t)))
+        return;
+
+    auto nMask = *(uint32_t*)((uintptr_t)pGraphic + nGraphicFirstPersonMask);
+
+    // Writing a zero would be writing back what the emitters already carry, so the third person
+    // and AI cases are left alone rather than walked.
+    if (nMask == 0)
+        return;
+
+    SetFirstPersonLayerMask((void*)regs.eax, nMask);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The machete blade mid swing.
+//
+// The engine takes the first person layer off the melee weapon for the length of a swing and gives
+// it back after, one off/on pair per swing, while the blade goes on being submitted half a unit
+// from the eye. In stock both passes share a field of view so the move costs nothing. Once
+// ViewmodelFieldOfView differs, the blade is detached and unscaled against the hand.
+//
+// Both halves are the same instruction, the vtable +0x98 call at 0x10156D03 inside FUN_10156c20,
+// reached from one weapon state's vtable at 0x10E21E08: 0x10154DD0 hides and passes 0,
+// FUN_10154440 shows and passes 1. Neither the call site nor the frames above it separate a swing
+// from a swap. Timing does. Measured with a tick on every toggle:
+//
+//     hide 78E84C40 -> show 78E84C40      swing, 1328 ms, nothing else shown between
+//     hide 78DE2670 -> show 78DE2670      weapon swap, 4563 ms
+//     hide 78DE2670 -> show 85DABA90      mount, other components shown same tick
+//
+// So the clear is withheld on a hide and handed over on the first of: another component shown, a
+// scripted pose entered, fSwingMaxSeconds of gameplay elapsed. Withholding zeroes the mask
+// argument, leaving +0x130's bookkeeping to the engine.
+//
+// The owner came from a node to owner map built at FUN_10336b10, which every node passes whatever
+// mask it is given. FUN_1051cc90 is the wrong hook for that and the reason the owner read as
+// unrecoverable: the blade's component never reaches it.
+//
+// Dead ends. Promoting nodes at the four layer tests, see the block above. Matching the weapon by
+// component pointer or entity id: the setup's holder and the graphic component sit on different
+// entities, B541842A80350200 against B5310F2300054100 in one equip. Pairing the setup with the
+// show: the machete's setup has no show near it and the next show is the end of a swing.
+// Withholding every hide: car, boat, glider and turret mounts hide the weapon through this same
+// call, and holding the layer through them drew the arms and the mounted weapon over the vehicle.
+static constexpr float fSwingMaxSeconds = 1.6f;
+
+// selWeaponClass, property record registered at 0x100F5149 with field offset 0x40. Class 0 is every
+// HandToHand archetype. Not sufficient on its own, since mounting with the machete in hand runs no
+// setup and the class still reads melee, but it keeps every hide made with a gun in hand out.
+static constexpr uintptr_t nWeaponClass = 0x40;
+static constexpr uint32_t nWeaponClassMelee = 0;
+
+static std::atomic<bool> bMeleeInHand = false;
+
+static void RememberMeleeWeapon(uint32_t nClass)
+{
+    bMeleeInHand.store(nClass == nWeaponClassMelee, std::memory_order_relaxed);
+}
+
+static std::atomic<uintptr_t> nLayerWithheldFrom = 0;
+static std::atomic<uint32_t> nLayerWithheldBits = 0;
+
+// Gameplay seconds, stepped by the camera update's own delta. On GetTickCount a pause aged a hold
+// that had not run a frame, so the swing was called stale and released under the player.
+static std::atomic<float> fLayerWithheldFor = 0.0f;
+
+// The mask reaches node+0x90 only through FUN_1051a6e0, which 0x1051B230 calls at its tail:
+//
+//     1051a6e0  56 8B F1        PUSH ESI / MOV ESI,ECX      ; the component
+//     1051a727  8B 4E 30        MOV  ECX,[ESI+0x30]         ; its object entries
+//     1051a738  8B 96 2C 01..   MOV  EDX,[ESI+0x12c]        ; the mask, to each entry's node
+//
+// Writing +0x12C alone left the component reading 0 while its nodes still carried 1, which is first
+// person geometry drawn over the world for as long as the seat lasted.
+using tPushFirstPersonLayer = void (__fastcall*)(uintptr_t);
+
+static tPushFirstPersonLayer PushFirstPersonLayer = nullptr;
+
+// Dropped rather than written when the component no longer reads or no longer carries the withheld
+// bits, since it has been freed or reused by then.
+static void ReleaseWithheldLayer()
+{
+    auto nComponent = nLayerWithheldFrom.exchange(0, std::memory_order_relaxed);
+    auto nBits = nLayerWithheldBits.load(std::memory_order_relaxed);
+
+    if (nComponent == 0 || nBits == 0)
+        return;
+
+    if (!IsReadableStruct(nComponent, nGraphicFirstPersonMask + sizeof(uint32_t)))
+        return;
+
+    auto pMask = (uint32_t*)(nComponent + nGraphicFirstPersonMask);
+
+    if ((*pMask & nBits) != nBits)
+        return;
+
+    *pMask &= ~nBits;
+
+    if (PushFirstPersonLayer != nullptr)
+        PushFirstPersonLayer(nComponent);
+}
+
+// Called from the near pass hook, which runs in every state. The camera blend is the pawn's own and
+// stops once a seat is taken, so a hide made entering a car or a glider was never reconsidered
+// there and the arms rode the whole way in the near pass.
+// A seat, a ladder or a cutscene. Each takes the weapon out of the player's hands through the same
+// call a swing uses, so none may be withheld. A ladder held the layer for fSwingMaxSeconds and drew
+// the arms over the rungs.
+//
+// The narrow half is written on the gameplay tick, so the release side reads it across threads and
+// can miss a frame of it. Missing one costs nothing here, since the deadline still ends the hold.
+static bool InScriptedPose()
+{
+    if (fVehicleFovWeight.load(std::memory_order_relaxed) > 0.0f)
+        return true;
+
+    return !NarrowStateIsStale() && nNarrowContext.load(std::memory_order_relaxed) != NARROW_NONE;
+}
+
+// The deadline, on the gameplay thread where the delta comes from. A swing is back in about 1.3
+// seconds, so fSwingMaxSeconds only ever fires for a hide whose show never came: a death, a load,
+// or a state nothing else here recognises.
+static void StepWithheldLayer(float fDelta)
+{
+    if (nLayerWithheldFrom.load(std::memory_order_acquire) == 0)
+        return;
+
+    auto fHeldFor = fLayerWithheldFor.load(std::memory_order_relaxed) + fDelta;
+
+    fLayerWithheldFor.store(fHeldFor, std::memory_order_relaxed);
+
+    if (fHeldFor > fSwingMaxSeconds)
+        ReleaseWithheldLayer();
+}
+
+static void ReleaseWithheldLayerIfStale()
+{
+    if (nLayerWithheldFrom.load(std::memory_order_acquire) == 0)
+        return;
+
+    if (InScriptedPose())
+        ReleaseWithheldLayer();
+}
+
+// CGraphicComponent's enable/disable form, 0x1051B230, __thiscall(mask, bEnable). At the entry the
+// return address is at [ESP], the mask at [ESP+4] and the flag at [ESP+8].
+static void HoldFirstPersonLayer(SafetyHookContext& regs)
+{
+    auto nComponent = regs.ecx;
+    if (nComponent == 0)
+        return;
+
+    auto pMask = (uint32_t*)(regs.esp + 4);
+    auto bEnable = *(uint8_t*)(regs.esp + 8) != 0;
+
+    if (bEnable)
+    {
+        // The same component coming back is the swing ending, and it already holds the value this
+        // call would write.
+        if (nLayerWithheldFrom.load(std::memory_order_relaxed) == nComponent)
+        {
+            nLayerWithheldFrom.store(0, std::memory_order_relaxed);
+            return;
+        }
+
+        // A different component means the hide was a swap.
+        ReleaseWithheldLayer();
+        return;
+    }
+
+    if (!bMeleeInHand.load(std::memory_order_relaxed))
+        return;
+
+    if (InScriptedPose())
+        return;
+
+    if (!IsReadableStruct(nComponent, nGraphicFirstPersonMask + sizeof(uint32_t)))
+        return;
+
+    // Only a component already carrying the layer is eligible, which is the nine the player's first
+    // person set is given at load. An AI's machete never has it.
+    auto nWithheld = *(uint32_t*)(nComponent + nGraphicFirstPersonMask) & *pMask;
+    if (nWithheld == 0)
+        return;
+
+    // A second hide with no show between them: the first was a swap as well.
+    if (nLayerWithheldFrom.load(std::memory_order_relaxed) != 0)
+        ReleaseWithheldLayer();
+
+    // Elapsed and bits before the component. The release runs on the render thread and keys on the
+    // component being set, so publishing that first leaves a window where it reads the previous
+    // withhold's elapsed time, calls the swing stale on its first frame and releases it.
+    fLayerWithheldFor.store(0.0f, std::memory_order_relaxed);
+    nLayerWithheldBits.store(nWithheld, std::memory_order_relaxed);
+    nLayerWithheldFrom.store(nComponent, std::memory_order_release);
+
+    *pMask = 0;
 }
 
 // Map markers (archPlayerMarker, archDiamondMarker, etc.) are 3D entities owned by
@@ -532,6 +848,111 @@ static bool MapIsInVehicle()
     return GetTickCount() - nMarkersStamp.load(std::memory_order_relaxed) <= nMarkerFreshnessMs;
 }
 
+// The FOV the near pass ends up drawing with. Both the projection hook and the frustum constants
+// have to agree on it, so it is worked out once.
+// The FOV the near pass ends up drawing with. Both the projection hook and the frustum constants
+// have to agree on it, so it is worked out once.
+static float NearPassFieldOfView(float fCameraFov, float fAspect)
+{
+    if (MapIsInVehicle())
+        return fCameraFov;
+
+    // The near pass copies its constant block from the world's, FUN_103679f0, and FUN_10367270
+    // then rewrites the matrix alone. Everything FUN_10379070 derived from the world camera stays
+    // behind, so a near pass at a different field of view is drawn against constants describing a
+    // different frustum, and what it draws slides as the camera turns. Rewriting the frustum
+    // extents at +0x390..+0x39C alone was measured to make it worse, so the mismatch has more than
+    // one carrier.
+    //
+    // A cutscene needs none of that: the clamp has already pulled the world into the 45 to 75 band
+    // the viewmodel wants, so following it leaves no mismatch to slide.
+    //
+    // Read, never re-derived. Context and freshness are written on the gameplay tick while this
+    // runs on the render thread, and NarrowStateIsStale() answered true here through ten seconds
+    // of a scene the clamp was holding at 75.01, scaling the near pass to 45.01 against it.
+    if (bNearPassFollowsCamera.load(std::memory_order_relaxed))
+        return fCameraFov;
+
+    auto fNear = ScaleFov(fCameraFov, ViewmodelScaleFor(fCameraFov, fAspect));
+
+    // In a seat the near pass follows the camera. The body and arms are first person geometry and
+    // the cab they sit in is world geometry, so two fields of view put the hands where the wheel
+    // is not, by a gap that grows with the offset from screen centre. MapIsInVehicle cannot cover
+    // this: markers are only placed while the map is open, so it reads false through a drive
+    // nobody opens the map in.
+    //
+    // Faded over the seat's own fFOVTransitionTime rather than switched, or mounting pops. Tangent
+    // space, like the widescreen transform.
+    auto fSeat = std::clamp(fVehicleFovWeight.load(std::memory_order_relaxed), 0.0f, 1.0f);
+    if (fSeat <= 0.0f)
+        return fNear;
+
+    auto fNearTan = std::tan(fNear * 0.5f);
+    auto fCameraTan = std::tan(fCameraFov * 0.5f);
+
+    return 2.0f * std::atan(fNearTan + (fCameraTan - fNearTan) * fSeat);
+}
+
+// Near pass depth reconstruction.
+//
+// FUN_10367f70 builds the near pass constant block by copying the world's, FUN_103679f0, and then
+// rewriting the projection set through FUN_10367270. Slot payloads sit 0x10 past the slot header,
+// so the matrices land at +0x30 / +0x80 / +0x1C0 / +0x210 / +0x260.
+//
+//     10368a01  8B 54 24 20     MOV    EDX,[ESP+0x20]           ; near block
+//     10368a05  0F 57 C0        XORPS  XMM0,XMM0
+//     10368a08  F3 0F 11 82 ..  MOVSS  [EDX+0x37c],XMM0
+//
+// By that point +0x210, transpose(inverse(P_near * J)), has been written from the near projection,
+// but +0x260 is still the copy the world block left behind. +0x260 is the same matrix with the
+// source's column 2, the third stored vector after the transpose in FUN_10367400, scaled by
+// 1/(far - near); the shaders reconstruct a view space position from depth through it. Rasterising
+// through P_near while reconstructing through inverse(P_world) puts every reconstructed position
+// off by the field of view ratio in x and y, in proportion to the offset from screen centre, which
+// is exactly a viewmodel that slides as the camera turns.
+//
+// Rebuilding it from +0x210 by the same rule is a no-op while the two fields of view agree, so a
+// stock frame is left as it was. The frustum extents at +0x390..+0x39C carry the same mismatch but
+// are consumed as a matched pair with this matrix, which is why rewriting them alone was measured
+// to make the slide worse.
+//
+// The dirty mask does not have to be touched: FUN_1040ef20, at the head of FUN_103679f0, sets
+// block+0x08 and block+0x0C to 0xFFFFFFFF before FUN_10367270 runs.
+static constexpr uintptr_t nBlockInverseProjection = 0x210;
+static constexpr uintptr_t nBlockDepthToView       = 0x260;
+static constexpr uintptr_t nBlockNearPlane         = 0x370;
+static constexpr uintptr_t nBlockFarPlane          = 0x374;
+
+// Rebuilding +0x260 from +0x210 is close to a no-op while the two fields of view agree, not exactly
+// one, so on frames where the projection stood the derived matrix is a pure loss. Published by the
+// projection hook on every path, including the ones that write nothing.
+static std::atomic<bool> bNearPassRewritten = false;
+
+static void SyncNearPassDepthMatrix(SafetyHookContext& regs)
+{
+    if (!bNearPassRewritten.load(std::memory_order_relaxed))
+        return;
+
+    auto nBlock = *(uintptr_t*)(regs.esp + 0x20);
+    if (!IsReadableStruct(nBlock, nBlockFarPlane + sizeof(float)))
+        return;
+
+    auto fNear = *(float*)(nBlock + nBlockNearPlane);
+    auto fFar  = *(float*)(nBlock + nBlockFarPlane);
+    if (fFar - fNear <= 0.0f)
+        return;
+
+    auto pInverse = (float*)(nBlock + nBlockInverseProjection);
+    auto pDepth   = (float*)(nBlock + nBlockDepthToView);
+    auto fScale   = 1.0f / (fFar - fNear);
+
+    for (auto i = 0; i < 16; ++i)
+        pDepth[i] = pInverse[i];
+
+    for (auto i = 8; i < 12; ++i)
+        pDepth[i] *= fScale;
+}
+
 // Shared by the two inlined copies of the seat FOV push.
 //
 // The paraglider is clamped down to the glider ceiling; every other vehicle takes the setting
@@ -541,7 +962,11 @@ static bool MapIsInVehicle()
 // reads the field afresh every time somebody gets in.
 static void ApplySeatFieldOfView(uintptr_t nVehicle)
 {
-    if (*(uint32_t*)(nVehicle + nVehicleName) == nVehicleNameParaglider)
+    auto bParaglider = *(uint32_t*)(nVehicle + nVehicleName) == nVehicleNameParaglider;
+
+    bSeatIsParaglider.store(bParaglider, std::memory_order_relaxed);
+
+    if (bParaglider)
     {
         NarrowFieldOfView((float*)(nVehicle + nVehicleFieldOfViewAngle), fGliderFieldOfView);
         return;
@@ -550,6 +975,32 @@ static void ApplySeatFieldOfView(uintptr_t nVehicle)
     if (fVehicleFieldOfView > 0.0f)
         *(float*)(nVehicle + nVehicleFieldOfViewAngle) = fVehicleFieldOfView;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Near pass routing is the engine's own: (renderContext+0x24 & node+0x90), tested at FUN_103c6260,
+// FUN_103c7750, FUN_103c5950 and FUN_103c45f0. node+0x90 is CGraphicComponent+0x12C, the schema
+// property RenderInNearZViewPortID, pushed across by FUN_1051a6e0. The machete blade's component
+// carries nought there, so the blade draws with the world projection at the world field of view
+// while the arms follow ViewmodelFieldOfView.
+//
+// Do not promote nodes at those four sites. Overriding the test for any node whose owner flags word
+// (node+0x14, a copy of CGraphicComponent+0x130) had 0x500 set promoted around 65 nodes a frame,
+// including props 275 units from the eye: the same 0x591 sits on the arms and on world geometry,
+// and the only bit that differs between a routed node and an unrouted one is 0x20, which 0x1051B230
+// writes to record that the mask is set. That cost turrets and AI drawn without the world's depth
+// so they showed through walls, characters sliding under camera rotation whenever the near field of
+// view differed from the world's, animation and facial LOD picked as first person, and a
+// VirtualQuery per submission.
+//
+// The node cannot name its owner either. Every pointer shaped field in CSceneGraphicObjectInstance
+// is a handle into the render pool at 0x10F96D88, and node+0x70/+0x74 share nothing with the nodes
+// the engine routes. The material record's FIRST_PERSON bit (record+0x4C bit 12, written
+// 0x1037EF3B) would say it, but the record resolves after all four tests (0x103C6AD7, 0x103C7D4C,
+// 0x103C4B83).
+//
+// Granting the layer to the held weapon's own entity through the setter at 0x1051AAE0 was tried and
+// does not reach the blade: the component that draws it mid swing never passes FUN_1051cc90, and
+// its node was measured at sites 0 and 2 with no owner recoverable from either side.
 
 class FieldOfView
 {
@@ -631,14 +1082,80 @@ public:
             {
                 static auto ViewmodelFovHook = safetyhook::create_mid(viewmodelPattern.get_first(9), [](SafetyHookContext& regs)
                 {
-                    // In vehicles the near-pass FOV stays at the world FOV, so map markers keep
-                    // their alignment.
-                    if (MapIsInVehicle())
-                        return;
+                    ReleaseWithheldLayerIfStale();
 
                     auto pFov = (float*)regs.esp;
-                    *pFov = ScaleFov(*pFov, ViewmodelScaleFor(*pFov, *(float*)(regs.esi + 0x18)));
+                    auto fAspect = *(float*)(regs.esi + 0x18);
+                    auto fCamera = *pFov;
+
+                    // In vehicles the near-pass FOV stays at the world FOV, so map markers keep
+                    // their alignment.
+                    auto bInVehicle = MapIsInVehicle();
+                    auto fNear = bInVehicle ? fCamera : NearPassFieldOfView(fCamera, fAspect);
+
+                    if (bInVehicle)
+                        return;
+
+                    *pFov = fNear;
                 });
+            }
+
+            // Tail of the near pass block build, just before the engine zeroes +0x37C.
+            auto nearDepthPattern = dunia_pattern("8B 54 24 20 0F 57 C0 F3 0F 11 82 7C 03 00 00");
+            if (!nearDepthPattern.empty())
+            {
+                static auto NearDepthHook = safetyhook::create_mid(nearDepthPattern.get_first(), SyncNearPassDepthMatrix);
+            }
+
+            // Taken off the anim notify spawner's own call rather than pattern scanned for, since
+            // FUN_1032ead0 has no prologue worth anchoring on.
+            auto firstPersonMaskPattern = dunia_pattern("8B BF 2C 01 00 00 57 8D 4C 24 20 E8 ? ? ? ? 8B C8 E8");
+            if (!firstPersonMaskPattern.empty())
+            {
+                auto pCall = firstPersonMaskPattern.get_first<uint8_t>(0x12);
+                SetFirstPersonLayerMask = (tSetFirstPersonLayerMask)(pCall + 5 + *(int32_t*)(pCall + 1));
+            }
+
+            // The two weapon effect spawners, FUN_10111e40 and FUN_10111f80. Their spawn blocks
+            // differ in stack layout, so each takes its own pattern:
+            //
+            //     10112039  E8 ? ? ? ?      CALL 0x1032f410   ; resolve the system handle
+            //     1011203e  8B C8           MOV  ECX,EAX      ; <- hook, EAX system, EBX component
+            //     10112040  E8 ? ? ? ?      CALL 0x1032f0a0   ; Start
+            //
+            // Ahead of Start, matching the order FUN_1013a800 uses: the mask is walked out to every
+            // emitter the system owns, so it has to land before any of them are running.
+            //
+            // The second anchor carries a tail as well as a head. Its head alone matches twice, at
+            // 0x1011201c and 0x10cd8694.
+            auto muzzleFirstPattern = dunia_pattern("84 C0 75 59 8D 54 24 20 52 8D 4C 24 1C E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8D 4C 24 18 E8 ? ? ? ? 8B C8 E8");
+            auto muzzleSecondPattern = dunia_pattern("84 C0 75 59 8D 44 24 10 50 8D 4C 24 10 E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8D 4C 24 0C E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8B 97 A0 00 00 00");
+
+            if (SetFirstPersonLayerMask != nullptr && !muzzleFirstPattern.empty())
+            {
+                static auto MuzzleFirstHook = safetyhook::create_mid(muzzleFirstPattern.get_first(0x22), MuzzleFirstPersonMask);
+            }
+
+            if (SetFirstPersonLayerMask != nullptr && !muzzleSecondPattern.empty())
+            {
+                static auto MuzzleSecondHook = safetyhook::create_mid(muzzleSecondPattern.get_first(0x22), MuzzleFirstPersonMask);
+            }
+
+            // The push half of the layer, for handing a withheld clear back to the engine.
+            auto layerPushPattern = dunia_pattern("56 8B F1 83 BE C0 01 00 00 00 57 75 25 8B 46 08");
+            if (!layerPushPattern.empty())
+                PushFirstPersonLayer = (tPushFirstPersonLayer)layerPushPattern.get_first<void>();
+
+            // The melee weapon's layer, held through the swing.
+            //
+            //     1051b230  80 7C 24 08 00  CMP  byte [ESP+0x8],0x0   ; bEnable
+            //     1051b235  56 8B F1        PUSH ESI / MOV ESI,ECX    ; the component
+            //     1051b23a  74 1E           JZ   the disable half
+            //     1051b23c  8B 8E 30 01..   MOV  ECX,[ESI+0x130]
+            auto layerTogglePattern = dunia_pattern("80 7C 24 08 00 56 8B F1 74 1E 8B 8E 30 01 00 00");
+            if (!layerTogglePattern.empty())
+            {
+                static auto LayerToggleHook = safetyhook::create_mid(layerTogglePattern.get_first(), HoldFirstPersonLayer);
             }
 
             // Marker placement, with ECX the owning CCompassObjectives. Read bInVehicle (+0x28)
@@ -770,6 +1287,11 @@ public:
 
                     RememberPawnFieldOfView(regs.eax);
                     fIronsightBlend.store(*(float*)(regs.eax + nPawnFovIronsightWeight), std::memory_order_relaxed);
+                    fVehicleFovWeight.store(*(float*)(regs.eax + nPawnFovBaseWeight), std::memory_order_relaxed);
+
+                    // The swing's own deadline, checked here because this is the one hook in the
+                    // module that runs every frame on the gameplay thread.
+                    ReleaseWithheldLayerIfStale();
                 });
             }
 
@@ -794,12 +1316,20 @@ public:
                     if (*(uint8_t*)(regs.edi + nCameraActive) == 0)
                         return;
 
+                    // The swing deadline, on the update's own delta, so a paused game does not age
+                    // a hold that has not run a frame.
+                    auto fFrame = *(float*)(regs.ebp + nCameraDeltaTime);
+
+                    StepWithheldLayer(std::clamp(fFrame, 0.0f, fNarrowBlendMaxStep));
+
                     // The pawn that owned the state is gone, so drop the clamp outright. Blending
                     // out of it would not run during a loading screen anyway.
                     if (NarrowStateIsStale())
                     {
                         fNarrowBlend = 0.0f;
                         nNarrowBlendCamera = 0;
+                        ClearNarrowViewmodel();
+                        bNearPassFollowsCamera.store(false, std::memory_order_relaxed);
                         return;
                     }
 
@@ -815,8 +1345,15 @@ public:
                         fNarrowBlend = 0.0f;
                     }
 
+                    // Published here so the near pass follows the camera on exactly the frames the
+                    // world is clamped and no others.
+                    bNearPassFollowsCamera.store(nContext == NARROW_CUTSCENE, std::memory_order_relaxed);
+
                     if (!bNarrow && fNarrowBlend <= 0.0f)
+                    {
+                        ClearNarrowViewmodel();
                         return;
+                    }
 
                     // Both contexts take the same ceiling. NarrowContext still tells them apart
                     // because that is the line to change if they ever need to differ.
@@ -828,15 +1365,31 @@ public:
 
                     fNarrowBlend = std::clamp(fNarrowBlend + (bNarrow ? fStep : -fStep), 0.0f, 1.0f);
                     if (fNarrowBlend <= 0.0f)
+                    {
+                        ClearNarrowViewmodel();
+                        bNearPassFollowsCamera.store(false, std::memory_order_relaxed);
                         return;
+                    }
 
                     // Smoothstep, so the move leaves and arrives at rest instead of starting at
                     // full speed and stopping dead.
                     auto fWeight = fNarrowBlend * fNarrowBlend * (3.0f - 2.0f * fNarrowBlend);
                     auto fFov = DegreesToRadians(fNarrowBlendCap);
 
-                    BlendFieldOfView((float*)(regs.esi + nCameraStateFieldOfView), fFov, fWeight);
+                    auto pWorldFov = (float*)(regs.esi + nCameraStateFieldOfView);
+                    auto fBefore = *pWorldFov;
+
+                    BlendFieldOfView(pWorldFov, fFov, fWeight);
                     BlendFieldOfView((float*)(regs.esi + nCameraStateViewmodelFieldOfView), fFov, fWeight);
+
+                    // Measured off the world FOV rather than off the blend, so a frame the clamp
+                    // did not move anything on carries a scale of one by arithmetic.
+                    auto fBeforeTan = std::tan(fBefore * 0.5f);
+                    fNarrowTangentScale.store(
+                        fBeforeTan > 0.0f ? std::tan(*pWorldFov * 0.5f) / fBeforeTan : 1.0f,
+                        std::memory_order_relaxed);
+
+                    fNarrowViewmodelCeiling.store(fFov, std::memory_order_relaxed);
                 });
             }
 
@@ -954,6 +1507,12 @@ public:
                     // Taken here whether or not the setting is in use, because it is the handle a
                     // later change needs.
                     RememberPawnFieldOfView(regs.edi);
+
+                    // The player's melee weapon, for the swing below. ESI is the holder the setup
+                    // walks: +0x00 the CGraphicComponent, +0x04 the property object this hook
+                    // already has in EAX. Everything past the player test above is the player's,
+                    // so nothing else can be learned here.
+                    RememberMeleeWeapon(*(uint32_t*)(regs.eax + nWeaponClass));
 
                     // In degrees for the comparison, since both ends of this path are radians.
                     // Decided whether or not the setting is in use, because the push above needs
