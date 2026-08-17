@@ -52,6 +52,7 @@ import debug;
 import dx10fixes;
 import effectsorting;
 import jackalfixmenu;
+import updatecheck;
 
 void Init()
 {

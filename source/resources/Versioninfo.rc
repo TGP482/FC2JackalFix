@@ -69,4 +69,11 @@ END
 #endif    // Neutral (Default) resources
 
 #ifndef APSTUDIO_INVOKED
+
+//
+// Common controls version 6, activated by updatecheck.ixx for the task dialog. Id 2 keeps it a
+// dependency this asi activates for itself; id 1 would be a manifest for the host process.
+//
+2 RT_MANIFEST "ComCtl6.manifest"
+
 #endif    // not APSTUDIO_INVOKED
