@@ -199,9 +199,9 @@ static bool QueryLatestVersion(std::string& latest)
         return false;
 
     // One field, so a regex rather than a json dependency. Tags are published as v1.2.3 and the v
-    // is not part of the version.
+    // is not part of the version. Custom delimiter: the pattern's own )" would close a plain R"( ).
     std::smatch match;
-    const std::regex tag(R"("tag_name"\s*:\s*"\s*[vV]?([0-9][^"]*)")");
+    const std::regex tag(R"rx("tag_name"\s*:\s*"\s*[vV]?([0-9][^"]*)")rx");
 
     if (!std::regex_search(response, match, tag) || match.size() < 2)
         return false;

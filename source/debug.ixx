@@ -8,13 +8,21 @@
 
       GodMode  +0x94    UnlimitedAmmo  +0x98    UnlimitedReliability  +0x9C    AllWeaponsUnlock  +0xA0
 
+  Syringes
+  The engine's item decrementer is shared by ammo, throwables and syringes, and it treats the
+  GameProfile UnlimitedAmmo dword as "this pool is infinite" and returns before touching the counts.
+  Infinite Ammo therefore took healing with it. The flag is cleared for the duration of a call that
+  came from one of the three sites that spend a syringe, so everything else stays infinite.
+
   Health floor
-  GodMode on its own is not invincibility. It blocks negative health deltas and the bleed-out
-  branch but restores nothing, so a player already under the health-failure threshold stays pinned
-  there. Syringes go infinite out of that: ShouldConsumeSyringe is "health >= threshold", and from
-  under it every heal takes the free self-patch branch, which never reaches the decrement. What
-  latches is the health value rather than a flag, which is why it outlived the option going off.
-  The module restores the player instead of touching the heal path, so syringes stay vanilla.
+  GodMode on its own is not invincibility. It blocks negative health deltas and skips the
+  health-failure branch, but restores nothing, so a player already under the failure threshold when
+  it goes on has no bleed-out, no death and no regen, and stays there. The module lifts them back
+  out. Not reproduced in game, only read out of the health tick's two invulnerability gates.
+
+  Not the cause of the infinite syringes above, though the branch is there: below the threshold
+  every heal is the free self-patch, which never reaches the decrement. Measured in game, that
+  branch is only taken below 320 of 1600 health, and the logged case was Infinite Ammo instead.
 
   Vehicles
   No vehicle damage path reads GodMode, so the player's vehicle is covered by two hooks on
@@ -52,6 +60,7 @@ module;
 #include <cstdlib>
 #include <algorithm>
 #include <cctype>
+#include <intrin.h>
 #include <string_view>
 
 export module debug;
@@ -179,6 +188,15 @@ static constexpr ptrdiff_t nCountersFailureThreshold = 0x6C;
 
 // Into the constructor's pattern: both vtables written, ESI still the object.
 static constexpr ptrdiff_t nCountersCtorVTableSet = 0x15;
+
+// Into the pattern the three syringe consume sites share, which ends on the CALL's opcode:
+//
+//   106A01F2  CMP  EAX, ECX          <- pattern starts here
+//   106A01FC  PUSH 1
+//   106A01FE  CALL <item consume>
+//   106A0203                         <- the return address the decrementer sees, at +0x11
+static constexpr ptrdiff_t nSyringeConsumeReturn = 0x11;
+static constexpr size_t nSyringeConsumeSites = 3;
 
 // CCounter. SetToMax goes through SetValue, which clamps and drives the HUD and event chain that a
 // write straight to the value would skip.
@@ -429,6 +447,11 @@ static void* pEconomyVTable = nullptr;
 
 // Granted diamonds still in the wallet. Real progress is always the live count minus this.
 static int32_t nGranted = 0;
+
+// Return addresses of the sites that spend a syringe. The decrementer they call is shared with
+// every other consumable, so this is what tells one apart from a magazine.
+static uintptr_t pSyringeConsumeSite[nSyringeConsumeSites]{};
+static size_t nSyringeConsumeSiteCount = 0;
 
 // The campaign player's vitals component and the vtable its constructor carried, on the same terms
 // as the economy component above: it dies with the player while this module's clock keeps ticking.
@@ -1367,6 +1390,38 @@ static SafetyHookInline GameSignalHook{};
 static SafetyHookInline FreeCameraUpdateHook{};
 static SafetyHookInline VehicleHealthDamageHook{};
 static SafetyHookInline VehicleStimPartsHook{};
+static SafetyHookInline ItemConsumeHook{};
+
+// The engine's item decrementer, shared by ammo, throwables and syringes. Its first act is to return
+// without touching the counts when the pool carries its own infinite bit or GameProfile
+// UnlimitedAmmo is set, which is how Infinite Ammo made healing free and left the syringe count
+// where it was. The flag is put back immediately, so every other consumable is unaffected.
+static int32_t __fastcall ItemConsume(void* pPool, void* pEdx, int32_t nAmount)
+{
+    auto nCaller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    auto bSyringe = false;
+
+    for (size_t i = 0; i < nSyringeConsumeSiteCount; i++)
+    {
+        if (nCaller == pSyringeConsumeSite[i])
+            bSyringe = true;
+    }
+
+    auto pProfile = (ppGameProfile != nullptr) ? *ppGameProfile : nullptr;
+
+    if (!bSyringe || pProfile == nullptr)
+        return ItemConsumeHook.fastcall<int32_t>(pPool, pEdx, nAmount);
+
+    auto pUnlimitedAmmo = reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(pProfile) + nProfileUnlimitedAmmo);
+    auto nSaved = *pUnlimitedAmmo;
+    *pUnlimitedAmmo = nCheatOff;
+
+    auto nResult = ItemConsumeHook.fastcall<int32_t>(pPool, pEdx, nAmount);
+
+    *pUnlimitedAmmo = nSaved;
+
+    return nResult;
+}
 
 // CVehiclePhysComponent::ApplyHealthDamage, the one place vehicle health is written, including by
 // the two instant kills that pass the vehicle's whole current health. Zero is passed rather than the
@@ -1815,6 +1870,23 @@ public:
                     pCountersVTable = *reinterpret_cast<void**>(regs.esi);
                 });
             }
+
+            // The three sites that spend a syringe: the two heal handlers and the animation event
+            // path. Their return addresses are what tell ItemConsume a syringe from a magazine, the
+            // pool object being the same shape either way. Three matches, so the sites are taken by
+            // index rather than through get_first.
+            auto syringeSitePattern = dunia_pattern("3B C1 75 04 33 C9 EB 02 8B 08 6A 01 E8");
+            for (size_t i = 0; i < syringeSitePattern.size() && nSyringeConsumeSiteCount < nSyringeConsumeSites; i++)
+            {
+                pSyringeConsumeSite[nSyringeConsumeSiteCount++] =
+                    reinterpret_cast<uintptr_t>(syringeSitePattern.get(i).get<void>(nSyringeConsumeReturn));
+            }
+
+            // FUN_10145100, the shared item decrementer. Hooked only once the sites above are known,
+            // since without them every call would look like a syringe.
+            auto itemConsumePattern = dunia_pattern("8B 54 24 04 85 D2 7F 05 33 C0 C2 04 00 80 79 1C 00 75 0E A1 ? ? ? ? 83 B8 98 00 00 00 00 76 05");
+            if (!itemConsumePattern.empty() && nSyringeConsumeSiteCount != 0)
+                ItemConsumeHook = safetyhook::create_inline(itemConsumePattern.get_first(), ItemConsume);
 
             // CVehicle::GetCurrentVehicle. The trailing 82 A7 1B FD is the CRC of the fact it
             // reads, 0xFD1BA782, in the instruction that seeds the call site's static copy of it.
