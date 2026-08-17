@@ -99,7 +99,6 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 - Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies
 - Fixed an issue where small scattered objects and vegetation would draw without casting a shadow (Ultra High only)
 - Fixed an issue where road textures broke up at higher geometry LOD scales (Ultra High)
-- Fixed an issue where exploding barrels left no fire behind, unlike every other explosive in the game
 - Fixed an issue where the DLC ATV and Utility Truck only ever spawned in one colour, while their multiplayer counterparts came in the full range
 - Fixed a case where the player could no longer save their game after completing certain missions
 - Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church

@@ -1,6 +1,6 @@
 /*
-  Five entity library edits from Boggalog's Far Cry 2 Patched. Credit to him for identifying all
-  five and for the values used here. His versions are data edits to
+  Four of the five entity library edits from Boggalog's Far Cry 2 Patched. Credit to him for
+  identifying all five and for the values used here. His versions are data edits to
   generated/entitylibrarypatchoverride.fcb inside patch.dat:
 
     "Fixed the MAC-10 being silent"
@@ -19,12 +19,6 @@
         enemy_archetypes.Missions.Assassination_Target
         FOVMultipliers: fPreCombatMultiplier 4 -> 0.75, fCombatMultiplier 4 -> 1,
                         fPostCombatMultiplier 4 -> 1.25
-
-    "Explosive barrels now start fires"
-        OA_Explosives.Explosives.ExplosiveBarrel_NEW
-        CCompoundPhysComponent -> RootNode -> States -> State -> StateSubNode -> Explosion ->
-        ExtraStims: the third Stim, which the archive ships zeroed, becomes
-                    selType 7 (Burn), nLevel 15, fRadius 3.0, bFalloff true, nFalloffMinLevel 1
 
 */
 
@@ -67,21 +61,6 @@ static NameKey KeyPreCombatMultiplier = { "fPreCombatMultiplier", 0 };
 static NameKey KeyCombatMultiplier = { "fCombatMultiplier", 0 };
 static NameKey KeyPostCombatMultiplier = { "fPostCombatMultiplier", 0 };
 
-// The barrel walk. Named navigation rather than a subtree sweep, because the prototype carries a
-// second Explosion under OnEvent whose placeholder stim is identical and has to stay untouched.
-static NameKey KeyComponents = { "Components", 0 };
-static NameKey KeyCompoundPhys = { "CCompoundPhysComponent", 0 };
-static NameKey KeyRootNode = { "RootNode", 0 };
-static NameKey KeyStates = { "States", 0 };
-static NameKey KeyState = { "State", 0 };
-static NameKey KeyStateSubNode = { "StateSubNode", 0 };
-static NameKey KeyExplosion = { "Explosion", 0 };
-static NameKey KeyExtraStims = { "ExtraStims", 0 };
-static NameKey KeySelType = { "selType", 0 };
-static NameKey KeyLevel = { "nLevel", 0 };
-static NameKey KeyFalloff = { "bFalloff", 0 };
-static NameKey KeyFalloffMinLevel = { "nFalloffMinLevel", 0 };
-
 // NameHash::Set, the engine's own hash, so hashes computed here match the archive by construction.
 // __thiscall with three stack arguments.
 using NameHash_t = void(__fastcall*)(uint32_t* pOut, void* pEdx, const char* pszName, int32_t, int32_t);
@@ -100,16 +79,6 @@ static constexpr float fFixedPreCombatMultiplier = 0.75f;
 static constexpr float fFixedCombatMultiplier = 1.0f;
 static constexpr float fFixedPostCombatMultiplier = 1.25f;
 
-// The barrel's fire stim. selType is the stim table's enum: 0 None, 1 Bang, 2 Snap, 3 Pierce,
-// 4 Crush, 5 Cut, 6 Health, 7 Burn, 8 Water, 9 Panic, 10 Fear, 11 Morale, 12 Dirt, 13 Reliability,
-// 14 Interest. The barrel already broadcasts Bang at radius 25 and Crush at radius 8; Burn at 3 is
-// tight enough that the fire starts under the barrel rather than across the whole compound.
-static constexpr uint32_t nStimTypeNone = 0;
-static constexpr uint32_t nStimTypeBurn = 7;
-static constexpr uint32_t nBurnStimLevel = 15;
-static constexpr float fBurnStimRadius = 3.0f;
-static constexpr uint32_t nBurnStimFalloffMinLevel = 1;
-
 enum class Prototype
 {
     None,
@@ -117,7 +86,6 @@ enum class Prototype
     M79,                  // ironsight move speed
     VehicleCompass,       // GPS height offset
     AssassinationTarget,  // field of view multipliers
-    ExplosiveBarrel,      // explosion burn stim
 };
 
 // hidName comes back as a raw pointer with no length, so the compare is bounded.
@@ -163,9 +131,6 @@ static Prototype ClassifyPrototype(const char* pszHidName)
     if (NameIs(pszHidName, "enemy_archetypes.Missions.Assassination_Target"))
         return Prototype::AssassinationTarget;
 
-    if (NameIs(pszHidName, "OA_Explosives.Explosives.ExplosiveBarrel_NEW"))
-        return Prototype::ExplosiveBarrel;
-
     return Prototype::None;
 }
 
@@ -203,27 +168,6 @@ static bool SetFloat(FCBNode* pNode, const NameKey& key, float fStock, float fFi
         return false;
 
     *pValue = fFixed;
-    return true;
-}
-
-static bool SetUInt32(FCBNode* pNode, const NameKey& key, uint32_t nStock, uint32_t nFixed)
-{
-    auto* pValue = static_cast<uint32_t*>(GetProperty(pNode, key));
-    if (pValue == nullptr || *pValue != nStock)
-        return false;
-
-    *pValue = nFixed;
-    return true;
-}
-
-// Bools are a single byte in the archive, so this cannot share SetUInt32.
-static bool SetBool(FCBNode* pNode, const NameKey& key, bool bStock, bool bFixed)
-{
-    auto* pValue = static_cast<uint8_t*>(GetProperty(pNode, key));
-    if (pValue == nullptr || (*pValue != 0) != bStock)
-        return false;
-
-    *pValue = bFixed ? 1 : 0;
     return true;
 }
 
@@ -276,45 +220,6 @@ static void ApplyToSubtree(Prototype ePrototype, FCBNode* pNode, int nDepth)
         ApplyToSubtree(ePrototype, GetChild(pNode, i), nDepth + 1);
 }
 
-// The one edit that cannot be a subtree sweep. GetChildByName returns the first match, which is
-// what is wanted at every step: States holds two State nodes and only the first carries an
-// explosion, and that State holds StateSubNode ahead of OnEvent.
-static void ApplyBarrelFire(FCBNode* pPrototype)
-{
-    static const NameKey* const path[] =
-    {
-        &KeyEntity, &KeyComponents, &KeyCompoundPhys, &KeyRootNode,
-        &KeyStates, &KeyState, &KeyStateSubNode, &KeyExplosion, &KeyExtraStims,
-    };
-
-    auto* pNode = pPrototype;
-    for (const auto* pKey : path)
-    {
-        pNode = GetChildByName(pNode, *pKey);
-        if (pNode == nullptr || pNode->ppVTable == nullptr)
-            return;
-    }
-
-    // The placeholder is the last of the three, but it is found by value rather than by index so a
-    // reordered archive cannot make this overwrite a live stim.
-    const auto nStims = GetChildCount(pNode);
-    for (uint32_t i = 0; i < nStims; ++i)
-    {
-        auto* pStim = GetChild(pNode, i);
-        if (pStim == nullptr || pStim->ppVTable == nullptr)
-            continue;
-
-        if (!SetUInt32(pStim, KeySelType, nStimTypeNone, nStimTypeBurn))
-            continue;
-
-        SetUInt32(pStim, KeyLevel, 0, nBurnStimLevel);
-        SetFloat(pStim, KeyRadius, 0.0f, fBurnStimRadius);
-        SetBool(pStim, KeyFalloff, false, true);
-        SetUInt32(pStim, KeyFalloffMinLevel, 0, nBurnStimFalloffMinLevel);
-        return;
-    }
-}
-
 // The same two-level walk FUN_105492E0 performs: libraries, then prototypes. pRoot is the wrapper,
 // everything GetChild hands back below it is an inner node.
 static void PatchLibrary(FCBNode* pRoot)
@@ -341,9 +246,7 @@ static void PatchLibrary(FCBNode* pRoot)
                 continue;
 
             const auto ePrototype = ClassifyPrototype(static_cast<const char*>(GetProperty(pEntity, KeyHidName)));
-            if (ePrototype == Prototype::ExplosiveBarrel)
-                ApplyBarrelFire(pPrototype);
-            else if (ePrototype != Prototype::None)
+            if (ePrototype != Prototype::None)
                 ApplyToSubtree(ePrototype, pPrototype, 0);
         }
     }
@@ -390,10 +293,7 @@ public:
 
             for (auto* pKey : {
                 &KeyMoveSpeedFactor, &KeyCanIronsight, &KeyRadius, &KeyHeightOffset,
-                &KeyPreCombatMultiplier, &KeyCombatMultiplier, &KeyPostCombatMultiplier,
-                &KeyComponents, &KeyCompoundPhys, &KeyRootNode, &KeyStates, &KeyState,
-                &KeyStateSubNode, &KeyExplosion, &KeyExtraStims,
-                &KeySelType, &KeyLevel, &KeyFalloff, &KeyFalloffMinLevel })
+                &KeyPreCombatMultiplier, &KeyCombatMultiplier, &KeyPostCombatMultiplier })
             {
                 NameHash(&pKey->nHash, nullptr, pKey->pszName, 0, 0);
             }
