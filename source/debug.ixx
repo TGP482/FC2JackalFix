@@ -1,62 +1,48 @@
 /*
-  Debug and testing aids. Everything here is a switch the engine already has; the work was finding
-  where each one lives.
+  Debug and testing aids. Mechanism and pattern anchors live inline with each hook; this is the map.
 
   GameProfile
-  Four dwords on the settings object, registered from defaultgameconfig.xml and tested by their
-  consumers with nothing in front of them - no build flag, no master gate, no mission check. Writing
-  them is what -GameProfile_GodMode 1 does. Re-applied every frame, because the spectator path
-  clears GodMode and a profile reload on a map transition would write the file's value back.
+  Four dwords on the settings object, registered from defaultgameconfig.xml, each tested by its
+  consumer with nothing in front of it. No build flag, no master gate, no mission check. Writing
+  them is what -GameProfile_GodMode 1 does.
 
       GodMode  +0x94    UnlimitedAmmo  +0x98    UnlimitedReliability  +0x9C    AllWeaponsUnlock  +0xA0
 
+  Health floor
+  GodMode on its own is not invincibility. It blocks negative health deltas and the bleed-out
+  branch but restores nothing, so a player already under the health-failure threshold stays pinned
+  there. Syringes go infinite out of that: ShouldConsumeSyringe is "health >= threshold", and from
+  under it every heal takes the free self-patch branch, which never reaches the decrement. What
+  latches is the health value rather than a flag, which is why it outlived the option going off.
+  The module restores the player instead of touching the heal path, so syringes stay vanilla.
+
+  Vehicles
+  No vehicle damage path reads GodMode, so the player's vehicle is covered by two hooks on
+  CVehiclePhysComponent. Drowning, scripted destruction and the damage-state override at
+  +0x107/+0x108 all reach a vehicle without going through the damage model, and are not covered.
+
   Both regions' weapons
   AllWeaponsUnlock only bypasses the per-weapon unlock list. What hides the other map's weapons is
-  the pair of act gates ahead of it in CWeaponBazaar::IsWeaponUnlocked, which compare entry->act
-  against 1 and 2 and call a mission lookup. The field only ever holds 0, 1 or 2, so both immediates
-  are patched to 0xFF and both jumps go unconditional. The rank, prerequisite and already-owned
-  checks below are untouched.
+  the pair of act gates ahead of it in CWeaponBazaar::IsWeaponUnlocked, and those are patched out.
 
   Diamonds
   The wallet is one int32 on CEconomyComponent+0x10, serialised through the engine's generic int32
-  property visitor. Granted diamonds never reach the disc: the live count is topped up, nGranted
-  tracks how much of it is ours, spending retires the grant first, and on save the field is set to
-  live - nGranted for the duration of the visitor call. So real progress is always live - nGranted,
-  and turning the option off - or deleting the plugin - lands on the number the save already held.
-  The HUD's two mirrors at +0x2BC and +0x2C8 are sanitised on the same hook, and descriptors are
-  matched on name hash *and* field offset, since both classes register a DiamondCount.
+  property visitor. Granted diamonds never reach the disc: real progress is always live - nGranted,
+  and the save hook subtracts the grant for the duration of the visitor call.
 
   Freecam
-  cameras.Camera.Free ships in the retail entity library: a self contained fly camera, gated on
-  nothing, that also pushes an exclusive free_camera input mapping and parks the pawn. Activated by
-  name through the camera manager, which instantiates the prototype on a miss - and only on that
-  miss path does it hand the camera its focus, so later activations need the same vtable slot called
-  directly or the camera resumes where it was left. The manager's Locked byte silently no-ops the
-  whole switch, so it is cleared and put back.
+  cameras.Camera.Free ships in the retail entity library, a self contained fly camera gated on
+  nothing that pushes an exclusive input mapping and parks the pawn.
 
   Noclip
-  Built on the gameplay camera, not on cameras.Camera.Ghost: the ghost camera drives the player's
-  transform after the animation pass that places the arms, which leaves the viewmodel a frame
-  behind. So the camera is left alone and the player is moved underneath it - physics off through
-  the ghost camera's own vtable slot, position integrated once a frame in the input pass, ahead of
-  animation. Camera, HUD, aiming, weapons and viewmodel are all stock.
-
-  Direction is the entity's own basis (X strafes, Y forward, Z up) read out of its matrix, tilted by
-  the look pitch. Yaw has to be integrated by hand, since the character controller that normally
-  applies it is part of the physics being switched off and the camera rides the head bone; the body
-  stays upright, because pitching it would double the view's pitch. Sprint is cleared request and
-  current, or the animation layer plays it. The pause menu, quicksave and quickload are refused
-  while engaged, all three through the one dispatcher that acts on them.
+  Built on the gameplay camera rather than cameras.Camera.Ghost, which drives the player's transform
+  after the animation pass that places the arms and so leaves the viewmodel a frame behind. Here the
+  camera is left alone and the player moved underneath it, leaving camera, HUD, aiming, weapons and
+  viewmodel stock.
 
   The clock
-  A mid hook on CPawnInputListener::Update, past its check that gameplay input is enabled - so menus
-  and cutscenes take the debug keys with them. Not a camera update, where activating a camera by
-  name would mutate the manager's array mid-iteration. It and CIntProperty::Serialise are both
-  hooked mid-function rather than at the entry, because lookback.ixx and renderconfig.ixx own those
-  prologues and two inline hooks on one prologue resolve by static initialisation order.
-
-  The pad is read straight from XInput, since inputdevice.ixx already mid-hooks the engine's poll.
-  Look is not: that arrives on the pawn's accumulator whichever device is in use.
+  A mid hook on CPawnInputListener::Update, past its check that gameplay input is enabled, so menus
+  and cutscenes take the debug keys with them.
 */
 
 module;
@@ -170,13 +156,40 @@ static constexpr ptrdiff_t nPawnCurrentState = 0x2D0;
 static constexpr ptrdiff_t nStateFlags = 0x04;
 static constexpr uint8_t nSprintFlag = 0x40;
 
-// Falling, in the same block. The flag is what every other system asks about - there is a one line
-// accessor over it - and the counter is how many frames the fall has run for.
+// Falling, in the same block. The flag is what every other system asks about, through the one line
+// accessor over it. The counter is how many frames the fall has run for.
 static constexpr ptrdiff_t nPawnFalling = 0x49B;
 static constexpr ptrdiff_t nPawnFallFrames = 0x4A0;
 
 // Into the fall update's pattern: the tail that reports "not falling" for the frame.
 static constexpr ptrdiff_t nFallUpdateTail = 0x303;
+
+// ------------------------------------------------------------------------------------------------
+// CFCXCountersComponentPlayerSP, the campaign player's vitals. bIsInForcedFailure is a registered
+// property; the rest are read out of the health tick and the buddy-rescue handler.
+
+static constexpr ptrdiff_t nCountersHealth = 0x44;   // the CCounter the health lives on
+static constexpr ptrdiff_t nCountersForcedFailure = 0x88;
+static constexpr ptrdiff_t nCountersRescueState = 0xE8;
+static constexpr ptrdiff_t nCountersReviveInvulnerable = 0x140;
+
+// Health-failure threshold, 80.0 out of the constructor. FUN_106A2C30 adds to it, so it is re-read
+// every frame rather than cached.
+static constexpr ptrdiff_t nCountersFailureThreshold = 0x6C;
+
+// Into the constructor's pattern: both vtables written, ESI still the object.
+static constexpr ptrdiff_t nCountersCtorVTableSet = 0x15;
+
+// CCounter. SetToMax goes through SetValue, which clamps and drives the HUD and event chain that a
+// write straight to the value would skip.
+static constexpr ptrdiff_t nCounterValue = 0x10;
+static constexpr size_t nCounterSetToMaxSlot = 0x20 / sizeof(void*);
+
+// ------------------------------------------------------------------------------------------------
+// CVehiclePhysComponent. +0x08 is the ref block its entity hangs off, laid out like an entity ref
+// holder, so nEntityRefEntity reads the entity out of it.
+
+static constexpr ptrdiff_t nVehicleRefBlock = 0x08;
 
 // Angle triples here are (pitch, roll, yaw).
 static constexpr size_t nAnglePitch = 0;
@@ -186,7 +199,7 @@ static constexpr size_t nAnglePitch = 0;
 static constexpr float fLookRadiansPerUnit = 3.14159265f;
 
 // The pad, read straight from XInput rather than off the engine's poll, which inputdevice.ixx has
-// already mid-hooked. Movement and the speed step only - look arrives on the pawn's accumulator
+// already mid-hooked. Movement and the speed step only. Look arrives on the pawn's accumulator
 // whichever device is in use.
 struct XInputGamepad
 {
@@ -213,8 +226,11 @@ static XInputGetState_t XInputGetStateFn = nullptr;
 static constexpr float fThumbDeadzone = 7849.0f;
 static constexpr float fThumbRange = 32767.0f;
 
-// The sprint button, free to reuse because noclip clears the sprint request anyway.
+// XINPUT_GAMEPAD_LEFT_THUMB and RIGHT_THUMB. Left steps the speed up, right steps it down. Left is
+// the sprint button, free to reuse because noclip clears the sprint request anyway; both are only
+// read while a mode is up.
 static constexpr uint16_t nPadSpeedCycle = 0x0040;
+static constexpr uint16_t nPadSlowCycle = 0x0080;
 
 // The three signals noclip refuses, by the CRC32 the dispatcher identifies them with.
 static constexpr uint32_t nSignalPauseMenu = 0x04127107; // "show_pausemenu"
@@ -312,8 +328,27 @@ using GetRenderCamera_t = void* (__fastcall*)(void* pCamera);
 // Vtable slot 0xB4 on the physics component.
 using SetPhysicsEnabled_t = void(__fastcall*)(void* pPhysics, void* pEdx, int32_t bEnabled);
 
+// __cdecl, one argument, caller cleans. Reads the pawn's "current vehicle" fact and returns the
+// CVehicle component the id in it resolves to, or null on foot. It releases the ref holder it takes
+// out on every path, so the caller owns nothing. It also waits on the entity's pending async job,
+// which is what makes it main-thread only.
+using GetCurrentVehicle_t = void* (__cdecl*)(void* pPawn);
+
+// __thiscall on an entity. Blocks until that entity's outstanding async job is done, so it must not
+// be called from inside one.
+using FlushEntityJob_t = void(__fastcall*)(void* pEntity);
+
+// __thiscall on an entity. Registers its own component type on first use, unlike the tag fetch.
+using GetVehiclePhysics_t = void* (__fastcall*)(void* pEntity);
+
+// __thiscall on a CCounter, no arguments. Vtable slot 0x20.
+using CounterSetToMax_t = void(__fastcall*)(void* pCounter);
+
 static RegisterPhysicsTag_t RegisterPhysicsTag = nullptr;
 static GetComponentByTag_t GetComponentByTag = nullptr;
+static GetCurrentVehicle_t GetCurrentVehicle = nullptr;
+static FlushEntityJob_t FlushEntityJob = nullptr;
+static GetVehiclePhysics_t GetVehiclePhysics = nullptr;
 static SetEntityPosition_t SetEntityPosition = nullptr;
 static SetEntityEuler_t SetEntityEuler = nullptr;
 static GetRenderCamera_t GetRenderCamera = nullptr;
@@ -394,6 +429,23 @@ static void* pEconomyVTable = nullptr;
 
 // Granted diamonds still in the wallet. Real progress is always the live count minus this.
 static int32_t nGranted = 0;
+
+// The campaign player's vitals component and the vtable its constructor carried, on the same terms
+// as the economy component above: it dies with the player while this module's clock keeps ticking.
+static void* pCounters = nullptr;
+static void* pCountersVTable = nullptr;
+
+// The physics component of the vehicle the player is in, with the ref block and entity it was
+// derived through. Re-derived every frame and cleared first, so exiting the vehicle, a level load
+// and the option going off all end the protection on the next tick.
+//
+// All three are checked in the damage hooks, because the allocator can hand the component's address
+// back for something else and reading the entity out of the ref block is the engine's own liveness
+// test. They are written last to first and cleared first to last: the hooks run on physics jobs,
+// and a torn read that fails the component test lets the damage through.
+static void* pVehiclePhysics = nullptr;
+static void* pVehicleRefBlock = nullptr;
+static void* pVehicleEntity = nullptr;
 
 // Mirrored out of the ini so the per-frame path is not reading a variant.
 static int32_t nDiamondTarget = 0;
@@ -600,6 +652,8 @@ static bool PadPressed(uint16_t nButtons, uint16_t nButton, bool& bLatch)
 // ------------------------------------------------------------------------------------------------
 // GameProfile fields.
 
+// Re-applied every frame: the multiplayer spectator path clears GodMode outright, and a profile
+// reload on a map transition writes the file's value back over ours.
 static void ApplyProfileFlags()
 {
     if (ppGameProfile == nullptr)
@@ -612,6 +666,114 @@ static void ApplyProfileFlags()
     *reinterpret_cast<int32_t*>(pProfile + nProfileGodMode) = bInvincibility ? nCheatOn : nCheatOff;
     *reinterpret_cast<int32_t*>(pProfile + nProfileUnlimitedAmmo) = bInfiniteAmmo ? nCheatOn : nCheatOff;
     *reinterpret_cast<int32_t*>(pProfile + nProfileAllWeaponsUnlock) = bUnlockAllWeapons ? nCheatOn : nCheatOff;
+}
+
+// ------------------------------------------------------------------------------------------------
+// Health floor.
+
+// Same guard as the economy component: a live local player, and the object still beginning with the
+// vtable its constructor wrote.
+static bool CountersAreLive()
+{
+    if (pCounters == nullptr || pCountersVTable == nullptr)
+        return false;
+
+    if (GetLocalPlayer == nullptr || GetLocalPlayer() == nullptr)
+        return false;
+
+    return *reinterpret_cast<void**>(pCounters) == pCountersVTable;
+}
+
+// Puts the player back above the health-failure threshold, which GodMode on its own will not do.
+static void ApplyHealthFloor()
+{
+    if (!bInvincibility || !CountersAreLive())
+        return;
+
+    auto nCounters = reinterpret_cast<uintptr_t>(pCounters);
+
+    // The states the engine parks the player below the threshold on purpose. Buddy rescue, malaria
+    // attacks and the HealthFailure sequences all set the forced failure flag on their way in.
+    if (*reinterpret_cast<uint8_t*>(nCounters + nCountersForcedFailure) != 0)
+        return;
+    if (*reinterpret_cast<int32_t*>(nCounters + nCountersRescueState) != 0)
+        return;
+    if (*reinterpret_cast<uint8_t*>(nCounters + nCountersReviveInvulnerable) != 0)
+        return;
+
+    auto pCounter = *reinterpret_cast<void**>(nCounters + nCountersHealth);
+    if (pCounter == nullptr)
+        return;
+
+    auto fHealth = *reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(pCounter) + nCounterValue);
+    if (fHealth >= *reinterpret_cast<float*>(nCounters + nCountersFailureThreshold))
+        return;
+
+    auto ppVTable = *reinterpret_cast<void***>(pCounter);
+    reinterpret_cast<CounterSetToMax_t>(ppVTable[nCounterSetToMaxSlot])(pCounter);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Vehicles.
+
+static bool VehicleIsProtected(void* pComponent)
+{
+    if (!bInvincibility || pComponent == nullptr || pComponent != pVehiclePhysics)
+        return false;
+
+    auto pRefBlock = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pComponent) + nVehicleRefBlock);
+    if (pRefBlock == nullptr || pRefBlock != pVehicleRefBlock)
+        return false;
+
+    return *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pRefBlock) + nEntityRefEntity) == pVehicleEntity;
+}
+
+// The pawn keeps no vehicle pointer. Only camera parameters go on it when the player gets in, so
+// the link is the engine's own accessor, over the fact the seat code writes and clears.
+static void ApplyVehicleProtection(uintptr_t nPawn)
+{
+    pVehiclePhysics = nullptr;
+    pVehicleRefBlock = nullptr;
+    pVehicleEntity = nullptr;
+
+    if (!bInvincibility || nPawn == 0)
+        return;
+
+    if (GetCurrentVehicle == nullptr || GetVehiclePhysics == nullptr)
+        return;
+
+    auto pVehicle = GetCurrentVehicle(reinterpret_cast<void*>(nPawn));
+    if (pVehicle == nullptr)
+        return;
+
+    auto pVehicleBlock = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pVehicle) + nVehicleRefBlock);
+    if (pVehicleBlock == nullptr)
+        return;
+
+    auto pEntity = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pVehicleBlock) + nEntityRefEntity);
+    if (pEntity == nullptr)
+        return;
+
+    if (FlushEntityJob != nullptr)
+        FlushEntityJob(pEntity);
+
+    auto pPhysics = GetVehiclePhysics(pEntity);
+    if (pPhysics == nullptr)
+        return;
+
+    // Taken off the physics component rather than reused from above, so the hooks compare against
+    // the block they will themselves read.
+    auto pRefBlock = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pPhysics) + nVehicleRefBlock);
+    if (pRefBlock == nullptr)
+        return;
+
+    auto pPhysicsEntity = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pRefBlock) + nEntityRefEntity);
+    if (pPhysicsEntity == nullptr)
+        return;
+
+    pVehicleRefBlock = pRefBlock;
+    pVehicleEntity = pPhysicsEntity;
+    pVehiclePhysics = pPhysics;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -691,7 +853,7 @@ static bool IsDiamondCountProperty(void* pDescriptor)
 // good on the next one and nGranted stays equal to the shortfall between real progress and target.
 static void ApplyDiamonds()
 {
-    // The pointer is not dropped on a failure here - settling the grant needs a live wallet, and the
+    // The pointer is not dropped on a failure here. Settling the grant needs a live wallet, and the
     // constructor hook re-points it on the next load anyway.
     if (!EconomyIsLive())
         return;
@@ -765,8 +927,8 @@ static void ClearCameraAxes(void* pCamera)
     *reinterpret_cast<float*>(pComponent + nCameraSpeedAdjust) = 0.0f;
 }
 
-// The manager's focus - the player - as a ref holder. The caller owns one reference on it and must
-// pass it to ReleaseFocusEntity.
+// The manager's focus, which is the player, as a ref holder. The caller owns one reference on it
+// and must pass it to ReleaseFocusEntity.
 static void* AcquireFocusEntity(void* pManager)
 {
     if (pManager == nullptr || EntityRefFromId == nullptr || ppRefWorld == nullptr)
@@ -850,6 +1012,26 @@ static void SetPhysicsEnabled(void* pPhysics, bool bEnabled)
     reinterpret_cast<SetPhysicsEnabled_t>(ppVTable[nPhysicsEnabledSlot])(pPhysics, nullptr, bEnabled ? 1 : 0);
 }
 
+// The pitch the view is actually at, off the pooled render camera the active camera writes into.
+// False when there is no camera to ask, which is the only reason noclip still has an integrator.
+static bool ReadViewPitch(float& fPitch)
+{
+    if (GetActiveCamera == nullptr || GetRenderCamera == nullptr)
+        return false;
+
+    auto pCamera = GetActiveCamera(ResolveCameraManager());
+    if (pCamera == nullptr)
+        return false;
+
+    auto nRenderCamera = reinterpret_cast<uintptr_t>(GetRenderCamera(pCamera));
+    if (nRenderCamera == 0)
+        return false;
+
+    fPitch = *reinterpret_cast<float*>(nRenderCamera + nRenderCameraEuler + nAnglePitch * sizeof(float));
+
+    return true;
+}
+
 static void LeaveNoclip()
 {
     if (pNoclipEntityRef == nullptr)
@@ -896,19 +1078,10 @@ static bool EnterNoclip()
     // hence the quarter turn.
     auto pMatrix = reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(pEntity) + nEntityMatrix);
     fNoclipYaw = std::atan2(pMatrix[5], pMatrix[4]) - 1.57079633f;
-    fNoclipPitch = 0.0f;
 
     // Pitch only exists on the camera.
-    if (GetActiveCamera != nullptr && GetRenderCamera != nullptr)
-    {
-        auto pCamera = GetActiveCamera(ResolveCameraManager());
-        if (pCamera != nullptr)
-        {
-            auto nRenderCamera = reinterpret_cast<uintptr_t>(GetRenderCamera(pCamera));
-            if (nRenderCamera != 0)
-                fNoclipPitch = *reinterpret_cast<float*>(nRenderCamera + nRenderCameraEuler + nAnglePitch * sizeof(float));
-        }
-    }
+    fNoclipPitch = 0.0f;
+    ReadViewPitch(fNoclipPitch);
 
     pNoclipEntityRef = pEntityRef;
     pNoclipPhysics = pPhysics;
@@ -936,14 +1109,25 @@ static void ApplyNoclip(uintptr_t nListener, uintptr_t nPawn, float fDelta)
     }
 
     // The character controller that turns the body is part of the physics switched off above, and
-    // the camera rides the head bone - so a body that cannot turn is a view that cannot look left or
-    // right. Yaw is integrated here instead, off the same accumulator with the same arithmetic.
-    // Pitch never went through the body and is only tracked for the flight direction.
+    // the camera rides the head bone, so a body that cannot turn is a view that cannot look left or
+    // right. Yaw is integrated here instead, off the same accumulator with the same arithmetic. It
+    // cannot drift out of the view the way an integrated pitch did, because the body it is written
+    // to is what the camera follows.
     if (nListener != 0 && fDelta > 0.0f)
     {
         auto pAccumulator = reinterpret_cast<const float*>(nListener + nListenerLookX);
 
         fNoclipYaw -= pAccumulator[nLookAccumulatorYaw] * fDelta * fLookRadiansPerUnit;
+    }
+
+    // Pitch never went through the body and is only tracked for the flight direction, so it is read
+    // back off the camera. Integrating it ran the same arithmetic on this module's wall clock while
+    // the engine ran on its own frame time, and the two drifting apart sent flight diagonally away
+    // from a level view. Reading it back is a frame behind and cannot drift.
+    if (!ReadViewPitch(fNoclipPitch) && nListener != 0 && fDelta > 0.0f)
+    {
+        auto pAccumulator = reinterpret_cast<const float*>(nListener + nListenerLookX);
+
         fNoclipPitch += pAccumulator[nLookAccumulatorPitch] * fDelta * fLookRadiansPerUnit;
 
         // The controller also held the pitch short of vertical.
@@ -981,7 +1165,7 @@ static void ApplyNoclip(uintptr_t nListener, uintptr_t nPawn, float fDelta)
 
     auto fStep = fNoclipBaseSpeed * fSpeedSteps[nSpeedStep] * fDelta;
 
-    // The entity's own basis - X strafes, Y forward, Z up - taken from the matrix rather than named
+    // The entity's own basis (X strafes, Y forward, Z up), taken from the matrix rather than named
     // as a world axis. The yaw set above is already in it: SetEuler rebuilds the matrix.
     auto pMatrix = reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(pEntity) + nEntityMatrix);
 
@@ -1125,7 +1309,7 @@ static void FeedCameraInput(void* pCamera)
 
     if (fForward != 0.0f || fStrafe != 0.0f || fVertical != 0.0f)
     {
-        // Unit axes - the speed is on the field written above.
+        // Unit axes. The speed is on the field written above.
         *reinterpret_cast<float*>(pComponent + nCameraMoveForward) = fForward;
         *reinterpret_cast<float*>(pComponent + nCameraMoveStrafe) = fStrafe;
         *reinterpret_cast<float*>(pComponent + nCameraMoveVertical) = fVertical;
@@ -1181,6 +1365,30 @@ static void FeedCameraInput(void* pCamera)
 static SafetyHookInline SaveDiamondPropertyHook{};
 static SafetyHookInline GameSignalHook{};
 static SafetyHookInline FreeCameraUpdateHook{};
+static SafetyHookInline VehicleHealthDamageHook{};
+static SafetyHookInline VehicleStimPartsHook{};
+
+// CVehiclePhysComponent::ApplyHealthDamage, the one place vehicle health is written, including by
+// the two instant kills that pass the vehicle's whole current health. Zero is passed rather than the
+// call skipped, so the health ratio at +0x90 is still recomputed.
+static void __fastcall VehicleHealthDamage(void* pComponent, void* pEdx, float fDamage)
+{
+    if (VehicleIsProtected(pComponent))
+        fDamage = 0.0f;
+
+    VehicleHealthDamageHook.fastcall(pComponent, pEdx, fDamage);
+}
+
+// CVehiclePhysComponent::ApplyStimToParts, which is where part breakage happens on its way to the
+// function above. Skipping is safe: both callers ignore the return, and the collision-immunity
+// timer it stops advancing only throttles repeat damage that is already suppressed.
+static void __fastcall VehicleStimParts(void* pComponent, void* pEdx, void* pStim)
+{
+    if (VehicleIsProtected(pComponent))
+        return;
+
+    VehicleStimPartsHook.fastcall(pComponent, pEdx, pStim);
+}
 
 // The engine's int32 property writer, shared by every int32 property in the game. The value is in a
 // register before anything callable happens, so the field is substituted around the call instead.
@@ -1205,8 +1413,8 @@ static void __fastcall SaveDiamondProperty(void* pDescriptor, void* pEdx, void* 
 }
 
 // The dispatcher all three signals are acted on in, so refusing them here refuses them everywhere.
-// True is how the original ends its own refusal paths - handled, nothing done. False would mean not
-// mine, and let the signal fall through.
+// True is how the original ends its own refusal paths, meaning handled and nothing done. False
+// would mean not mine, and let the signal fall through.
 static bool __fastcall GameSignal(void* pDispatcher, void* pEdx, const uint32_t* pSignal, void* pContext)
 {
     if (eCameraMode == CameraMode::Noclip && pSignal != nullptr)
@@ -1219,7 +1427,7 @@ static bool __fastcall GameSignal(void* pDispatcher, void* pEdx, const uint32_t*
     return GameSignalHook.fastcall<bool>(pDispatcher, pEdx, pSignal, pContext);
 }
 
-// CCameraFreeComponent::Update, which CCameraGhostComponent::Update also calls - so one hook drives
+// CCameraFreeComponent::Update, which CCameraGhostComponent::Update also calls, so one hook drives
 // both cameras. ECX is the component's second base, four bytes into the object.
 static void __fastcall FreeCameraUpdate(void* pInterface, void* pEdx, float fDelta, uint32_t nFlags)
 {
@@ -1312,7 +1520,7 @@ static void ReadSettings()
 
 // Once a frame from CPawnInputListener::Update, on the branch taken when gameplay input is enabled.
 // Not a camera update, where activating a camera by name would mutate the manager's array mid
-// iteration - and where there would be no equivalent of that branch, which is what stops W flying
+// iteration, and where there would be no equivalent of that branch, which is what stops W flying
 // the camera while the player is walking a menu cursor with it.
 static void Tick(uintptr_t nListener, uintptr_t nPawn)
 {
@@ -1334,11 +1542,13 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     ApplySessionGate();
 
     ApplyProfileFlags();
+    ApplyHealthFloor();
+    ApplyVehicleProtection(nPawn);
     ApplyDiamonds();
 
     // Mouse look for the free camera, which free_camera has no binding for. The mouse still reaches
     // the pawn, and by now the frame's input sits in the listener's accumulators in the units the
-    // camera wants - both integrate it as angle += value * frameTime * 180 degrees.
+    // camera wants. Both integrate it as angle += value * frameTime * 180 degrees.
     //
     // Not taken off the mouse driver, whose move handler keeps the converted deltas live in XMM2 and
     // XMM3: mid hooks do not preserve XMM, and float work in one takes the gameplay camera with it.
@@ -1390,17 +1600,20 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     auto bNoclipEdge = KeyPressed(nNoclipKey, bNoclipLatch);
     auto bFreecamEdge = KeyPressed(nFreecamKey, bFreecamLatch);
 
-    // Shift and Alt on the keyboard, left stick click on the pad, and only while a mode is up -
-    // outside one, Shift and the stick click are both the sprint binding.
+    // Shift and Alt on the keyboard, the two stick clicks on the pad, and only while a mode is up -
+    // outside one, Shift and the left stick click are both the sprint binding.
     static bool bPadSpeedLatch = false;
+    static bool bPadSlowLatch = false;
 
     XInputGamepad Pad{};
-    auto bPadSpeedEdge = ReadPad(Pad) && PadPressed(Pad.nButtons, nPadSpeedCycle, bPadSpeedLatch);
+    auto bPadRead = ReadPad(Pad);
+    auto bPadSpeedEdge = bPadRead && PadPressed(Pad.nButtons, nPadSpeedCycle, bPadSpeedLatch);
+    auto bPadSlowEdge = bPadRead && PadPressed(Pad.nButtons, nPadSlowCycle, bPadSlowLatch);
 
     if ((KeyPressed(nKeySpeedCycle, bSpeedLatch) || bPadSpeedEdge) && eCameraMode != CameraMode::None)
         nSpeedStep = (nSpeedStep >= TopSpeedStep()) ? nBaseSpeedStep : nSpeedStep + 1;
 
-    if (KeyPressed(nKeySlowCycle, bSlowLatch) && eCameraMode != CameraMode::None)
+    if ((KeyPressed(nKeySlowCycle, bSlowLatch) || bPadSlowEdge) && eCameraMode != CameraMode::None)
         nSpeedStep = (nSpeedStep == 0) ? nBaseSpeedStep : nSpeedStep - 1;
 
     if (bNoclipEnabled && bNoclipEdge)
@@ -1480,7 +1693,8 @@ public:
             //   10737BE5  JZ   fail
             //   10737BE7  CMP  byte [ESI+0x58], 2     ; southern map
             //
-            // The tag is only ever 0, 1 or 2, so 0xFF makes both jumps unconditional.
+            // The tag is only ever 0, 1 or 2, so 0xFF makes both jumps unconditional. The rank,
+            // prerequisite and already-owned checks below them are untouched.
             auto actGatePattern = dunia_pattern("80 7E 58 01 75 09 E8 ? ? ? ? 84 C0 74 11 80 7E 58 02");
             if (!actGatePattern.empty())
             {
@@ -1499,8 +1713,8 @@ public:
                 };
             }
 
-            // CEconomyComponent::AddDiamonds - pickups, rewards and the console command. Only used
-            // to learn which component belongs to the player; the count is left alone.
+            // CEconomyComponent::AddDiamonds, taking pickups, rewards and the console command.
+            // Only used to learn which component belongs to the player; the count is left alone.
             auto addDiamondsPattern = dunia_pattern("51 A1 ? ? ? ? A8 01 56 57 8B F9 75 12 83 C8 01 A3 ? ? ? ? C7 05 ? ? ? ? A8 64 B0 93");
             if (!addDiamondsPattern.empty())
             {
@@ -1536,7 +1750,7 @@ public:
                 });
             }
 
-            // The bazaar page snapshotting the wallet as it opens - one more place the component
+            // The bazaar page snapshotting the wallet as it opens. One more place the component
             // turns up, for a save that never goes near the two functions above.
             auto bazaarSnapshotPattern = dunia_pattern("8B 40 10 89 86 70 01 00 00 89 86 74 01 00 00 89 86 78 01 00 00");
             if (!bazaarSnapshotPattern.empty())
@@ -1547,9 +1761,9 @@ public:
                 });
             }
 
-            // CConstIntProperty::Serialise, shared by every int32 property in the game - hence
-            // filtering the descriptor rather than the object. ESI takes the value, not the field,
-            // which is why the substitution goes around the call.
+            // CConstIntProperty::Serialise, shared by every int32 property in the game, hence
+            // filtering the descriptor rather than the object. ESI takes the value and not the
+            // field, which is why the substitution goes around the call.
             auto savePropertyPattern = dunia_pattern("56 8B C1 8B 70 0C 8B 4C 24 0C 8B 11 57 8B 7C 24 0C 8B 34 3E 83 C0 04 56 50 8B 82 A0 00 00 00 FF D0");
             if (!savePropertyPattern.empty())
                 SaveDiamondPropertyHook = safetyhook::create_inline(savePropertyPattern.get_first(), SaveDiamondProperty);
@@ -1581,6 +1795,63 @@ public:
                 });
             }
 
+            // CFCXCountersComponentPlayerSP's constructor. Anchored on the vtable store pair
+            // rather than the entry, with the hook on the MOVSS behind them so ESI is still the
+            // object.
+            //
+            //   106A5E2B  MOVSS [ESI+0x110], XMM1
+            //   106A5E33  MOV   [ESI], <vtable>
+            //   106A5E39  MOV   [ESI+0x04], <vtable>
+            //   106A5E40  MOVSS [ESI+0xF4], XMM0      <- hook, at +0x15
+            //
+            // Three sibling counters classes share the layout, and only the SP one overrides the
+            // invulnerability and syringe slots, so this is the campaign player and nobody else.
+            auto countersCtorPattern = dunia_pattern("F3 0F 11 8E 10 01 00 00 C7 06 ? ? ? ? C7 46 04 ? ? ? ? F3 0F 11 86 F4 00 00 00");
+            if (!countersCtorPattern.empty())
+            {
+                static auto CountersCtorHook = safetyhook::create_mid(countersCtorPattern.get_first(nCountersCtorVTableSet), [](SafetyHookContext& regs)
+                {
+                    pCounters = reinterpret_cast<void*>(regs.esi);
+                    pCountersVTable = *reinterpret_cast<void**>(regs.esi);
+                });
+            }
+
+            // CVehicle::GetCurrentVehicle. The trailing 82 A7 1B FD is the CRC of the fact it
+            // reads, 0xFD1BA782, in the instruction that seeds the call site's static copy of it.
+            // Without it the prologue is ordinary and the pattern is not unique.
+            auto currentVehiclePattern = dunia_pattern("83 EC 08 8B 4C 24 0C 8B 01 8B 50 7C 53 FF D2 83 CB FF B9 01 00 00 00 84 0D ? ? ? ? 89 5C 24 04 89 5C 24 08 75 10 09 0D ? ? ? ? C7 05 ? ? ? ? 82 A7 1B FD");
+            if (!currentVehiclePattern.empty())
+                GetCurrentVehicle = reinterpret_cast<GetCurrentVehicle_t>(currentVehiclePattern.get_first());
+
+            auto flushJobPattern = dunia_pattern("56 8B F1 8B 86 C8 00 00 00 85 C0 74 26 8B 80 C4 00 00 00 85 C0 74 1C 8B 0D ? ? ? ? 50 E8");
+            if (!flushJobPattern.empty())
+                FlushEntityJob = reinterpret_cast<FlushEntityJob_t>(flushJobPattern.get_first());
+
+            // GetComponent<CVehiclePhysComponent>. Every one of these getters is the same six
+            // instructions around two globals and two calls, so the registrar's call displacement
+            // is left unwildcarded. Wildcard it and the same bytes match 69 other getters.
+            auto vehiclePhysicsPattern = dunia_pattern("83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 3D D6 FD FF 68 ? ? ? ? 8B CE E8 ? ? ? ? 5E C3");
+            if (!vehiclePhysicsPattern.empty())
+                GetVehiclePhysics = reinterpret_cast<GetVehiclePhysics_t>(vehiclePhysicsPattern.get_first());
+
+            // CVehiclePhysComponent::ApplyHealthDamage, anchored on its two gate tests:
+            //
+            //   10067170  CMP byte [ECX+0x102], 0     ; damage model enabled
+            //   1006717C  CMP byte [ECX+0x106], 0     ; HealthDamageEnabled
+            //
+            // Writing the second of those is the engine's own vehicle-invulnerability cheat and the
+            // obvious approach. It does not hold from a plugin: FUN_100620C0 recomputes both bytes
+            // from the vehicle type's settings block every physics step, so the write is gone
+            // before the next hit lands.
+            auto vehicleDamagePattern = dunia_pattern("80 B9 02 01 00 00 00 0F 57 C9 74 2C 80 B9 06 01 00 00 00");
+            if (!vehicleDamagePattern.empty())
+                VehicleHealthDamageHook = safetyhook::create_inline(vehicleDamagePattern.get_first(), VehicleHealthDamage);
+
+            // CVehiclePhysComponent::ApplyStimToParts.
+            auto vehicleStimPattern = dunia_pattern("55 8B EC 83 E4 F0 81 EC B4 00 00 00 53 56 57 8B 7D 08 85 FF 8B D9 0F 84 AA 00 00 00");
+            if (!vehicleStimPattern.empty())
+                VehicleStimPartsHook = safetyhook::create_inline(vehicleStimPattern.get_first(), VehicleStimParts);
+
             // CPlayer::GetLocalPlayer, and the two camera manager entry points the mode switch needs.
             auto localPlayerPattern = dunia_pattern("A1 ? ? ? ? 83 78 08 00 75 03 33 C0 C3 8B 40 04 8B 00 C3");
             auto setCameraPattern = dunia_pattern("51 53 55 56 8B F1 80 7E 14 00 57 0F 85");
@@ -1594,7 +1865,7 @@ public:
             }
 
             // The manager's resolve-and-set-focus sequence, in the miss path of
-            // SetActiveCameraByName. Nothing is hooked - it is read for the two things the snap
+            // SetActiveCameraByName. Nothing is hooked. It is read for the two things the snap
             // needs: the world ids resolve against, and the resolver.
             //
             //   1057CCF7  MOV  EDX, [EBP+0x0C]        ; focus id high
@@ -1624,8 +1895,8 @@ public:
             if (!freeRefPattern.empty())
                 FreeEntityRef = reinterpret_cast<FreeEntityRef_t>(freeRefPattern.get_first());
 
-            // The physics tag, its lazy registrar and the fetch, all out of the one place the engine
-            // does the same three things in a row - the ghost camera's activate handler.
+            // The physics tag, its lazy registrar and the fetch, all out of the one place the
+            // engine does the same three things in a row, the ghost camera's activate handler.
             //
             //   10692B3B  CMP  dword [<tag registered>], 0
             //   10692B42  JNZ  10692B4B
@@ -1649,7 +1920,7 @@ public:
                 GetComponentByTag = reinterpret_cast<GetComponentByTag_t>(pFetch + 5 + *reinterpret_cast<int32_t*>(pFetch + 1));
             }
 
-            // CEntity::SetPosition, which is only patternable because SetEuler sits behind it - four
+            // CEntity::SetPosition, which is only patternable because SetEuler sits behind it. Four
             // instructions on its own, and repeated across the image.
             auto setPositionPattern = dunia_pattern("6A 00 8D 44 24 08 50 E8 ? ? ? ? C2 0C 00 CC 6A 00 8D 44 24 08 50 E8 ? ? ? ? C2 0C 00");
             if (!setPositionPattern.empty())
@@ -1731,9 +2002,9 @@ public:
             // of lookback's own pattern. Neither module can then stop the other matching, in either
             // install order.
             //
-            // Landing on a call is also what makes float work safe here - XMM is caller-saved, so
-            // nothing is live across it. And the address is the frame gate the module wants: it is
-            // only reached with gameplay input enabled and a pawn alive.
+            // Landing on a call is also what makes float work safe here, since XMM is caller-saved
+            // and nothing is live across it. The address is the frame gate the module wants too: it
+            // is only reached with gameplay input enabled and a pawn alive.
             auto inputPassPattern = dunia_pattern("56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A E8 ? ? ? ? F6 40 04 40 74 11");
             if (!inputPassPattern.empty())
             {
@@ -1760,6 +2031,9 @@ public:
                 nSavedLocked = 0;
                 bFedCameraMove = false;
                 bFedCameraLook = false;
+                pVehiclePhysics = nullptr;
+                pVehicleRefBlock = nullptr;
+                pVehicleEntity = nullptr;
             };
         };
     }
