@@ -43,12 +43,14 @@ export enum Pref
     PREF_INTERNALRESOLUTIONX,
     PREF_INTERNALRESOLUTIONY,
     PREF_SCALINGFILTER,
+    PREF_FPSCOUNTER,
     PREF_CPUAFFINITY,
     PREF_UTILISATION,
     PREF_LIMITEDSAVING,
     PREF_CONSOLEAUTOSAVES,
     PREF_NOBLINKINGITEMS,
     PREF_NOCOLOREDSIGNS,
+    PREF_NOHITINDICATOR,
     PREF_PREDECESSORTAPES,
     PREF_MACHETES,
     PREF_DEBUGINVINCIBILITY,
@@ -130,6 +132,7 @@ public:
         mPrefs[PREF_INTERNALRESOLUTIONY] = nInternalResolutionY;
 
         mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 1);
+        mPrefs[PREF_FPSCOUNTER] = std::clamp(iniReader.ReadInteger("Display", "FpsCounter", 0), 0, 1);
 
         // The gameplay HUD page is authored 960x720 inside a canvas whose shape is the display
         // it was drawn for, 4:3 or 16:10 and nothing else. 1 lets the canvas follow the actual
@@ -164,6 +167,7 @@ public:
         mPrefs[PREF_CONSOLEAUTOSAVES] = std::clamp(iniReader.ReadInteger("Gameplay", "ConsoleAutosaves", 1), 0, 1);
         mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
         mPrefs[PREF_NOCOLOREDSIGNS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoColoredSigns", 0), 0, 1);
+        mPrefs[PREF_NOHITINDICATOR] = std::clamp(iniReader.ReadInteger("Gameplay", "NoHitIndicator", 0), 0, 1);
 
         auto fMouseLookSensitivity = iniReader.ReadFloat("Gameplay", "MouseLookSensitivity", 1.0f);
         mPrefs[PREF_MOUSELOOKSENSITIVITY] = fMouseLookSensitivity <= 0.0f ? 1.0f : std::clamp(fMouseLookSensitivity, 0.01f, 5.0f);

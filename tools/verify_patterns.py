@@ -30,6 +30,7 @@ PATTERNS = [
     ("archetype slot visit 68", "8B C1 8B 50 10 8B 4C 24 08 56 8B 31 57 8D 3C D5 00 00 00 00 2B FA 8B 50 0C 8D 14 BA 03 54 24 0C 83 C0 04 52 50 8B 46 68 FF D0 5F 5E C2 08 00", 0),
     ("archetype slot visit dc", "8B C1 8B 50 10 8B 4C 24 08 56 8B 31 57 8D 3C D5 00 00 00 00 2B FA 8B 50 0C 8D 14 BA 03 54 24 0C 83 C0 04 52 50 8B 86 DC 00 00 00 FF D0 5F 5E C2 08 00", 0),
     ("sign colour select",     "8B 74 24 18 85 F6 7C 1C 3B 75 70 7D 11 8B 45 6C 8B 0C B0 83 C1 02 C1 E1 04 03 CD 51 EB 0A 8D 55 30 52 EB 04 8D 45 20 50", 6),
+    ("hit indicator loop head", "F3 0F 10 00 F3 0F 10 48 04 F3 0F 10 50 08 33 FF 8D 83 20 02 00 00", 14),
     ("fcb name hash",          "8B 44 24 04 85 C0 56 8B F1 74 29 80 38 00 74 24 80 7C 24 0C 00 50 74 0E E8 ? ? ? ? 83 C4 04 89 06 5E C2 0C 00", 0),
     ("entity library index",   "55 8B EC 83 E4 F8 83 EC 3C F6 05 ? ? ? ? 01 53 56 57 89 4C 24 1C 75 1B", 0),
     ("pawn input update",      "33 C0 38 44 24 08 56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A", 0),
@@ -55,6 +56,7 @@ PATTERNS = [
     ("realtree batches desc",     "89 9E 28 0B 00 00 89 96 34 0B 00 00 C7 86 38 0B 00 00 90 18 00 00", 18),
     ("realtree merge array",      "8B 8E 80 0B 00 00 68 80 C4 00 00 51 8B CF E8", 7),
     ("realtree merge scalars",    "68 00 04 00 00 8B CF E8 ? ? ? ? 68 90 18 00 00 8B CF E8", 13),
+    ("show fps global",        "D9 5C 24 0C 83 3D ? ? ? ? 00 74 ? 83 3D ? ? ? ? 00 8B 35 ? ? ? ? 75 07 33 C9", 6),
     ("render device global",  "8B 0D ? ? ? ? 8B 01 8B 90 EC 00 00 00 FF D2", 0),
     ("d3d9 present call site", "8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0", 0),
     ("set resolution entry",   "81 EC 48 02 00 00 53 55 56 57 33 ED 55 8D 84 24 B4 00 00 00", 0),.

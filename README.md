@@ -16,6 +16,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 - **Display Type** - Allows you to change between Fullscreen, Borderless and Windowed modes.
 - **FPS Limiter** - Caps the game's frame rate using the built-in engine limiter, either at your monitor's refresh rate automatically or at a value you pick.
 - **Internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling
+- **FPS Counter** - Shows the engine's built-in frame rate counter.
 
 ### Graphics
 - **Utilisation** - Improves GPU and CPU utilisation, increasing performance across the board
@@ -67,6 +68,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
 - **No Colored Signs** - Prevents road and safe house signs from tinting red or blue when they belong to an active objective.
+- **No Hit Indicator** - Disables the directional hit indicators.
 
 ### Field of View
 - **Field of View** - Adjusts the base gameplay field of view.

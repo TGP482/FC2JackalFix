@@ -594,6 +594,7 @@ static MenuRow DisplayRows[]
       PREF_INTERNALRESOLUTIONY, "InternalResolutionY", RenderChoiceY },
     Enumeration(L"Scaling Filter", PREF_SCALINGFILTER, "Display", "ScalingFilter", ScalingFilterValues, ScalingFilterLabels),
     Enumeration(L"Max Frame Rate", PREF_MAXFRAMERATE, "Display", "MaxFrameRate", MaxFrameRateValues, MaxFrameRateLabels),
+    Boolean(L"FPS Counter", PREF_FPSCOUNTER, "Display", "FpsCounter"),
 };
 
 static const MenuRow GraphicsRows[]
@@ -628,6 +629,7 @@ static const MenuRow GameplayRows[]
     Boolean(L"Console Autosaves", PREF_CONSOLEAUTOSAVES, "Gameplay", "ConsoleAutosaves"),
     Boolean(L"No Blinking Items", PREF_NOBLINKINGITEMS,  "Gameplay", "NoBlinkingItems"),
     Boolean(L"No Colored Signs",  PREF_NOCOLOREDSIGNS,   "Gameplay", "NoColoredSigns"),
+    Boolean(L"No Hit Indicator",  PREF_NOHITINDICATOR,   "Gameplay", "NoHitIndicator"),
 };
 
 // These four read zero on every line, and had done since the page was first built. Nothing to do
@@ -853,6 +855,7 @@ static const PrefDefault PrefDefaults[]
     { PREF_INTERNALRESOLUTIONY,     0   },
     { PREF_SCALINGFILTER,           1   },
     { PREF_MAXFRAMERATE,            1   },
+    { PREF_FPSCOUNTER,              0   },
 
     { PREF_ANISOTROPICFILTERING,    16  },
     { PREF_X360GAMMA,               1   },
@@ -872,6 +875,7 @@ static const PrefDefault PrefDefaults[]
     { PREF_CONSOLEAUTOSAVES,        1   },
     { PREF_NOBLINKINGITEMS,         0   },
     { PREF_NOCOLOREDSIGNS,          0   },
+    { PREF_NOHITINDICATOR,          0   },
 
     { PREF_FIELDOFVIEW,             9131 }, // 91.31
     { PREF_VIEWMODELFIELDOFVIEW,    7500 }, // 75.00

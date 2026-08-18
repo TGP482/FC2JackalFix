@@ -10,139 +10,42 @@ import common;
 import dunia;
 import settings;
 
-// Fullscreen, borderless and windowed, chosen by DisplayMode and driven entirely through the
-// engine's own code paths rather than around them.
+// Fullscreen, borderless and windowed, chosen by DisplayMode through the engine's own code paths.
 //
-// Dunia already has all three. It just never exposes the choice coherently: the window style comes
-// from an undocumented "-borderless" command-line switch with no entry in the video options, and
-// everything else, from which resolution path runs to whether the D3D9 device goes exclusive and
-// whether the cursor is hidden, hangs off a single derived flag that the video options own.
+// The window style comes from an undocumented "-borderless" command-line switch with no entry in
+// the video options. Everything else hangs off one derived flag, computed by InitDuniaEngine at
+// 0x10005367 from the render config's Fullscreen property, registered in FUN_10402210 which writes
+// offset 0x28 for "Fullscreen" and 0x2C for "Maximized". It fans out to:
 //
-// That flag is the whole mechanism. InitDuniaEngine computes it once at 0x10005367 from the render
-// config's Fullscreen property, registered under that name in FUN_10402210, which writes offset
-// 0x28 for "Fullscreen" and 0x2C for "Maximized". From there it fans out to:
-//
-//   the window position   the saved WindowPos X/Y are only read when neither Fullscreen nor
-//                         Maximized is set, so a fullscreen profile leaves the window at 0,0
+//   the window position   saved WindowPos X/Y are only read when neither Fullscreen nor Maximized
+//                         is set, so a fullscreen profile leaves the window at 0,0
 //   the cursor            SetWindowMode's seventh argument; non-zero means SetCursor(NULL)
-//   the resolution path   `0x10F92040`, which picks between GetClientRect and walking
-//                         EnumDisplaySettings for the nearest mode <= the request
-//   the device            the same byte is field +0x08 of the engine-init params at 0x10F92038,
-//                         whose first 0x2C bytes become the renderer's device config, and
+//   the resolution path   0x10F92040, GetClientRect or a walk of EnumDisplaySettings for the
+//                         nearest mode <= the request
+//   the device            field +0x08 of the engine-init params at 0x10F92038, whose first 0x2C
+//                         bytes become the renderer's device config, and from which
 //                         D3DPRESENT_PARAMETERS.Windowed, FullScreen_RefreshRateInHz and
-//                         PresentationInterval are all derived from it
+//                         PresentationInterval derive
 //
-// So one write, early enough, moves all four together. That is what this module does: it overwrites
-// the flag at the point it is produced, and lets the engine do the rest. Nothing here reimplements
-// a mode.
+// The flag is overwritten where it is produced, twice. Engine init drives the window and the boot
+// resolution. The render manager recomputes the device config's copy from the live device on every
+// video options change, renderer vtable +0x134 being a GetPresentParameters returning
+// Windowed == 0, so the second write goes in before SetResolution's three-branch block reads the
+// byte. Before rather than after: the fullscreen branch takes the config's stored aspect and the
+// windowed branches derive it from the resolution, so clearing it afterwards, as the old borderless
+// option did, gave a windowed device with a fullscreen aspect. No saved video option is written, so
+// the Fullscreen entry still shows what the player saved and no longer decides anything.
 //
-// Three things need saying about the details.
+// Two renderers sit behind one interface. FUN_1033C560 picks and stores either in DAT_11609668:
+// D3D10 vtable 0x10E52CA8, D3D9 0x10E53158. The video manager above them is shared, so
+// FUN_1033C7E0 and FUN_1034CA80 serve both through it. Below that nothing is: D3D10's Reset slot
+// +0x54 is a stub returning 1 and it drives everything through DXGI. Each fault below says which
+// renderer it belongs to.
 //
-// The flag is forced twice, in two different places, and both are necessary. The one at engine
-// init drives the window and the boot-time resolution choice. The device config is a copy of
-// those params taken at device creation, and the render manager recomputes its fullscreen byte
-// from the live device state whenever the video options change, renderer vtable +0x134 being a
-// GetPresentParameters call returning Windowed == 0, so without a second write inside
-// SetResolution the mode would drift the first time the player touched the video options. The
-// second write lands before SetResolution's three-branch block reads the byte, which also keeps the
-// aspect ratio coherent: the fullscreen branch takes the config's stored aspect and the windowed
-// branches derive it from the resolution, so clearing the byte after the branch, as the old
-// borderless option did, produced a windowed device carrying a fullscreen aspect.
+// The crash on changing resolution from the main menu is a GUI lifetime fault and lives in
+// guiduplicates.
 //
-// Borderless has to defeat Maximized as well. It is a real registered property rather than a dead
-// field, and the last thing InitDuniaEngine does is ShowWindow(SW_MAXIMIZE) when it is set. On a
-// WS_POPUP window sized to cover the display, maximising snaps it to the work area and the taskbar
-// reappears over the game.
-//
-// None of this writes the user's saved video options. Every write is to a derived flag or to
-// the renderer's per-run copy, so turning DisplayMode off restores stock behaviour with nothing
-// left behind. The consequence is that the Fullscreen entry in the video options still shows what
-// the player saved and no longer decides anything, DisplayMode outranking it.
-//
-// Two more things, both of which are why nobody ever used windowed mode.
-//
-// The engine asks for a device reset every time it is asked whether one is needed, forever.
-// FUN_1033C7E0 decides that. It calls GetClientRect and compares the result against the render
-// config's resolution at 0x1033C933; if they differ it runs AdjustWindowRectEx over the config
-// resolution rather than the client one and, for a window that is not WS_POPUP, compares the
-// result against SM_CXFULLSCREEN / SM_CYFULLSCREEN at 0x1033C9F9. Bigger than either and it
-// returns "device change needed".
-//
-// Ask for a resolution equal to the desktop, which is the obvious thing to do, and a bordered
-// window can never satisfy that, because the frame alone puts it over. The client rect can then
-// never equal the config resolution either, so the test is reached on every call and answers the
-// same way every time. Nothing converges: the clamp it computes goes into renderMgr+0x330, which
-// the function itself zeroes on entry, and the comparison is always against the unclamped config.
-// The result is a release/Reset/restore cycle several times a second, forever, which is what the
-// low erratic frame rate actually was.
-//
-// Fullscreen returns before reaching it while the renderer answers the fullscreen query truthfully.
-// Borderless takes the WS_POPUP branch, where the adjusted size equals the requested size because a
-// popup has no frame, so it passes. A bordered window is the only shape that trips it, and
-// exclusive fullscreen wears one too, so the two adjusted extents are zeroed just before the
-// comparison in every mode. That is the smallest edit that makes the answer "no change needed"
-// without touching the clamp, the config, or the other reasons the function can ask for a reset.
-//
-// And the presentation parameters are wrong for a composed window. SetResolution hardcodes
-// PresentationInterval to D3DPRESENT_INTERVAL_IMMEDIATE for any windowed device at 0x104235CF,
-// unconditionally, the config's own vsync value only ever reaching the fullscreen branch, and
-// leaves BackBufferCount at zero, which D3D9 reads as one.
-//
-// Exclusive fullscreen does not care: it flips. Borderless does not care either, because a popup
-// covering the whole display gets an independent flip out of the compositor and never touches the
-// redirection surface. A bordered window is again the one case that takes the composed blit path,
-// and there those two values are the worst possible pair. IMMEDIATE buys nothing, since a composed
-// window cannot tear and the compositor owns the vblank, so all it does is let the game run ahead
-// and then block inside Present. With a single backbuffer there is nothing to absorb the jitter. So
-// windowed asks for INTERVAL_ONE and two backbuffers instead; the ceiling was the refresh rate
-// either way.
-
-// Dunia ships two renderers behind one interface. FUN_1033C560 picks between them and stores either
-// in the same global, DAT_11609668: a Direct3D 10 renderer with vtable 0x10E52CA8 and a Direct3D 9
-// one at 0x10E53158. The video manager above them is shared, so FUN_1033C7E0 and FUN_1034CA80 call
-// through the vtable and work with either. Below it nothing is shared. The D3D9 SetResolution,
-// device Reset and present parameters have no counterpart in the D3D10 renderer, whose Reset slot
-// +0x54 is a stub returning 1 and which drives everything through DXGI.
-//
-// Alt-tab out of exclusive fullscreen returned windowed, one resolution smaller. Both renderers
-// answer "is the device fullscreen" (vtable +0x134) from a live query, and both answer "windowed"
-// when they cannot answer at all: D3D9's FUN_10422E50 walks GetSwapChain then GetPresentParameters
-// and falls to XOR AL,AL at 0x10422E9E on any failure, D3D10's FUN_1041F710 clears its result on a
-// null swapchain or a bad HRESULT from IDXGISwapChain::GetFullscreenState. An alt-tab is when the
-// answer is unavailable, and under DXGI it is also true: MakeWindowAssociation is called with flags
-// 4, so DXGI keeps its own window hook and takes the swapchain out of fullscreen on focus loss.
-//
-// FUN_1033C7E0 stores that answer into the device config's fullscreen byte at 0x1033C840, which is
-// videoMgr+0x360 and modeParams+0x08, the byte both renderers read to decide whether to build a
-// fullscreen device. It reads the same answer again at 0x1033C9D8 to decide whether to run the
-// bordered-window branch, which puts the config resolution through AdjustWindowRectEx, finds the
-// result larger than SM_CXFULLSCREEN and calls FUN_10406E20, a search that only ever returns a mode
-// strictly smaller than the one it was given.
-//
-// Three writes follow. The config byte is written from DisplayMode rather than from the device, and
-// the bordered-window clamp is defeated the way the windowed one already was, by zeroing the
-// adjusted extents before the comparison. The third is a re-entry. Neither renderer asks to go back
-// to fullscreen on its own, because D3D10's only SetFullscreenState(TRUE) passes the state it
-// sampled a moment earlier, so the D3D10 path re-enters at the end of a frame where no D3D object
-// is half built.
-//
-// Borderless collapsed into a box in the top left below the desktop resolution. D3D9 sizes the
-// window to BackBufferWidth/Height after every successful Reset, which suits a bordered window
-// whose client area is meant to be the resolution. On WS_POPUP AdjustWindowRectEx is a no-op and
-// SWP_NOMOVE holds the origin, so the window itself shrinks to the resolution at 0,0. D3D10 never
-// touches the window (the only SetWindowPos is in the D3D9 reset, the only MoveWindow in engine
-// init) and calls IDXGISwapChain::ResizeTarget at 0x104205EB, which resizes the output window to
-// the mode it is handed. Either way it is the window that is small rather than the frame inside
-// it.
-//
-// Borderless keeps the window it was given. D3D9 gets the display size in place of the backbuffer
-// size, D3D10 gets a stand-in swapchain for that one call. FUN_1034CA80 then disagrees with the
-// configured resolution on every pass and asks for a device change it does not need, so its answer
-// is cleared where it is produced. Scaling the frame back up once it and the window are different
-// sizes belongs to internalres, which owns the split for both renderers.
-//
-// The crash on changing resolution from the main menu is a GUI lifetime fault rather than a display
-// one and lives in guiduplicates.
+// FpsCounter rides along further down.
 
 // D3DPRESENT_PARAMETERS. Reached through the only pair of instructions that write
 // BackBufferWidth/Height rather than by address, because ASLR moves it.
@@ -162,14 +65,17 @@ static bool IsFullscreen() { return nDisplayMode == DISPLAY_FULLSCREEN; }
 static bool IsBorderless() { return nDisplayMode == DISPLAY_BORDERLESS; }
 
 // Stands in for the settings manager at the one site that reads Maximized straight out of it.
-// Reading the flag out of a block of zeroes is cheaper and less invasive than patching the branch,
-// and it leaves the player's actual setting untouched.
+// Reading the flag out of a block of zeroes leaves the player's own setting untouched.
 static uint32_t nZeroedConfig[16] = {};
 static void* pZeroedSettingsManager[4] = { nullptr, nullptr, nZeroedConfig, nullptr };
 
-// Renderer vtable+0x134, FUN_10422E50. Replaced outright rather than corrected on its failure path.
-// There is no device state in which the live query is the better answer once DisplayMode owns the
-// mode, and the failure path is one XOR and a return with nowhere to compute one.
+// Renderer vtable+0x134, FUN_10422E50. Alt-tab out of exclusive fullscreen came back windowed, one
+// resolution smaller: both renderers answer this from a live query and both answer "windowed" when
+// they cannot answer at all, D3D9 falling to XOR AL,AL at 0x10422E9E and D3D10's FUN_1041F710
+// clearing its result on a null swapchain or a bad HRESULT from GetFullscreenState. Under DXGI it
+// is also true, MakeWindowAssociation being called with flags 4 so the swapchain leaves fullscreen
+// on focus loss. Replaced outright: once DisplayMode owns the mode there is no device state in
+// which the live answer is the better one.
 static SafetyHookInline IsDeviceFullscreenHook{};
 
 static uint8_t __fastcall IsDeviceFullscreen(void*, void*)
@@ -325,11 +231,10 @@ static void ReenterFullscreen(uint8_t* pRenderer)
 }
 
 // The game confined the pointer by owning the display and imports no ClipCursor at all, so a
-// borderless window lets it walk onto a second monitor mid-firefight. Clipped while the window
-// holds focus and released the moment it doesn't, on its own thread because Dunia never exposes
-// its window procedure and there is no SetWindowLongA import to subclass through. Fullscreen
-// needs none of this, the display mode change does it; windowed wants none of it, the pointer
-// belongs to the desktop.
+// borderless window lets it walk onto a second monitor mid-firefight. On its own thread because
+// Dunia never exposes its window procedure and there is no SetWindowLongA import to subclass
+// through. Fullscreen gets it from the mode change and windowed leaves the pointer to the
+// desktop.
 static void ClipCursorThread()
 {
     bool bClipped = false;
@@ -363,32 +268,24 @@ static void ClipCursorThread()
 // ------------------------------------------------------------------------------------------------
 // Making a display setting take effect without a restart.
 //
-// DisplayMode, InternalResolution and ScalingFilter are all decided while the device is being
-// built, so every hook above runs inside the engine's own mode change. What was missing is anything
-// to make the engine perform one once the game is up.
-//
 // The machinery is the engine's. CFCXOptionDisplayPage's apply raises the render settings broadcast
-// at Dunia+3F8AB0, and one observer on it belongs to the render manager and is two instructions,
-// MOV byte ptr [ECX+30h],1 / RET. The per-frame device tick at Dunia+34CA80 tests that byte and
-// calls Dunia+354B30, which asks FUN_1033C7E0 whether the mode differs and only on a yes invokes
-// the functor at manager+10Ch, ending in the renderer's SetMode. The reset lands on the following
-// tick, between frames, on the thread the engine owns the device from. Two things follow: set the
-// byte, and answer that question with yes once.
+// at Dunia+3F8AB0; the render manager's observer on it is MOV byte ptr [ECX+30h],1 / RET. The
+// per-frame device tick at Dunia+34CA80 tests that byte and calls Dunia+354B30, which asks
+// FUN_1033C7E0 whether the mode differs and only on a yes invokes the functor at manager+10Ch,
+// ending in SetMode on the next tick, between frames, on the engine's own device thread. So: set
+// the byte, and answer that question yes once.
 //
-// FUN_1033C7E0 is called rather than stubbed. It measures the window and writes the size override
-// at manager+330h/+334h that the mode change then uses, so only its answer is overridden.
+// FUN_1033C7E0 is called rather than stubbed. It writes the size override at manager+330h/+334h
+// that the mode change then uses, so only its answer is overridden.
 //
-// The yes has to reach the right caller. FUN_1033C7E0 has exactly two and a yes means different
-// things to them:
+// It has two callers, both asking on the same tick:
 //
 //     10354B30   the functor at manager+10Ch, which ends in SetMode
 //     10358410   Dunia+33E2B0, which rebuilds nothing
 //
-// Both ask on the same tick, so a yes handed to the second is lost and the mode never changes. That
-// is what "the setting does nothing until a restart" was. Handler install order was blamed for it
-// twice and is not the cause. The override is spent only on the call at 10354B3C, recognised by the
-// address it returns to; every other caller gets the engine's own answer and the request stays
-// pending until the right one asks.
+// A yes handed to the second is lost, which is what "the setting does nothing until a restart" was.
+// Handler install order was blamed for it twice and is not the cause. The override is spent only on
+// the call at 10354B3C, recognised by the address it returns to.
 
 // The render manager's "the profile moved" byte: what the broadcast observer sets, and what the
 // device tick looks at before it asks anything else.
@@ -499,6 +396,47 @@ static void InstallModeReapply()
     };
 }
 
+// The engine's own frame rate readout, behind the showFps console variable. The renderer's frame
+// function at 0x104CFC90 tests this global and, when it is non-zero, formats "FPS: %.1f" from the
+// float at [0x11609688]+0x164 and prints it through the debug text object at [0x10FE6D7C]. The
+// global has three references in the image: that test, and the read plus address-of in
+// FUN_104D0510 where the console registers it as showFps. Nothing else writes it, so the setting
+// is a single store and needs no hook.
+//
+// The console help string reads "0 (on) or 1 (off)". It is backwards. Non-zero draws.
+static int32_t* pShowFps = nullptr;
+
+// Into the pattern below, to the CMP's relocated address operand.
+static constexpr uintptr_t nShowFpsOperand = 6;
+
+static void InstallFpsCounter()
+{
+    // The CMP carries nothing but the relocated address, so the anchor reaches back to the FSTP and
+    // forward through the two globals that follow:
+    //
+    //     104cfd52   FSTP dword ptr [ESP + 0xC]
+    //     104cfd56   CMP  dword ptr [0x11644734],0x0
+    auto pattern = dunia_pattern("D9 5C 24 0C 83 3D ? ? ? ? 00 74 ? 83 3D ? ? ? ? 00 8B 35 ? ? ? ? 75 07 33 C9");
+    if (pattern.empty())
+        return;
+
+    pShowFps = *reinterpret_cast<int32_t**>(pattern.get_first(nShowFpsOperand));
+
+    static auto FpsCounterCB = []()
+    {
+        *pShowFps = JackalFixSettings.GetInt(PREF_FPSCOUNTER) != 0;
+    };
+
+    // Written before the console registers the variable, which only reads the global to publish its
+    // starting value, so the setting is what the console reports.
+    FpsCounterCB();
+
+    JackalFix::onIniFileChange() += []()
+    {
+        FpsCounterCB();
+    };
+}
+
 class Borderless
 {
 public:
@@ -509,6 +447,12 @@ public:
         JackalFix::onDuniaInitEvent() += []()
         {
             InstallModeReapply();
+        };
+
+        // Separate for the same reason, and it shares nothing with either of the others.
+        JackalFix::onDuniaInitEvent() += []()
+        {
+            InstallFpsCounter();
         };
 
         JackalFix::onDuniaInitEvent() += []()
@@ -599,10 +543,15 @@ public:
             if (!isDeviceFullscreen.empty())
                 IsDeviceFullscreenHook = safetyhook::create_inline(isDeviceFullscreen.get_first(), IsDeviceFullscreen);
 
-            // FUN_10422630, at the arguments of the SetWindowPos that follows a successful device
-            // Reset, with ECX and EDX holding cy and cx. Anchored on the PUSH of uFlags because the
-            // call itself is two bytes shared with the SetWindowPos before it. uFlags carries
-            // SWP_NOMOVE, so the size is the only argument worth overriding.
+            // Borderless collapsed into a box at the top left. D3D9 sizes the window to
+            // BackBufferWidth/Height after every successful Reset, which suits a bordered window
+            // whose client area is meant to be the resolution, but on WS_POPUP AdjustWindowRectEx
+            // is a no-op and SWP_NOMOVE holds the origin, so the window itself shrinks to the
+            // resolution at 0,0.
+            //
+            // FUN_10422630, at that SetWindowPos, with ECX and EDX holding cy and cx. Anchored on
+            // the PUSH of uFlags because the call itself is two bytes shared with the SetWindowPos
+            // before it.
             auto resetWindowSize = dunia_pattern("68 06 02 00 00 51 52 55 55 55 50 FF D3");
             if (!resetWindowSize.empty())
             {
@@ -626,9 +575,12 @@ public:
             // Shared between the two renderers
 
             // FUN_1033C7E0, at the store that writes the device config's fullscreen byte from
-            // whatever the renderer says the device is doing at that moment. The relocated MOV
-            // reads AL, and the toggle path a few instructions above it reaches the same store, so
-            // one write here also makes an Alt+Enter land on the mode the ini asked for.
+            // whatever the renderer says the device is doing, which is videoMgr+0x360 and
+            // modeParams+0x08. It is read again at 0x1033C9D8 to pick the bordered-window
+            // branch, which ends in FUN_10406E20, a search that only ever returns a mode strictly
+            // smaller than the one it was given. The relocated MOV reads AL, and the toggle path a
+            // few instructions above reaches the same store, so one write here also makes an
+            // Alt+Enter land on the mode the ini asked for.
             auto fullscreenLatch = dunia_pattern("88 86 60 03 00 00 8B 0D ? ? ? ? 8B 11 8B 82 34 01 00 00");
             if (!fullscreenLatch.empty())
             {
@@ -655,6 +607,10 @@ public:
             // ------------------------------------------------------------------------------------
             // Direct3D 10
 
+            // The same collapse on this side: D3D10 never touches the window itself but calls
+            // IDXGISwapChain::ResizeTarget at 0x104205EB, which resizes the output window to the
+            // mode it is handed.
+            //
             // SetMode, at the two loads that fetch ResizeTarget out of the swapchain's vtable. EAX
             // is the swapchain and is reloaded from renderer+0x40 at 0x104205F3, so a substitute
             // put there reaches this one call and nothing after it. EDI is loaded from ESI by the
@@ -698,10 +654,17 @@ public:
                 });
             }
 
-            // FUN_1033C7E0, immediately after AdjustWindowRectEx and the two GetSystemMetrics
-            // calls, with the adjusted window extents live in EDI and EBP and the comparison that
-            // decides "device change needed" six instructions away. Chosen over the comparison
-            // itself because these six bytes are one whole instruction with no branch in them.
+            // FUN_1033C7E0 asks for a device reset forever, which was the erratic windowed frame
+            // rate. It compares GetClientRect against the config resolution at 0x1033C933 and, on a
+            // difference, runs AdjustWindowRectEx over the config resolution and compares that
+            // against SM_CXFULLSCREEN / SM_CYFULLSCREEN at 0x1033C9F9 for any non-WS_POPUP window.
+            // A bordered window asked for the desktop resolution satisfies neither, and nothing
+            // converges: the clamp goes into renderMgr+0x330, which the function zeroes on entry,
+            // while the comparison stays on the unclamped config.
+            //
+            // Hooked after AdjustWindowRectEx and the two GetSystemMetrics calls, with the adjusted
+            // extents live in EDI and EBP and the comparison six instructions away, rather than at
+            // the comparison, because these six bytes are one whole instruction with no branch.
             auto resizeDemand = dunia_pattern("2B 7C 24 28 2B 6C 24 2C 89 44 24 18 8B 01 8B 90 34 01 00 00 FF D2 84 C0 75 75 81 E3 00 00 00 80");
             if (!resizeDemand.empty())
             {
@@ -716,9 +679,16 @@ public:
                 });
             }
 
-            // Both of the values windowed needs are in the present parameters, and the block is
-            // only ever addressed absolutely, so its base comes from the operand of the one pair of
-            // instructions that write BackBufferWidth and BackBufferHeight.
+            // SetResolution hardcodes PresentationInterval to D3DPRESENT_INTERVAL_IMMEDIATE for
+            // any windowed device at 0x104235CF, the config's own vsync only ever reaching the
+            // fullscreen branch, and leaves BackBufferCount at zero, which D3D9 reads as one. Only
+            // a bordered window takes the composed blit path, where IMMEDIATE buys nothing against
+            // a compositor that owns the vblank and one backbuffer absorbs no jitter. Exclusive
+            // fullscreen flips, and so does a popup covering the display.
+            //
+            // Both values live in the present parameters, and the block is only ever addressed
+            // absolutely, so its base comes from the operand of the one pair of instructions that
+            // write BackBufferWidth and BackBufferHeight.
             auto presentParams = dunia_pattern("8B 56 1C 89 15 ? ? ? ? 8B 46 20 A3 ? ? ? ? 8A 4D 08 F6 D9");
             auto presentTail = dunia_pattern("8B 94 24 7C 02 00 00 8B 84 24 78 02 00 00 8B 8C 24 74 02 00 00");
 
