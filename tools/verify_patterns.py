@@ -48,6 +48,13 @@ PATTERNS = [
     ("aim assist ironSight",   "80 BE 5E 01 00 00 00 74 15 8D 4C 24 24 E8 ? ? ? ? 8D 4C 24 24 51 8B CE E8 ? ? ? ?", 9),
     ("render config float prop", "56 8B C1 8B 70 0C 03 74 24 08 8B 4C 24 0C 8B 11 83 C0 04 56 50 8B 82 0C 01 00 00 FF D0 5E C2 08 00", 0),
     ("render config int prop",   "56 8B C1 8B 70 0C 03 74 24 08 8B 4C 24 0C 8B 11 83 C0 04 56 50 8B 82 14 01 00 00 FF D0 5E C2 08 00", 0),
+    ("realtree instance alloc",   "BF 90 18 00 00 39 BE 84 0B 00 00 73 33 8B 86 80 0B 00 00 3B C3 74 09 50 E8 ? ? ? ? 83 C4 04 53 68 80 C4 00 00 E8 ? ? ? ? 83 C4 08 89 86 80 0B 00 00", 1),
+    ("realtree job caps",         "89 4E 14 89 46 1C 8B 44 24 20 C7 06 00 04 00 00 C7 46 04 24 06 00 00 8B 8D 94 0B 00 00", 19),
+    ("realtree job slice",        "68 20 31 00 00 8B CB 69 C9 20 31 00 00 03 8D 80 0B 00 00 51 8B CF E8", 1),
+    ("realtree fill job input",   "8B 86 80 0B 00 00 68 80 C4 00 00 50 8B CF E8", 7),
+    ("realtree batches desc",     "89 9E 28 0B 00 00 89 96 34 0B 00 00 C7 86 38 0B 00 00 90 18 00 00", 18),
+    ("realtree merge array",      "8B 8E 80 0B 00 00 68 80 C4 00 00 51 8B CF E8", 7),
+    ("realtree merge scalars",    "68 00 04 00 00 8B CF E8 ? ? ? ? 68 90 18 00 00 8B CF E8", 13),
     ("render device global",  "8B 0D ? ? ? ? 8B 01 8B 90 EC 00 00 00 FF D2", 0),
     ("d3d9 present call site", "8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0", 0),
     ("set resolution entry",   "81 EC 48 02 00 00 53 55 56 57 33 ED 55 8D 84 24 B4 00 00 00", 0),.

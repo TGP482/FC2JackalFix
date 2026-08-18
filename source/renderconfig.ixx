@@ -107,27 +107,37 @@ static constexpr float fStockKillLodScale = 1.0f;
 //     0  the values the game ships
 //     1  twice the vanilla draw distance
 //     2  four times the vanilla draw distance
-//     3  the most the block will take, which is Boggalog's set
+//     3  six times the vanilla draw distance
+//     4  the most the block will take, which is Boggalog's set
 //
 // Two conventions run in opposite directions. LOD scales run backwards: the lower the value the
 // further the detail survives, and 0 is the maximum, so doubling a distance halves the scale. The
-// MinSize thresholds are the size below which an object is culled outright and halve the same way,
-// bottoming out at 0. Only RealTreeCapsMaxDistance and the two decal counts are plain quantities
-// that double.
-//
-// One column is pinned rather than scaled.
-//
-// KillLodScale holds at 0.7 from step 1 on. It is the distance at which an object stops being
-// drawn at all, and below 0.7 scenery pops in on map 2, which is where Boggalog stops as well.
-// Halving it would put step 1 past his maximum, so the column is clamped rather than left to
-// overshoot.
+// MinSize thresholds are the size below which an object is culled outright and halve the same way.
+// Only RealTreeCapsMaxDistance and the two decal counts are plain quantities that double.
 //
 // LodScale halves with the rest. It could not before: lowering it broke road surfaces up, because
 // the spline pass reads it the opposite way round from every other LOD path. That is the polarity
 // patch further down, and steps 1 and 2 only carry a LodScale at all because it is in.
 //
-// RealTreeNodeMinSize starts at 0.002, small enough that halving it changes nothing visible, so it
-// goes straight to 0 at step 1.
+// KillLodScale halves with the rest as well. It was pinned at 0.7 because scenery popped in on map
+// 2 below that; the pop was the tree renderer running out of instances, raised by
+// PatchRealTreeInstanceBudget below, and the column runs to 0 with the others now.
+//
+// No projected-size threshold reaches 0. Each is an on/off switch before it is a threshold, and 0
+// turns the test off rather than making it permissive:
+//
+//     Dunia+3995F0  this+0x9F0/0x9F1/0x9F2 = 0.0 < node/leaf/hleaf MinSize (config+0x7C/0x74/0x78),
+//                   and the job at Dunia+48B760 runs the size reject only for parts whose switch is
+//                   set
+//     Dunia+39B3D0  ANDs the three, so one zero drops the cull for trunks, leaves and hybrid leaves
+//                   together
+//     Dunia+3BB6B0  0.0 < ClusterObjectMinSize (config+0x84), and clear submits every cluster
+//                   instance in the frustum at full detail
+//
+// Off, the culls no longer hold the tree renderer inside its instance budget and it drops nodes
+// silently, which is the map 2 foliage flicker. RealTreeNodeMinSize is pinned at the stock 0.002
+// rather than taken to 0; leaf, hybrid leaf, cluster and scene halve without reaching it. The
+// budget is raised as well, below, and both are needed.
 struct GeometryStep
 {
     float fRealTreeCapsMaxDistance;
@@ -146,11 +156,12 @@ struct GeometryStep
 
 static constexpr GeometryStep GeometrySteps[] =
 {
-    //  CapsDist RealTrees Clusters   Lod    Kill    Leaf     HLeaf     Node   Cluster   Scene   Decals PerType
-    {    100.0f,   1.0f,    0.8f,    1.0f,   1.0f,  0.02f,   0.015f,   0.002f,  0.02f,   0.01f,    200,     50 }, // 0 stock
-    {    200.0f,   0.5f,    0.4f,    0.5f,   0.7f,  0.01f,   0.0075f,  0.0f,    0.01f,   0.005f,   400,    100 }, // 1 twice
-    {    400.0f,   0.25f,   0.2f,    0.25f,  0.7f,  0.005f,  0.00375f, 0.0f,    0.005f,  0.0025f,  800,    200 }, // 2 four times
-    {   1000.0f,   0.1f,    0.1f,    0.0f,   0.7f,  0.0f,    0.0f,     0.0f,    0.0f,    0.0f,    2000,   1000 }, // 3 maximum
+    //  CapsDist RealTrees Clusters      Lod     Kill      Leaf      HLeaf    Node   Cluster     Scene Decals PerType
+    {    100.0f,     1.0f,    0.8f,    1.0f,    1.0f,    0.02f,    0.015f, 0.002f,    0.02f,    0.01f,   200,      50 }, // 0 stock
+    {    200.0f,     0.5f,    0.4f,    0.5f,    0.5f,    0.01f,   0.0075f, 0.002f,    0.01f,   0.005f,   400,     100 }, // 1 twice
+    {    400.0f,    0.25f,    0.2f,   0.25f,   0.25f,   0.005f,  0.00375f, 0.002f,   0.005f,  0.0025f,   800,     200 }, // 2 four times
+    {    600.0f,  0.1667f, 0.1333f, 0.1667f, 0.1667f, 0.00333f,   0.0025f, 0.002f, 0.00333f, 0.00167f,  1200,     300 }, // 3 six times
+    {   1000.0f,     0.1f,    0.1f,    0.0f,    0.0f,  0.0025f, 0.001875f, 0.002f,  0.0025f, 0.00125f,  2000,    1000 }, // 4 maximum
 };
 
 static constexpr int32_t nMaxGeometryStep = static_cast<int32_t>(sizeof(GeometrySteps) / sizeof(GeometrySteps[0])) - 1;
@@ -1047,6 +1058,121 @@ static void ReapplyBeyondUltra()
 
 }
 
+
+/*
+  RealTree instance budget, the other half of the map 2 foliage flicker.
+
+  CRealTreeRenderer cuts the visible set into four jobs and gives each a fixed instance array.
+  Dunia+397420 writes cap 624h into every job descriptor; the array behind it is allocated once in
+  the constructor at Dunia+399F70, 1890h entries of 8 bytes. Dunia+48B5D0 refuses a batch when
+  either count has reached its cap and returns -1, and Dunia+48B760 then drops the node with no
+  assert and no growth. Which nodes arrive past the cap follows the walk order, which moves with the
+  camera, so the loss reads as blinking rather than as a distance limit.
+
+  Measured on map 2 at BeyondUltraGeometry 3: instances saturated at 1572 of 1572 with 230 nodes a
+  frame refused, batches peaked at 190 of 1024, and the same view off the setting peaked at 800 and
+  lost nothing. RealTreesLodScale is what fills it, holding trees at their near LODs ten times
+  further out, but clamping that back is giving up the setting to work around a fixed array.
+
+  Nine imm32 sites describe the one buffer:
+
+      1039A47B  MOV EDI,1890h            entries, stored to +0B84h and +0B88h
+      1039A49C  PUSH 0C480h              malloc, entries * 8
+      103974B9  MOV [ESI+4],624h         per job cap, and the multiplier the rebase uses
+      1039757F  PUSH 3120h               per job slice size
+      10397586  IMUL ECX,ECX,3120h       per job slice stride
+      103976E9  PUSH 0C480h              whole array, the fill job's input
+      1039C03D  MOV [ESI+0B38h],1890h    whole array, in the ProcessBatches descriptor
+      1039BD25  PUSH 0C480h              whole array, for the merge job
+      1039BD73  PUSH 1890h               the merge's own entry count
+
+  Four size the memory and five say how big it is, so one left behind is a heap overflow rather than
+  a smaller improvement. Every site is resolved and value checked before the first byte is written.
+
+  The ceiling is the rebase at the tail of Dunia+48BFE0, which turns each job's local indices into
+  global ones:
+
+      IMUL  EAX,[EBP+50h]     ; jobIndex * instanceCap
+      MOVZX ECX,AX            ; ...as sixteen bits
+      ADD   word ptr [EAX],CX
+
+  Instance links and the head and tail of every batch header are sixteen bit fields with 0FFFFh as
+  the empty marker, so 4 * factor * 624h <= 0FFFFh and the factor cannot pass ten. Eight gives 12576
+  instances a job and 393KB of heap in place of 49KB; the same view then peaks at 1861 and loses
+  nothing, so the stock cap was around 20% short.
+
+  The batch cap is left alone. Its index is a twelve bit field masked 0FFFh in both Dunia+48B5D0 and
+  the merge, and 4 * 400h fills it exactly. It was never the one running out.
+*/
+static constexpr uint32_t nInstanceBudgetFactor = 8;
+
+struct BudgetSite
+{
+    const char* pszPattern;
+    ptrdiff_t nOffset;   // of the imm32 inside the match
+    uint32_t nStock;
+};
+
+static constexpr BudgetSite RealTreeBudgetSites[]
+{
+    // MOV EDI,1890h / CMP [ESI+0B84h],EDI / JNC / ... / PUSH 0C480h / CALL <malloc>. Both numbers
+    // are in one match because they are one allocation and neither is meaningful alone.
+    { "BF 90 18 00 00 39 BE 84 0B 00 00 73 33 8B 86 80 0B 00 00 3B C3 74 09 50 E8 ? ? ? ? 83 C4 04 "
+      "53 68 80 C4 00 00 E8 ? ? ? ? 83 C4 08 89 86 80 0B 00 00", 1, 0x1890 },
+    { "BF 90 18 00 00 39 BE 84 0B 00 00 73 33 8B 86 80 0B 00 00 3B C3 74 09 50 E8 ? ? ? ? 83 C4 04 "
+      "53 68 80 C4 00 00 E8 ? ? ? ? 83 C4 08 89 86 80 0B 00 00", 34, 0xC480 },
+
+    // MOV [ESI],400h / MOV [ESI+4],624h, the batch cap and the instance cap of the job descriptor.
+    // Anchored across the batch cap, which is the one that must not move.
+    { "89 4E 14 89 46 1C 8B 44 24 20 C7 06 00 04 00 00 C7 46 04 24 06 00 00 8B 8D 94 0B 00 00",
+      19, 0x624 },
+
+    // PUSH 3120h / MOV ECX,EBX / IMUL ECX,ECX,3120h / ADD ECX,[EBP+0B80h], the slice handed to the
+    // job: size, then base.
+    { "68 20 31 00 00 8B CB 69 C9 20 31 00 00 03 8D 80 0B 00 00 51 8B CF E8", 1, 0x3120 },
+    { "68 20 31 00 00 8B CB 69 C9 20 31 00 00 03 8D 80 0B 00 00 51 8B CF E8", 9, 0x3120 },
+
+    // MOV EAX,[ESI+0B80h] / PUSH 0C480h / PUSH EAX, the fill job. EAX and PUSH 50 tell it apart
+    // from the merge below, which is the same shape through ECX.
+    { "8B 86 80 0B 00 00 68 80 C4 00 00 50 8B CF E8", 7, 0xC480 },
+
+    // MOV [ESI+0B34h],EDX / MOV [ESI+0B38h],1890h, the pointer and the count in the ProcessBatches
+    // descriptor.
+    { "89 9E 28 0B 00 00 89 96 34 0B 00 00 C7 86 38 0B 00 00 90 18 00 00", 18, 0x1890 },
+
+    // MOV ECX,[ESI+0B80h] / PUSH 0C480h / PUSH ECX, the merge job's copy of the array.
+    { "8B 8E 80 0B 00 00 68 80 C4 00 00 51 8B CF E8", 7, 0xC480 },
+
+    // PUSH 400h / ... / PUSH 1890h, the merge's scalars: batch cap, then entry count. The batch cap
+    // is in the match for the same reason as above and is not written.
+    { "68 00 04 00 00 8B CF E8 ? ? ? ? 68 90 18 00 00 8B CF E8", 13, 0x1890 },
+};
+
+static constexpr size_t nBudgetSites = sizeof(RealTreeBudgetSites) / sizeof(RealTreeBudgetSites[0]);
+
+static void PatchRealTreeInstanceBudget()
+{
+    uint32_t* pSite[nBudgetSites]{};
+
+    // Every site resolved and read back before anything is written. Half a patch is a buffer that
+    // something still believes is the old size, and that is worse than no patch at all.
+    for (size_t i = 0; i < nBudgetSites; i++)
+    {
+        auto pattern = dunia_pattern(RealTreeBudgetSites[i].pszPattern);
+        if (pattern.empty())
+            return;
+
+        auto* pValue = pattern.get_first<uint32_t>(RealTreeBudgetSites[i].nOffset);
+        if (pValue == nullptr || *pValue != RealTreeBudgetSites[i].nStock)
+            return;
+
+        pSite[i] = pValue;
+    }
+
+    for (size_t i = 0; i < nBudgetSites; i++)
+        injector::WriteMemory<uint32_t>(pSite[i], RealTreeBudgetSites[i].nStock * nInstanceBudgetFactor, true);
+}
+
 // __thiscall with two stack arguments and a callee cleanup of eight bytes.
 static SafetyHookInline SerialiseFloatHook{};
 static SafetyHookInline SerialiseIntHook{};
@@ -1109,6 +1235,7 @@ static constexpr ptrdiff_t nSplineScaleOpcode = 0x14;
 
 static constexpr uint8_t nOpcodeDivss = 0x5E;
 
+
 static void PatchRoadLodPolarity()
 {
     auto pattern = dunia_pattern(szSplineLodPattern);
@@ -1128,9 +1255,11 @@ public:
         {
             TakeSettings();
 
-            // A fix rather than a setting, and it shares nothing with the property hooks, so it
-            // goes in ahead of their early out.
+            // Fixes rather than settings, and they share nothing with the property hooks, so they
+            // go in ahead of their early out. The budget has to be in before CRealTreeRenderer is
+            // constructed, which is a device away, and Dunia has only just been mapped.
             PatchRoadLodPolarity();
+            PatchRealTreeInstanceBudget();
 
             // No early out: the shadow scale fix has no setting, so the hooks always go in.
 

@@ -51,7 +51,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 - **Saturation** - Adjust the saturation levels from the 0.5 default, rage: 0.0 - 1.0
 
 ### Beyond Ultra
-- **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
+- **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) 6x, (4) max draw distance
 - **Beyond Ultra Shadows** - Increases past the Ultra High shadow values: (0) default, (1) max draw distance
 - **Beyond Ultra Terrain** - Increases past the Ultra High terrain values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
 
@@ -87,6 +87,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 - Fixed an issue where the diamond counter rolled up faster at high FPS
 - Fixed an issue where character's hair, glasses and water rendered over certain smoke, dust and other 2D effects
 - Fixed an issue where road textures would break when increasing the LodScale config
+- Fixed an issue where foliage flickered in and out of existence at higher geometry draw distances, by raising the tree renderer's fixed per frame instance budget (Ultra High)
 - Fixed various HUD and menu UI elements being stretched in widescreen and ultrawide, in addition to restoring console HUD offsets
 - Fixed an issue where the game could crash when changing the resolution at the main menu
 - Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution

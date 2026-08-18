@@ -565,6 +565,10 @@ static const wchar_t* const AnisotropyLabels[]{ L"Game default", L"2x", L"4x", L
 static const int     BeyondUltraValues[]{ 0, 1, 2, 3 };
 static const wchar_t* const BeyondUltraLabels[]{ L"Default", L"2x", L"4x", L"Max draw distance" };
 
+// Geometry carries a 6x step the other two do not, so it cannot share the list above.
+static const int     BeyondUltraGeometryValues[]{ 0, 1, 2, 3, 4 };
+static const wchar_t* const BeyondUltraGeometryLabels[]{ L"Default", L"2x", L"4x", L"6x", L"Max draw distance" };
+
 static const int     BeyondUltraShadowValues[]{ 0, 1 };
 static const wchar_t* const BeyondUltraShadowLabels[]{ L"Default", L"Max draw distance" };
 
@@ -606,7 +610,7 @@ static const MenuRow GraphicsRows[]
 static const MenuRow BeyondUltraRows[]
 {
     Heading(L"BEYOND ULTRA"),
-    Enumeration(L"Geometry", PREF_BEYONDULTRAGEOMETRY, "BeyondUltra", "BeyondUltraGeometry", BeyondUltraValues, BeyondUltraLabels),
+    Enumeration(L"Geometry", PREF_BEYONDULTRAGEOMETRY, "BeyondUltra", "BeyondUltraGeometry", BeyondUltraGeometryValues, BeyondUltraGeometryLabels),
     Enumeration(L"Shadows",  PREF_BEYONDULTRASHADOWS,  "BeyondUltra", "BeyondUltraShadows",  BeyondUltraShadowValues, BeyondUltraShadowLabels),
     Enumeration(L"Terrain",  PREF_BEYONDULTRATERRAIN,  "BeyondUltra", "BeyondUltraTerrain",  BeyondUltraValues, BeyondUltraLabels),
 };
