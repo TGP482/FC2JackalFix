@@ -1,10 +1,6 @@
 module;
 
 #include <common.hxx>
-// Textual include rather than `import <stacktrace>;`: a header unit gets its own copy of the
-// <iosfwd>/<istream> machinery, which collides with the one common.hxx pulls in via IniReader
-// -> mINI -> <fstream>/<sstream>. MSVC then leaves std::basic_istream<char>::sentry declared
-// but undefined, and the first operator>> instantiation fails with C2079 on sentry's `_Ok`.
 #include <stacktrace>
 
 export module common;

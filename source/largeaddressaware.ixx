@@ -263,7 +263,7 @@ static void ApplyLargeAddressAware()
         }
 
         ShowMessage(exeName + L" is now large address aware, and the original is kept as " + exeName + szBackupSuffix + L".\n\n"
-            L"The game will close when you press OK. Launch it again and the change is in effect.\n\n", MB_OK | MB_ICONINFORMATION);
+            L"The game closes when you press OK. Please relaunch the game.", MB_OK | MB_ICONINFORMATION);
     }
     else
     {
@@ -305,7 +305,7 @@ static void ApplyLargeAddressAware()
         }
 
         ShowMessage(exeName + L" has been restored, and the patched copy is kept as " + exeName + szBackupSuffix + L".\n\n"
-            L"The game will close when you press OK.", MB_OK | MB_ICONINFORMATION);
+            L"The game closes when you press OK. Please relaunch the game.", MB_OK | MB_ICONINFORMATION);
     }
 
     // Avoid exit(). The game is still initializing on the main thread.
