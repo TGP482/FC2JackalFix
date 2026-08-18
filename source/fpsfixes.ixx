@@ -69,7 +69,56 @@
   the bouncing. Flooring the divisor at 1/30 gives the speed 30fps would compute from the same
   displacement; at or below 30fps nothing changes, because the real frame time is already larger.
 
-  None of the three has an ini key. They are bugs rather than preferences.
+  A GUI sound is started once a frame and starves the rest of the mix
+
+  Dunia+80BB1F is a call through the sound system's play slot at vtable +9Ch, in the diamond
+  counter's update. It runs once per update whatever an update is worth. Measured at Dare's own play,
+  Dunia+A3D9C0, which everything the game plays funnels through, one scene captured at two rates:
+
+      30fps    starts 33.3ms apart,  16 starts, mean voice life 1.377s, 25 voices live
+      240fps   starts  4.2ms apart, 114 starts, mean voice life 0.889s, 76 voices live
+
+  The mean life falling with the rate is the damage. Each of those voices lasts about a second, so at
+  240fps a hundred copies of one sound are alive together, the pool fills, and Dare takes voices back
+  from whatever else is playing. A sound the game asks for during that is competing with a queue of
+  copies of this one, and a streamed one loses.
+
+  The call is guarded already: the id is fetched by name just above, and when the fetch answers the
+  not-found value at Dunia+E82B14 the branch at Dunia+80BB03 skips the play. A start arriving less
+  than 1/30s after the last one for the same id is handed that value, so the engine takes its own
+  skip and nothing else in the update changes. Measured after: 15 starts 33.4ms apart, mean life
+  1.342s, 28 voices live.
+
+  At or below 30fps the calls are already at least the interval apart and none is turned away.
+
+  The diamond counter rolls up at framerate
+
+  The same element, Dunia+80B7A0, owns the number as well as that sound. Its fields:
+
+      +0x88   the CEconomyComponent, whose +0x10 is the wallet
+      +0x2C8  the count the element last settled on
+      +0x2CC  the number on screen, which is what rolls
+      +0x2C0  single steps left to roll
+      +0x2B8  a timer, set to 5.0 when a roll starts and reduced by the frame time
+
+  A change sets +2C0 to the difference and +2B8 to the timer, and then every update, while +2C0 is
+  not zero, +2CC moves by one and +2C0 comes down by one. One digit per update, so the roll is as
+  long as a frame is short. Fifteen diamonds:
+
+      30fps    steps 33.3ms apart, roll 0.467s
+      240fps   steps  4.2ms apart, roll 0.062s
+
+  The timer is the only part of the element measured in seconds and it only ends a roll early, so it
+  does not hold the rate.
+
+  The fix withholds a step until 1/30s has passed since that element's last one. The element already
+  skips a step when +2C0 reads zero, at Dunia+80B904 counting up and Dunia+80B9E9 counting down, so a
+  withheld step is made by handing that test a zero. The frame time is taken off +2B8 between the
+  test and the branch either way, so the timer still runs and a roll long enough to reach it still
+  ends there, which is what 30fps does too. Measured after at 240fps: steps 33.4ms apart, roll
+  0.468s, against 0.467s at 30fps.
+
+  None of the five has an ini key. They are bugs rather than preferences.
 */
 
 module;
@@ -107,9 +156,104 @@ static constexpr float fSupportProbeMinDelta = fReferenceDelta;
 // owner pointer, frame time.
 static constexpr uint32_t nRootMotionDeltaSlot = 0x08;
 
+// Into the counter's two step patterns: the TEST of the steps-left field, not the load ahead of it.
+// A mid hook runs before the instruction it is placed on and that instruction is then executed from
+// the trampoline, so a hook on the load would have its own write to the register overwritten by the
+// load itself. Sitting on the TEST puts the write after the load and before the branch that reads
+// the result.
+static constexpr ptrdiff_t nCounterStepTest = 0x0E;
+
+// Into the GUI sound's pattern: the CMP that decides whether the id is playable, and the absolute
+// address of the not-found value it is compared against.
+static constexpr ptrdiff_t nGuiSoundCompare = 0x0B;
+static constexpr ptrdiff_t nGuiSoundNotFound = 0x0D;
+
 static SafetyHookInline InAirChangeHook{};
 static SafetyHookInline CheckSupportHook{};
 static SafetyHookMid RootMotionSpeedHook{};
+static SafetyHookMid GuiSoundHook{};
+static SafetyHookMid CounterStepUpHook{};
+static SafetyHookMid CounterStepDownHook{};
+
+// The id the fetch answers when there is no sound, read out of the compare rather than assumed.
+static const int32_t* pGuiSoundNotFound = nullptr;
+
+// Longest a key is remembered after it last came up. Only bounds the tables.
+static constexpr double fThrottleForget = 5.0;
+
+// True when this key has not come up inside a frame of the reference rate, and takes the slot if so.
+// The GUI update is the engine's own thread, but the tables are behind a lock rather than on the
+// assumption that they always will be.
+static std::mutex ThrottleMutex;
+
+static bool ThrottleDue(std::map<uintptr_t, int64_t>& Table, uintptr_t nKey)
+{
+    LARGE_INTEGER counter{};
+    LARGE_INTEGER frequency{};
+    QueryPerformanceCounter(&counter);
+    QueryPerformanceFrequency(&frequency);
+
+    if (frequency.QuadPart == 0)
+        return true;
+
+    const auto nNow = counter.QuadPart;
+    const auto nInterval = static_cast<int64_t>(static_cast<double>(frequency.QuadPart) * fReferenceDelta);
+
+    std::scoped_lock lock(ThrottleMutex);
+
+    auto entry = Table.find(nKey);
+    if (entry != Table.end() && nNow - entry->second < nInterval)
+        return false;
+
+    if (entry != Table.end())
+        entry->second = nNow;
+    else
+        Table.emplace(nKey, nNow);
+
+    const auto nForget = static_cast<int64_t>(static_cast<double>(frequency.QuadPart) * fThrottleForget);
+    for (auto it = Table.begin(); it != Table.end();)
+        it = (nNow - it->second > nForget) ? Table.erase(it) : std::next(it);
+
+    return true;
+}
+
+// Keyed on the sound id, since the element plays one sound at a time and two elements asking for the
+// same sound in the same frame is the case being cut down.
+static std::map<uintptr_t, int64_t> GuiSoundLast;
+
+// Keyed on the element, so two counters rolling at once each keep their own rate.
+static std::map<uintptr_t, int64_t> CounterStepLast;
+
+// Dunia+80BAFD, with ESI holding the id the name lookup just answered and the branch that skips the
+// play immediately after. Nothing float is live here and the hook lands on a compare, so a mid hook
+// costs the update nothing.
+static void GuiSound(SafetyHookContext& regs)
+{
+    if (pGuiSoundNotFound == nullptr)
+        return;
+
+    const auto nSoundId = static_cast<int32_t>(regs.esi);
+
+    // Already on its way to the skip. Nothing to hold an interval against.
+    if (nSoundId == *pGuiSoundNotFound)
+        return;
+
+    if (!ThrottleDue(GuiSoundLast, static_cast<uintptr_t>(static_cast<uint32_t>(nSoundId))))
+        regs.esi = static_cast<uintptr_t>(*pGuiSoundNotFound);
+}
+
+// Dunia+80B904 and Dunia+80B9E9, the TEST of the steps-left field in each of the counter's two
+// directions. The branch it feeds skips the step when it reads zero, so a zero here is a step
+// withheld. ESI is the element. The frame time is taken off the roll's timer between this and the
+// branch either way, so withholding a step does not stop the timer.
+static void CounterStep(SafetyHookContext& regs)
+{
+    if (regs.eax == 0)
+        return;
+
+    if (!ThrottleDue(CounterStepLast, static_cast<uintptr_t>(regs.esi)))
+        regs.eax = 0;
+}
 
 static float UpwardVelocity(uintptr_t nInput)
 {
@@ -189,6 +333,26 @@ public:
                 auto rootMotionPattern = dunia_pattern("83 EC 1C 56 8B 74 24 24 8D 44 24 04 50 8D 4C 24 0C 51 8B CE E8 ? ? ? ? F3 0F 10 54 24 28");
                 if (!rootMotionPattern.empty())
                     RootMotionSpeedHook = safetyhook::create_mid(rootMotionPattern.get_first(), RootMotionSpeed);
+
+                // The GUI element's play, matched from the id fetch through the call itself, so the
+                // vtable slot and the category are part of what makes it unique. Both call
+                // displacements and the not-found address are wildcarded.
+                auto guiSoundPattern = dunia_pattern("56 E8 ? ? ? ? 8B F0 83 C4 04 3B 35 ? ? ? ? 74 1C E8 ? ? ? ? D9 EE 8B 10 51 D9 1C 24 6A 00 6A 0C 8B C8 8B 82 9C 00 00 00 56 FF D0 5E 83 C4 20 C2 04 00");
+                if (!guiSoundPattern.empty())
+                {
+                    pGuiSoundNotFound = *guiSoundPattern.get_first<const int32_t*>(nGuiSoundNotFound);
+                    GuiSoundHook = safetyhook::create_mid(guiSoundPattern.get_first(nGuiSoundCompare), GuiSound);
+                }
+
+                // The counter's two step sites. The bodies are the same either way and part only on
+                // the sign of the ADD the step is made with, which is the last byte of each.
+                auto counterUpPattern = dunia_pattern("F3 0F 10 86 B8 02 00 00 8B 86 C0 02 00 00 85 C0 F3 0F 5C 44 24 28 F3 0F 11 86 B8 02 00 00 76 50 83 86 CC 02 00 00 01");
+                if (!counterUpPattern.empty())
+                    CounterStepUpHook = safetyhook::create_mid(counterUpPattern.get_first(nCounterStepTest), CounterStep);
+
+                auto counterDownPattern = dunia_pattern("F3 0F 10 86 B8 02 00 00 8B 86 C0 02 00 00 85 C0 F3 0F 5C 44 24 28 F3 0F 11 86 B8 02 00 00 76 50 83 86 CC 02 00 00 FF");
+                if (!counterDownPattern.empty())
+                    CounterStepDownHook = safetyhook::create_mid(counterDownPattern.get_first(nCounterStepTest), CounterStep);
             };
     }
 } FpsFixes;

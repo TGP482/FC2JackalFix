@@ -83,6 +83,8 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 ### Jackal Fixes
 - Fixed an issue where jump height was reduced at high FPS
 - Fixed an issue where NPCs would bounce at high FPS without disabling rigid characters
+- Fixed an issue where sound effects stuttered or went silent at high FPS
+- Fixed an issue where the diamond counter rolled up faster at high FPS
 - Fixed an issue where character's hair, glasses and water rendered over certain smoke, dust and other 2D effects
 - Fixed an issue where road textures would break when increasing the LodScale config
 - Fixed various HUD and menu UI elements being stretched in widescreen and ultrawide, in addition to restoring console HUD offsets
