@@ -57,6 +57,7 @@ import updatecheck;
 void Init()
 {
     JackalFixSettings.ReadIniSettings();
+    JackalFix::onStartupPromptEvent().executeAll();
     JackalFix::onInitEvent().executeAll();
 }
 

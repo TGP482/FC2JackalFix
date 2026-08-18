@@ -9,6 +9,8 @@
 #include "injector/assembly.hpp"
 #include "injector/utility.hpp"
 #include "Hooking.Patterns.h"
+#include <algorithm>
+#include <utility>
 #include <cmath>
 #include <thread>
 #include <mutex>

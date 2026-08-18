@@ -312,18 +312,18 @@ static void ApplyLargeAddressAware()
     TerminateProcess(GetCurrentProcess(), 0);
 }
 
+// On the main thread, so the game stays on hold until the prompt is answered. After the update
+// prompt, which is offered first.
+static constexpr auto nStartupPromptPriority = 20;
+
 class LargeAddressAware
 {
 public:
     LargeAddressAware()
     {
-        JackalFix::onInitEvent() += []()
+        JackalFix::onStartupPromptEvent().add([]()
         {
-            CreateThreadAutoClose(nullptr, 0, [](LPVOID) -> DWORD
-            {
-                ApplyLargeAddressAware();
-                return 0;
-            }, nullptr, 0, nullptr);
-        };
+            ApplyLargeAddressAware();
+        }, nStartupPromptPriority);
     }
 } LargeAddressAware;

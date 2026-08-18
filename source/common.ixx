@@ -19,18 +19,31 @@ public:
         using std::function<void(Args...)>::function;
 
     private:
-        std::vector<std::function<void(Args...)>> handlers;
+        std::vector<std::pair<int, std::function<void(Args...)>>> handlers;
 
     public:
+        // Registration order, which is static initialisation order across modules and so not
+        // something a module should rely on.
+        static constexpr auto nDefaultPriority = 100;
+
         void operator+=(std::function<void(Args...)>&& handler)
         {
-            handlers.push_back(handler);
+            add(std::move(handler), nDefaultPriority);
+        }
+
+        // Lower runs first. Equal priorities keep the order they were registered in.
+        void add(std::function<void(Args...)>&& handler, int priority)
+        {
+            handlers.emplace_back(priority, std::move(handler));
         }
 
         void executeAll(Args... args) const
         {
-            for (auto& handler : handlers)
-                handler(args...);
+            auto ordered = handlers;
+            std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+
+            for (auto& handler : ordered)
+                handler.second(args...);
         }
     };
 
@@ -39,6 +52,14 @@ public:
     {
         static Event<> InitEvent;
         return InitEvent;
+    }
+    // Modal prompts that have to be answered before the game is allowed to carry on loading.
+    // Runs on the main thread ahead of onInitEvent, so executeAll does not return until every
+    // prompt is closed.
+    static Event<>& onStartupPromptEvent()
+    {
+        static Event<> StartupPromptEvent;
+        return StartupPromptEvent;
     }
     // Fires once Dunia.dll is mapped, where every patch target lives.
     static Event<>& onDuniaInitEvent()

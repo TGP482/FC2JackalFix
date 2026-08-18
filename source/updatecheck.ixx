@@ -373,19 +373,19 @@ static void CheckForUpdates()
         SaveCache(latest, latest, latest);
 }
 
-// Own thread. The request runs while the game finishes loading rather than holding onInitEvent.
+// On the main thread, so the game stays on hold until the prompt is answered. First of the startup
+// prompts: an update is worth seeing before anything else is offered, and the check is skipped
+// outright while the cache is fresh.
+static constexpr auto nStartupPromptPriority = 10;
+
 class UpdateCheck
 {
 public:
     UpdateCheck()
     {
-        JackalFix::onInitEvent() += []()
+        JackalFix::onStartupPromptEvent().add([]()
         {
-            CreateThreadAutoClose(nullptr, 0, [](LPVOID) -> DWORD
-            {
-                CheckForUpdates();
-                return 0;
-            }, nullptr, 0, nullptr);
-        };
+            CheckForUpdates();
+        }, nStartupPromptPriority);
     }
 } UpdateCheck;
