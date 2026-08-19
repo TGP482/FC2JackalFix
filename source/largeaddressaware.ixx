@@ -146,8 +146,8 @@ static bool WriteFileBytes(const std::filesystem::path& path, const std::vector<
     return bResult;
 }
 
-// Windows will not let the running executable be overwritten, but it will let it be renamed out
-// of the way, so build the replacement alongside it and swap.
+// The running executable cannot be overwritten but can be renamed, so build the replacement
+// alongside it and swap.
 static bool SwapExecutable(const std::filesystem::path& exePath, const std::vector<uint8_t>& image)
 {
     auto stagingPath = exePath;
@@ -313,7 +313,7 @@ static void ApplyLargeAddressAware()
 }
 
 // On the main thread, so the game stays on hold until the prompt is answered. After the update
-// prompt, which is offered first.
+// prompt.
 static constexpr auto nStartupPromptPriority = 20;
 
 class LargeAddressAware

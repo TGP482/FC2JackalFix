@@ -50,15 +50,9 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            bNoBlinkingItems = JackalFixSettings.GetInt(PREF_NOBLINKINGITEMS) != 0;
+            BindBool(bNoBlinkingItems, PREF_NOBLINKINGITEMS);
 
-            JackalFix::onIniFileChange() += []()
-            {
-                bNoBlinkingItems = JackalFixSettings.GetInt(PREF_NOBLINKINGITEMS) != 0;
-            };
-
-            // Half one, the pulsing outline on pickups. Two interventions, since the branch gate
-            // below is compiled twice and only one copy was being patched.
+            // Half one, the pulsing outline on pickups.
             //
             //   TEST byte ptr [reg+0x9C], 4      ; entity flags: highlighted
             //   JZ   skip
@@ -66,62 +60,33 @@ public:
             // Clearing the immediate makes TEST always set ZF, so the JZ always takes and the extra
             // highlight draw command is never allocated or submitted.
             //
-            // There are two of these gates. The mesh pass exists twice: FUN_103C6260
-            // draws the items that are not instancing candidates, and FUN_103C7750 draws the ones
-            // that are but turn up in runs of fewer than five. Which of the two an object takes is
-            // decided by an early divert inside FUN_103C6260 and has nothing to do with what the
-            // object is, which is why patching only the first left ammo piles and grenades glowing
-            // while weapons stopped. Runs of five or more go through FUN_103C45F0, which carries no
-            // highlight code at all.
+            // The gate is compiled twice: the mesh pass exists as FUN_103C6260 for items that are
+            // not instancing candidates and FUN_103C7750 for ones that are but turn up in runs of
+            // fewer than five. Which of the two an object takes is decided by an early divert
+            // inside FUN_103C6260, which is why patching only the first left ammo piles and
+            // grenades glowing while weapons stopped. Runs of five or more go through FUN_103C45F0,
+            // which carries no highlight code at all.
             //
-            // The effect lookup itself is deliberately left alone. The mesh renderer resolves
+            // The effect lookup itself is deliberately left alone: the mesh renderer resolves
             // "Mesh_Highlight" once in its constructor into +68h/+6Ch and the SPECIALPICKUP
-            // permutation into +50h/+54h. An earlier version of this zeroed those, which cannot be
-            // undone while the game runs, so the setting could be turned on and never off again.
-            // It is also unnecessary: those four fields have exactly two readers in the whole image
-            // and both sit behind the gates below.
+            // permutation into +50h/+54h, and zeroing those cannot be undone while the game runs.
+            // Unnecessary too: those four fields have exactly two readers in the whole image and
+            // both sit behind the gates below.
             {
-                static raw_mem* pGates[2]{};
-                static size_t nGates = 0;
-
                 // FUN_103C6260, the plain pass. The item is in EDX and the effect spills at
-                // +40/+44.
-                auto pattern = dunia_pattern("8B 44 24 40 8B 4C 24 44 8B 54 24 18 89 43 10 89 4B 14 F6 82 9C 00 00 00 04 0F 84");
-                if (!pattern.empty())
+                // +40/+44. TEST ...,4 -> TEST ...,0
+                if (auto* pGate = dunia_find("8B 44 24 40 8B 4C 24 44 8B 54 24 18 89 43 10 89 4B 14 F6 82 9C 00 00 00 04 0F 84", 24))
                 {
-                    // TEST ...,4 -> TEST ...,0
-                    static raw_mem fnItemHighlight(pattern.get_first(24), { 0x00 });
-                    pGates[nGates++] = &fnItemHighlight;
+                    static raw_mem fnItemHighlight(pGate, { 0x00 });
+                    BindPatch(fnItemHighlight, PREF_NOBLINKINGITEMS);
                 }
 
                 // FUN_103C7750, the short-run instancing pass. The same code with the registers
                 // the other way round: item in ECX, effect spilled at +30/+34.
-                pattern = dunia_pattern("8B 54 24 30 8B 44 24 34 8B 4C 24 18 89 53 10 89 43 14 F6 81 9C 00 00 00 04 0F 84");
-                if (!pattern.empty())
+                if (auto* pGate = dunia_find("8B 54 24 30 8B 44 24 34 8B 4C 24 18 89 53 10 89 43 14 F6 81 9C 00 00 00 04 0F 84", 24))
                 {
-                    static raw_mem fnItemHighlightInstanced(pattern.get_first(24), { 0x00 });
-                    pGates[nGates++] = &fnItemHighlightInstanced;
-                }
-
-                if (nGates != 0)
-                {
-                    static auto ItemHighlightCB = []()
-                    {
-                        for (size_t i = 0; i < nGates; i++)
-                        {
-                            if (bNoBlinkingItems)
-                                pGates[i]->Write();
-                            else
-                                pGates[i]->Restore();
-                        }
-                    };
-
-                    ItemHighlightCB();
-
-                    JackalFix::onIniFileChange() += []()
-                    {
-                        ItemHighlightCB();
-                    };
+                    static raw_mem fnItemHighlightInstanced(pGate, { 0x00 });
+                    BindPatch(fnItemHighlightInstanced, PREF_NOBLINKINGITEMS);
                 }
             }
 
@@ -132,10 +97,9 @@ public:
             // +0x178. Hook is on the CMP, after the slot load, so the CMP runs from the trampoline
             // against the value left in EAX.
             {
-                auto pattern = dunia_pattern("8B 44 24 04 83 F8 09 56 8B F1 77 38 8B 4C 24 0C 6A FF");
-                if (!pattern.empty())
+                if (auto* pMarkerSetArchetype = dunia_find("8B 44 24 04 83 F8 09 56 8B F1 77 38 8B 4C 24 0C 6A FF", 4))
                 {
-                    static auto MarkerSetArchetypeHook = safetyhook::create_mid(pattern.get_first(4), [](SafetyHookContext& regs)
+                    static auto MarkerSetArchetypeHook = safetyhook::create_mid(pMarkerSetArchetype, [](SafetyHookContext& regs)
                     {
                         if (!bNoBlinkingItems)
                             return;

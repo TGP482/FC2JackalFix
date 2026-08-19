@@ -280,16 +280,16 @@ public:
         {
             // NameHash::Set. Entry through the store of the computed hash, with the call
             // displacement wildcarded.
-            auto hashPattern = dunia_pattern("8B 44 24 04 85 C0 56 8B F1 74 29 80 38 00 74 24 80 7C 24 0C 00 50 74 0E E8 ? ? ? ? 83 C4 04 89 06 5E C2 0C 00");
+            auto* pHash = dunia_find("8B 44 24 04 85 C0 56 8B F1 74 29 80 38 00 74 24 80 7C 24 0C 00 50 74 0E E8 ? ? ? ? 83 C4 04 89 06 5E C2 0C 00");
 
             // The per-file prototype indexer. Entry through the one-time init guard, with the
             // four bytes of the guard's address wildcarded.
-            auto indexPattern = dunia_pattern("55 8B EC 83 E4 F8 83 EC 3C F6 05 ? ? ? ? 01 53 56 57 89 4C 24 1C 75 1B");
+            auto* pIndex = dunia_find("55 8B EC 83 E4 F8 83 EC 3C F6 05 ? ? ? ? 01 53 56 57 89 4C 24 1C 75 1B");
 
-            if (hashPattern.empty() || indexPattern.empty())
+            if (!pHash || !pIndex)
                 return;
 
-            NameHash = reinterpret_cast<NameHash_t>(hashPattern.get_first());
+            NameHash = reinterpret_cast<NameHash_t>(pHash);
 
             for (auto* pKey : {
                 &KeyMoveSpeedFactor, &KeyCanIronsight, &KeyRadius, &KeyHeightOffset,
@@ -307,7 +307,7 @@ public:
 
             // The entity library is read once during startup, so nothing is registered on the ini
             // watch.
-            IndexLibraryHook = safetyhook::create_inline(indexPattern.get_first(), IndexLibrary);
+            IndexLibraryHook = safetyhook::create_inline(pIndex, IndexLibrary);
         };
     }
 } EntityLibrary;

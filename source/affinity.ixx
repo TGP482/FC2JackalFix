@@ -64,13 +64,8 @@ public:
     {
         JackalFix::onInitEvent() += []()
         {
-            ApplyAffinity();
-
             // Affinity is live. Thread counts require a restart.
-            JackalFix::onIniFileChange() += []()
-            {
-                ApplyAffinity();
-            };
+            ApplyAndWatch(ApplyAffinity);
         };
 
         JackalFix::onShutdownEvent() += []()

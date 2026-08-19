@@ -15,6 +15,14 @@ export hook::pattern dunia_pattern(std::string_view bytes)
     return hook::module_pattern(hDunia, bytes);
 }
 
+// The whole "match, test for empty, take the first hit at an offset" dance in one call. Null when
+// the pattern does not resolve, so a module reads as `if (auto* p = dunia_find(...))`.
+export void* dunia_find(std::string_view bytes, ptrdiff_t offset = 0)
+{
+    auto pattern = dunia_pattern(bytes);
+    return pattern.empty() ? nullptr : pattern.get_first(offset);
+}
+
 export void InitDunia()
 {
     hDunia = GetModuleHandleW(L"Dunia.dll");

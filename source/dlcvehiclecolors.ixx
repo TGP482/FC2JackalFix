@@ -119,8 +119,7 @@ public:
                     || !StartsWith(pCreate, CreatePrologue, sizeof(CreatePrologue)))
                     return;
 
-                // Materials resolve once each, during load, so nothing is registered on the ini
-                // watch.
+                // Materials resolve once each, during load, so no ini watch.
                 FindContainerResourceHook = safetyhook::create_inline(pFind, FindContainerResource);
                 CreateContainerResourceHook = safetyhook::create_inline(pCreate, CreateContainerResource);
                 return;

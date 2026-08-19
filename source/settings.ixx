@@ -72,25 +72,16 @@ private:
 
     static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mPrefs;
 
-    // Settings moved for this run only, without the file being touched.
-    //
-    // The menu has to be able to change a setting and leave the ini alone. A hand-written
-    // FieldOfView of 91.31 is not one of the round numbers a row offers, and writing the row's
-    // choice would lose that number for good. But the watcher re-reads the whole ini on every save,
-    // including saves the menu makes for other settings, and that read would put the file's value
-    // straight back over the one the player just chose.
-    //
-    // So a held setting remembers two things: what the player chose, and what the file said when it
-    // was taken. A later read that brings back the same file value is that same file coming round
-    // again, and the choice stands. A different one means the file itself was edited, which is the
-    // player speaking more directly than the menu did, and the hold is dropped.
+    // Settings moved for this run only, without the file being touched, so the menu can change a
+    // setting without overwriting a hand-written value. A hold remembers the chosen value and what
+    // the file said when it was taken: a re-read returning that same file value keeps the choice, a
+    // different one means the file was edited by hand and drops the hold.
     static inline std::array<bool, static_cast<size_t>(Pref::COUNT)> mHeld{};
     static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mHeldValue;
     static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mHeldFile;
 
-    // What the file itself says, re-read with it every time and never written over by a hold. The
-    // menu shows this alongside the row's own ladder, so a hand-written value that is not a round
-    // number stays on offer for the whole run however far the row has been moved away from it.
+    // What the file itself says, never written over by a hold, so the menu can keep offering a
+    // hand-written value alongside its own ladder.
     static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mFile;
 
     // Whether the ini carries the key at all, as opposed to the reader having handed back a
@@ -226,8 +217,7 @@ public:
         mFile = mPrefs;
 
         // The session's own choices back over what was just read, where the file has not moved
-        // underneath them. Done here rather than by the caller so every read goes through it, the
-        // watcher's as much as the first one.
+        // underneath them. Here rather than in the caller, so the watcher's reads go through it too.
         for (size_t i = 0; i < static_cast<size_t>(Pref::COUNT); i++)
         {
             if (!mHeld[i])
@@ -270,9 +260,9 @@ public:
     int32_t GetFileInt(Pref name) { return std::get<int32_t>(mFile[name]); }
     float GetFileFloat(Pref name) { return std::get<float>(mFile[name]); }
 
-    // Set for this run without writing the file, and kept across the re-reads the watcher performs.
-    // The file value is noted only the first time a setting is held, so moving the same setting
-    // again does not mistake the previous choice for what the file says.
+    // Set for this run without writing the file, kept across the watcher's re-reads. The file value
+    // is noted only on the first hold, so moving the setting again does not take the previous
+    // choice for what the file says.
     void HoldFloat(Pref name, float value)
     {
         if (!mHeld[name])
@@ -293,3 +283,29 @@ public:
         mPrefs[name] = value;
     }
 } JackalFixSettings;
+
+// Reading a setting into a variable now and on every ini re-read is what almost every module does
+// with almost every setting, so it is one call. T covers plain and atomic destinations alike.
+export template<class T>
+void BindBool(T& target, Pref pref)
+{
+    ApplyAndWatch([&target, pref]() { target = JackalFixSettings.GetInt(pref) != 0; });
+}
+
+export template<class T>
+void BindInt(T& target, Pref pref)
+{
+    ApplyAndWatch([&target, pref]() { target = JackalFixSettings.GetInt(pref); });
+}
+
+export template<class T>
+void BindFloat(T& target, Pref pref)
+{
+    ApplyAndWatch([&target, pref]() { target = JackalFixSettings.GetFloat(pref); });
+}
+
+// Byte patch written while the setting is on, restored while it is off.
+export void BindPatch(raw_mem& patch, Pref pref)
+{
+    ApplyAndWatch([&patch, pref]() { patch.Set(JackalFixSettings.GetInt(pref) != 0); });
+}

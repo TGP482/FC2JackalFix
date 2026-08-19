@@ -100,14 +100,12 @@ public:
             //     51 52        PUSH ECX / PUSH EDX
             //     8B CB        MOV ECX,EBX
             //     E8 ? ? ? ?   CALL FUN_10AD3FB0     <- the displacement read below, at +0x15
-            auto destroyLoop = dunia_pattern("8B 77 04 3B 77 08 8B D9 74 28 8B 06 8B 48 04 8B 10 51 52 8B CB E8");
-            if (destroyLoop.empty())
-                return;
+            if (auto* pCall = static_cast<uint8_t*>(dunia_find("8B 77 04 3B 77 08 8B D9 74 28 8B 06 8B 48 04 8B 10 51 52 8B CB E8", 0x15)))
+            {
+                auto* pDestroyDuplicate = pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1);
 
-            auto* pCall = destroyLoop.get_first<uint8_t>(0x15);
-            auto* pDestroyDuplicate = pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1);
-
-            DestroyDuplicateHook = safetyhook::create_inline(pDestroyDuplicate, DestroyDuplicate);
+                DestroyDuplicateHook = safetyhook::create_inline(pDestroyDuplicate, DestroyDuplicate);
+            }
         };
     }
 } GuiDuplicates;

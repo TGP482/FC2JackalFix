@@ -47,18 +47,7 @@ public:
                     regs.eip = nHitBordersReturn;
             });
 
-            static auto HitIndicatorCB = []()
-            {
-                bNoHitIndicator.store(JackalFixSettings.GetInt(PREF_NOHITINDICATOR) != 0, std::memory_order_relaxed);
-            };
-
-            HitIndicatorCB();
-
-            // One read per hit, so a wedge already on screen plays out its own transition.
-            JackalFix::onIniFileChange() += []()
-            {
-                HitIndicatorCB();
-            };
+            BindBool(bNoHitIndicator, PREF_NOHITINDICATOR);
         };
     }
 } HitIndicator;

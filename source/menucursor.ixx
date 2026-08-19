@@ -27,20 +27,20 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            auto pattern = dunia_pattern("F3 0F 10 86 88 00 00 00 0F 28 E0 F3 0F 59 E2 F3 0F 59 E3 F3 0F 2C CC");
-            if (pattern.empty())
+            auto* pCursorDeltaX = dunia_find("F3 0F 10 86 88 00 00 00 0F 28 E0 F3 0F 59 E2 F3 0F 59 E3 F3 0F 2C CC", 19);
+            if (!pCursorDeltaX)
                 return;
 
-            static auto CursorDeltaXHook = safetyhook::create_mid(pattern.get_first(19), [](SafetyHookContext& regs)
+            static auto CursorDeltaXHook = safetyhook::create_mid(pCursorDeltaX, [](SafetyHookContext& regs)
             {
                 regs.xmm4.f32[0] = CarryRemainder(regs.xmm4.f32[0], fResidualX);
             });
 
-            pattern = dunia_pattern("F3 0F 59 C1 F3 0F 59 C3 C1 E8 10 F3 0F 2C D0 66 2B C2");
-            if (pattern.empty())
+            auto* pCursorDeltaY = dunia_find("F3 0F 59 C1 F3 0F 59 C3 C1 E8 10 F3 0F 2C D0 66 2B C2", 11);
+            if (!pCursorDeltaY)
                 return;
 
-            static auto CursorDeltaYHook = safetyhook::create_mid(pattern.get_first(11), [](SafetyHookContext& regs)
+            static auto CursorDeltaYHook = safetyhook::create_mid(pCursorDeltaY, [](SafetyHookContext& regs)
             {
                 regs.xmm0.f32[0] = CarryRemainder(regs.xmm0.f32[0], fResidualY);
             });

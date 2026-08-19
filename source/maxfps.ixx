@@ -13,9 +13,8 @@ import settings;
 //
 // MaxFrameRate 1 asks for whatever the display is running at, resolved here rather than in the ini
 // reader so the stored setting stays the number the player wrote. RunGame consumes the command line
-// before any window exists, so the rate comes from the primary display. Dunia creates its device on
-// the primary adapter and borderless is positioned at 0,0, so that is the display the game lands on
-// unless the player moves the window off it.
+// before any window exists, so the rate comes from the primary display, which is the one the game
+// lands on: Dunia creates its device on the primary adapter and borderless is positioned at 0,0.
 
 static const char* const szRunGameExport = "?RunGame@@YA_NPAUHINSTANCE__@@PBD@Z";
 static const char* const szMaxFpsSwitch = "-RenderProfile_MaxFps";
@@ -35,18 +34,17 @@ enum MaxFrameRateSetting
     MAXFPS_DISPLAY = 1,
 };
 
-// Where the cap actually lives, so a change can be made to take effect without a restart.
+// Where the cap actually lives, so a change can take effect without a restart.
 //
-// MaxFps is a console variable of the RenderProfile group, and a console variable of that kind is
-// not storage: it is a name, a type and a byte offset. Its registration writes 0C8h into the offset
-// field (Dunia+403D7F), and the group's integer setter is *(int*)(block + offset) = value
-// (Dunia+781F0). The block is what the pointer at Dunia+1609560 refers to.
+// MaxFps is a console variable of the RenderProfile group: a name, a type and a byte offset rather
+// than storage. Its registration writes 0C8h into the offset field (Dunia+403D7F), and the group's
+// integer setter is *(int*)(block + offset) = value (Dunia+781F0). The block is what the pointer at
+// Dunia+1609560 refers to.
 //
-// The stock Display page settles what to do afterwards. Brightness, contrast and gamma are three
-// floats at 12Ch, 130h and 134h of that same block, and CFCXOptionDisplayPage writes them straight
-// in and then raises the render settings broadcast (Dunia+3F8AB0) with the block as its subject.
-// That is the engine's own way of changing a render setting while it runs, and it is the one taken
-// here, with destination and announcement both read out of the game rather than assumed.
+// Brightness, contrast and gamma are three floats at 12Ch, 130h and 134h of that same block, and
+// CFCXOptionDisplayPage writes them straight in and then raises the render settings broadcast
+// (Dunia+3F8AB0) with the block as its subject. That is the engine's own way of changing a render
+// setting while it runs, and it is the one taken here.
 static constexpr ptrdiff_t nProfileMaxFps = 0xC8;
 
 // mov ecx,eax / call <set prompt enabled> / mov ecx,[<render profile>] / add esp,0Ch /
@@ -62,9 +60,9 @@ static void** ppRenderProfile = nullptr;
 static NotifyRenderSettings_t NotifyRenderSettings = nullptr;
 
 // The broadcast walks four listener lists and calls a virtual on every entry, so it is only raised
-// from the thread the engine runs on. The file watcher has a thread of its own, and an edit made to
-// the ini outside the game arrives on it; that case writes the field and leaves the announcement to
-// whoever raises one next.
+// from the thread the engine runs on. An ini edit made outside the game arrives on the file
+// watcher's own thread; that case writes the field and leaves the announcement to whoever raises
+// one next.
 static DWORD nEngineThread = 0;
 
 static SafetyHookInline RunGameHook{};
@@ -78,8 +76,8 @@ static bool ContainsSwitch(std::string_view cmdLine, std::string_view name)
 }
 
 // ENUM_CURRENT_SETTINGS is the mode the display is running now, which is what a limiter has to
-// match. Walking the adapter's supported modes instead would give the highest rate the display can
-// do, and the two disagree on anything the player has not set to its maximum.
+// match. Walking the adapter's supported modes instead gives the highest rate the display can do,
+// and the two disagree on anything not set to its maximum.
 static int32_t GetDisplayRefreshRate()
 {
     DEVMODEW dm{};
@@ -109,9 +107,8 @@ static int32_t ResolveMaxFps()
     return nSetting;
 }
 
-// Puts the current setting into the running engine. Does nothing before the render profile exists,
-// which is every call made before the first frame. Start-up is the command line's job and this
-// only has to cover what happens afterwards.
+// Does nothing before the render profile exists, which is every call made before the first frame.
+// Start-up is the command line's job and this only covers what happens afterwards.
 static void ApplyMaxFps()
 {
     if (ppRenderProfile == nullptr)

@@ -24,14 +24,12 @@
   (0x107098B0), the reputation poll (0x10709550), the script method registered at 0x106880B0 and the
   PopUpObjective console command (0x109F7200).
 
-  Nothing on CFCXMissionManager is used, because none of it coincides with a banner. SelectMission
+  Rejected: CFCXMissionManager, because none of it coincides with a banner. SelectMission
   (0x10755EE0) opens with an unconditional SetCurrentMissionInfo(None) and runs when the player walks
-  up to a giver, so a Story/Library/Buddy -> None edge is an interaction as often as a completion.
-  CGameMission state 2 (Ended) is constant traffic and a savegame restore ends a pile in one tick.
-  The completed flags and counters also move on BypassMissionCompleted (0x10753E70), on the act
-  advance recount (0x10752FA0) and while a save deserialises. MissionCompleted (0x107532A0) is not
-  one mission ending either: its first four branches take reputation for part of a mission and
-  record nothing, and the game's opening sequence never calls it at all.
+  up to a giver. CGameMission state 2 (Ended) is constant traffic and a savegame restore ends a pile
+  in one tick. The completed flags and counters also move on BypassMissionCompleted (0x10753E70), on
+  the act advance recount (0x10752FA0) and while a save deserialises. MissionCompleted (0x107532A0)
+  records nothing for its first four branches and is never called by the opening sequence.
 
   Dead ends. MISSION_MAIN_COMPLETED is a pause menu stats label ("Main missions done"), not the
   banner. The save="0"/"1"/"2" attribute in OnScreenData.xml is never read: the loader at 0x1070AAC0
@@ -55,8 +53,7 @@ static bool bConsoleAutosaves = false;
 
 // CFCXObjectiveHudManager::PushNewObjective, __thiscall, six stack arguments and RET 0x18:
 // [esp+4] oasis section, [esp+8] icon, [esp+0xC] text key, [esp+0x10] and [esp+0x14] unused here,
-// [esp+0x18] display time in seconds. Both strings arrive as char*, not std::string; the function
-// measures them with char_traits<char>::length before the oasis lookup at 0x10686125.
+// [esp+0x18] display time in seconds. Both strings arrive as char*, not std::string.
 static constexpr uintptr_t POPUP_SECTION = 0x04;
 static constexpr uintptr_t POPUP_TEXT = 0x0C;
 static constexpr uintptr_t POPUP_TIME = 0x18;
@@ -66,8 +63,7 @@ static constexpr char POPUP_SECTION_MISSION[] = "Mission";
 // The two keys that end a mission. MISSION_CONCLUDED is "Mission Completed". Every library
 // mission's buddy branch ends on OBJECTIVE_COMPLETED_SBV instead, "Safe House Upgraded", and never
 // raises MISSION_CONCLUDED: OnScreenData.xml carries it on the last objective of all twelve
-// (A1LM01_05 through A2LM12_05). OBJECTIVE_COMPLETED and OBJECTIVE_ABORTED exist in the section but
-// no entry uses them.
+// (A1LM01_05 through A2LM12_05). OBJECTIVE_COMPLETED and OBJECTIVE_ABORTED are used by no entry.
 static constexpr const char* PopupMissionEndKeys[] =
 {
     "MISSION_CONCLUDED",
@@ -75,15 +71,13 @@ static constexpr const char* PopupMissionEndKeys[] =
 };
 
 // COnScreenPopup replaying one objective's entries (0x107098B0), __thiscall, [esp+4] a std::string*
-// holding the objective name. It runs immediately before the PushNewObjective calls it makes, so
-// the name is still current a frame later.
+// holding the objective name. It runs immediately before the PushNewObjective calls it makes.
 static constexpr uint64_t OBJECTIVE_NAME_WINDOW_MS = 100;
 
 // A0GM00_00 is the shared conclusion objective of every underground mission, the tutorial handoff
 // included, and the handoff is the one banner the console does not save on. What separates them is
 // CompletedGrinMissions, which only a finished mission raises. The counter is written after the
-// push and inside the same frame, so the banner cannot read it: the prompt is armed and the fire
-// drops it if the counter never moved.
+// push and inside the same frame, so the prompt is armed and the fire drops it if it never moved.
 static constexpr char OBJECTIVE_UNDERGROUND[] = "A0GM00_00";
 static constexpr uint64_t GRIN_WINDOW_MS = 5000;
 
@@ -179,30 +173,6 @@ static int32_t GrinCount()
     return pMgr ? *(uint8_t*)(pMgr + MISSIONMGR_GRINCOUNT) : GRIN_UNSAMPLED;
 }
 
-// MSVC8 std::string: 16 byte SSO buffer at +4 which becomes a pointer once the capacity at +0x18
-// reaches 16, length at +0x14.
-static const char* ReadDuniaString(uintptr_t pStr, char* pBuf, size_t nBufSize)
-{
-    pBuf[0] = '\0';
-    if (!pStr || nBufSize < 2 || IsBadReadPtr((void*)pStr, 0x1C))
-        return pBuf;
-
-    auto nSize = *(uint32_t*)(pStr + 0x14);
-    auto nCapacity = *(uint32_t*)(pStr + 0x18);
-    if (nSize > 512 || nCapacity > 0x10000)
-        return pBuf;
-
-    auto pSrc = (nCapacity >= 16) ? *(const char**)(pStr + 4) : (const char*)(pStr + 4);
-    if (!pSrc || IsBadReadPtr(pSrc, nSize))
-        return pBuf;
-
-    auto n = (nSize < nBufSize - 1) ? nSize : nBufSize - 1;
-    for (size_t i = 0; i < n; i++)
-        pBuf[i] = pSrc[i];
-    pBuf[n] = '\0';
-    return pBuf;
-}
-
 static const char* SafeString(uintptr_t p)
 {
     if (!p || IsBadStringPtrA((LPCSTR)p, 128))
@@ -225,13 +195,6 @@ static void Arm(uint64_t nDelay, bool bNeedsGrin)
     nArmedGrinFloor = nNow - GRIN_WINDOW_MS;
 }
 
-// Every pattern here resolves exactly once against a retail Dunia.dll.
-static void* Resolve(std::string_view bytes)
-{
-    auto pattern = dunia_pattern(bytes);
-    return pattern.empty() ? nullptr : pattern.get_first(0);
-}
-
 class SaveOnMissionComplete
 {
 public:
@@ -239,16 +202,11 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            bConsoleAutosaves = JackalFixSettings.GetInt(PREF_CONSOLEAUTOSAVES) != 0;
-
-            JackalFix::onIniFileChange() += []()
-            {
-                bConsoleAutosaves = JackalFixSettings.GetInt(PREF_CONSOLEAUTOSAVES) != 0;
-            };
+            BindBool(bConsoleAutosaves, PREF_CONSOLEAUTOSAVES);
 
             // 0x10747FC0, a buddy availability test. Nothing is hooked here; its prologue is only
             // where the manager lookup above is read from.
-            if (auto p = Resolve("83 EC 20 83 3D ? ? ? ? 00 53 56 57 8B 3D ? ? ? ? 8B F1 75 07"))
+            if (auto* p = dunia_find("83 EC 20 83 3D ? ? ? ? 00 53 56 57 8B 3D ? ? ? ? 8B F1 75 07"))
             {
                 auto n = reinterpret_cast<uintptr_t>(p);
 
@@ -260,7 +218,7 @@ public:
 
             // 0x107098B0, COnScreenPopup walking one objective's popup list. Only the name is taken
             // here; PushNewObjective below is what arms.
-            if (auto p = Resolve("83 EC 48 8B 44 24 4C 53 55 56 57 8B F9 50 8D 4C 24 1C 51 8D 4F 04"))
+            if (auto* p = dunia_find("83 EC 48 8B 44 24 4C 53 55 56 57 8B F9 50 8D 4C 24 1C 51 8D 4F 04"))
             {
                 static auto ObjectivePopupHook = safetyhook::create_mid(p, [](SafetyHookContext& regs)
                 {
@@ -273,7 +231,7 @@ public:
 
             // 0x10686080, CFCXObjectiveHudManager::PushNewObjective. Anchored on the prologue; the
             // oasis lookup further in is shared with other pages.
-            if (auto p = Resolve("83 EC 58 53 55 56 57 8D 44 24 13 8B F9 50 8D 4C 24 54 33 DB"))
+            if (auto* p = dunia_find("83 EC 58 53 55 56 57 8D 44 24 13 8B F9 50 8D 4C 24 54 33 DB"))
             {
                 static auto PushNewObjectiveHook = safetyhook::create_mid(p, [](SafetyHookContext& regs)
                 {
@@ -335,7 +293,7 @@ public:
             // The hook sits on the CMP, so the flag written here is seen when the relocated
             // instruction re-executes; zeroing the cooldown first stops 0x106D2F6E dropping it.
             // Also the module's clock, and where the grin counter is sampled.
-            if (auto p = Resolve("80 BF FC 04 00 00 00 F3 0F 10 87 00 05 00 00 F3 0F 5C 44 24 60"))
+            if (auto* p = dunia_find("80 BF FC 04 00 00 00 F3 0F 10 87 00 05 00 00 F3 0F 5C 44 24 60"))
             {
                 static auto SavePointRequestHook = safetyhook::create_mid(p, [](SafetyHookContext& regs)
                 {

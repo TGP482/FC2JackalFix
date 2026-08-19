@@ -43,10 +43,10 @@ static DominoInvoke_t DominoInvoke = nullptr;
 static DominoRelease_t DominoRelease = nullptr;
 static HideMessageBox_t HideMessageBox = nullptr;
 
-// MSVC8 std::string, laid out as every caller in the module builds it: proxy, the sixteen byte
-// buffer, then length and capacity. 0x1055D510 reads the length at +0x14, and a zero there selects
-// the one argument call the message box path always makes, leaving the buffer and the capacity
-// unread. An empty string is what the button press path passes too.
+// MSVC8 std::string as every caller in the module builds it: proxy, sixteen byte buffer, then
+// length and capacity. 0x1055D510 reads the length at +0x14, and a zero there selects the one
+// argument call, leaving the buffer and the capacity unread. An empty string is what the button
+// press path passes too.
 struct DuniaString
 {
     void* pProxy;
@@ -137,10 +137,10 @@ static void __fastcall CustomTutorialMessageBox(void* pHelper, void* pEdx, const
 }
 
 // 0x10704CF0. Returns an MSVC8 std::string by value, so the caller's buffer is the first stack
-// argument and the declared ones follow it. This one files no callback record: its box has no
-// button and the script hides it by hand, so nothing can stall. Run as normal and taken back down
-// afterwards rather than skipped, because the return value is a live string the script keeps. Its
-// later Hide then finds its stored id no longer matching, no-ops, and pulses Finished as usual.
+// argument and the declared ones follow it. It files no callback record: its box has no button and
+// the script hides it by hand, so nothing can stall. Run as normal and taken back down afterwards
+// rather than skipped, because the return value is a live string the script keeps. Its later Hide
+// then finds its stored id no longer matching, no-ops, and pulses Finished as usual.
 static void* __fastcall FloatingTutorialMessageBox(void* pHelper, void* pEdx, void* pReturn, const char* pszText,
     const char* pszActionMap, void* pObject, const char* pszMethod)
 {
@@ -159,12 +159,7 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            nSkipTutorials = JackalFixSettings.GetInt(PREF_SKIPTUTORIALS);
-
-            JackalFix::onIniFileChange() += []()
-            {
-                nSkipTutorials = JackalFixSettings.GetInt(PREF_SKIPTUTORIALS);
-            };
+            BindInt(nSkipTutorials, PREF_SKIPTUTORIALS);
 
             // 0x107060A0. The prologue through the registry load and the CALL that files the
             // callback record, which is where the registry variable and 0x1055D070 both come from:
@@ -174,23 +169,23 @@ public:
             //     83 41 04 01         ADD  dword ptr [ECX+0x4],0x1   script object addref
             //     8B 0D ? ? ? ?       MOV  ECX,[0x116473E4]          <- +0x2E, the registry
             //     E8 ? ? ? ?          CALL 0x1055D070                <- +0x32
-            auto popupPattern = dunia_pattern(
+            auto* pPopup = static_cast<uint8_t*>(dunia_find(
                 "81 EC 80 01 00 00 8B 84 24 98 01 00 00 53 55 56 57 50 51 89 4C 24 20 "
-                "8B 8C 24 AC 01 00 00 33 DB 3B CB 8B C4 89 08 74 04 83 41 04 01 8B 0D ? ? ? ? E8");
-            if (popupPattern.empty())
+                "8B 8C 24 AC 01 00 00 33 DB 3B CB 8B C4 89 08 74 04 83 41 04 01 8B 0D ? ? ? ? E8"));
+            if (!pPopup)
                 return;
 
             // 0x10705B30. Byte for byte the same shape; the frame size and the spill slot are what
             // tell the two apart.
-            auto customPattern = dunia_pattern(
+            auto* pCustom = dunia_find(
                 "81 EC 6C 01 00 00 8B 84 24 88 01 00 00 53 55 56 57 50 51 89 4C 24 1C "
                 "8B 8C 24 9C 01 00 00 33 DB 3B CB 8B C4 89 08 74 04 83 41 04 01 8B 0D ? ? ? ? E8");
-            if (customPattern.empty())
+            if (!pCustom)
                 return;
 
             // 0x1055D510.
-            auto invokePattern = dunia_pattern("83 EC 24 56 57 8B 79 44 8D 71 34 8D 44 24 30 50 8D 4C 24 0C 51 8B CE E8");
-            if (invokePattern.empty())
+            auto* pInvoke = dunia_find("83 EC 24 56 57 8B 79 44 8D 71 34 8D 44 24 30 50 8D 4C 24 0C 51 8B CE E8");
+            if (!pInvoke)
                 return;
 
             // 0x1055C3F0 is a sixteen byte function whose own prologue is shared, so it is reached
@@ -203,28 +198,27 @@ public:
             //     50 51               PUSH EAX / PUSH ECX
             //     8B 0D ? ? ? ?       MOV  ECX,[0x116473E4]
             //     E8 ? ? ? ?          CALL 0x1055C3F0         <- +0x0F
-            auto releasePattern = dunia_pattern("74 19 8B 46 04 8B 0E 50 51 8B 0D ? ? ? ? E8");
-            if (releasePattern.empty())
+            auto* pRelease = static_cast<uint8_t*>(dunia_find("74 19 8B 46 04 8B 0E 50 51 8B 0D ? ? ? ? E8", 0x0F));
+            if (!pRelease)
                 return;
 
-            auto* pPopup = popupPattern.get_first<uint8_t>(0);
             ppDominoRegistry = *reinterpret_cast<void***>(pPopup + 0x2E);
             DominoRegister = reinterpret_cast<DominoRegister_t>(CallTarget(pPopup + 0x32));
-            DominoInvoke = reinterpret_cast<DominoInvoke_t>(invokePattern.get_first(0));
-            DominoRelease = reinterpret_cast<DominoRelease_t>(CallTarget(releasePattern.get_first<uint8_t>(0x0F)));
+            DominoInvoke = reinterpret_cast<DominoInvoke_t>(pInvoke);
+            DominoRelease = reinterpret_cast<DominoRelease_t>(CallTarget(pRelease));
 
             if (!ppDominoRegistry || !DominoRegister || !DominoInvoke || !DominoRelease)
                 return;
 
             TutorialMessageBoxHook = safetyhook::create_inline(pPopup, TutorialMessageBox);
-            CustomTutorialMessageBoxHook = safetyhook::create_inline(customPattern.get_first(0), CustomTutorialMessageBox);
+            CustomTutorialMessageBoxHook = safetyhook::create_inline(pCustom, CustomTutorialMessageBox);
 
             // Floating hints from here down, independent of the above: the pop-up halves stay
             // installed even if this one does not resolve.
 
             // 0x10704CF0.
-            auto floatingPattern = dunia_pattern("81 EC AC 01 00 00 53 55 56 57 8D 44 24 13 89 4C 24 18 50 8D 4C 24 24 33 DB BE");
-            if (floatingPattern.empty())
+            auto* pFloating = dunia_find("81 EC AC 01 00 00 53 55 56 57 8D 44 24 13 89 4C 24 18 50 8D 4C 24 24 33 DB BE");
+            if (!pFloating)
                 return;
 
             // The replace half of the same function, where it takes down whatever floating box was
@@ -239,18 +233,17 @@ public:
             //     8B 0D ? ? ? ?       MOV  ECX,[0x10FDED3C]   <- +0x17, the manager
             //     56                  PUSH ESI
             //     E8 ? ? ? ?          CALL 0x1004C970         <- +0x1C
-            auto hidePattern = dunia_pattern("8B 7C 24 20 8B 57 18 8D 77 18 83 C4 08 3B 15 ? ? ? ? 74 0C 8B 0D ? ? ? ? 56 E8");
-            if (hidePattern.empty())
+            auto* pHide = static_cast<uint8_t*>(dunia_find("8B 7C 24 20 8B 57 18 8D 77 18 83 C4 08 3B 15 ? ? ? ? 74 0C 8B 0D ? ? ? ? 56 E8"));
+            if (!pHide)
                 return;
 
-            auto* pHide = hidePattern.get_first<uint8_t>(0);
             ppMessageBoxManager = *reinterpret_cast<void***>(pHide + 0x17);
             HideMessageBox = reinterpret_cast<HideMessageBox_t>(CallTarget(pHide + 0x1C));
 
             if (!ppMessageBoxManager || !HideMessageBox)
                 return;
 
-            FloatingTutorialMessageBoxHook = safetyhook::create_inline(floatingPattern.get_first(0), FloatingTutorialMessageBox);
+            FloatingTutorialMessageBoxHook = safetyhook::create_inline(pFloating, FloatingTutorialMessageBox);
         };
     }
 } TutorialMessages;

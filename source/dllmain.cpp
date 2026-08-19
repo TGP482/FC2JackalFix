@@ -4,7 +4,6 @@
 #include <functional>
 #include <string_view>
 
-
 import common;
 import dunia;
 import settings;

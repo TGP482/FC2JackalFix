@@ -9,9 +9,8 @@ import dunia;
 import settings;
 
 // Dunia parses SamplerStates.xml into raw D3D9 sampler descriptors. Patching the parsed
-// descriptors covers every quality level without replacing game files. Selection is by rule
-// rather than sampler name; render-target and point-filter samplers do not use mipmapped
-// filtering and are skipped.
+// descriptors covers every quality level without replacing game files. Selection is by rule rather
+// than sampler name; render-target and point-filter samplers do not use mipmapped filtering.
 
 static constexpr uint32_t nFilterNone = 0;
 static constexpr uint32_t nFilterPoint = 1;
@@ -45,18 +44,15 @@ static uint32_t nAnisotropicFiltering = 0;
 
 // Changing this while the game runs.
 //
-// The descriptors are parsed once and never rebuilt, but they are not baked into anything: the
-// sampler is programmed straight out of the descriptor every time it is bound. Dunia+419720 pushes
-// [desc+08h], [desc+0Ch], [desc+10h], [desc+14h], [desc+18h], [desc+1Ch], [desc+20h], [desc+2Ch]
-// and [desc+24h] into SetSamplerState one after another, all read at call time. So editing a
-// descriptor is enough, as long as the descriptor is edited again when the setting moves, which
-// means keeping what each one said before we touched it.
+// The descriptors are parsed once and never rebuilt, but the sampler is programmed straight out of
+// the descriptor on every bind: Dunia+419720 pushes [desc+08h], [desc+0Ch], [desc+10h], [desc+14h],
+// [desc+18h], [desc+1Ch], [desc+20h], [desc+2Ch] and [desc+24h] into SetSamplerState, all read at
+// call time. So editing a descriptor is enough, as long as what it said before we touched it is kept.
 //
-// The one thing in the way is a redundancy shadow. The bind wrapper at Dunia+415D70 compares the
-// sampler set it is about to bind against a table at manager+0C4h and returns without programming
-// anything when they match, so a slot already bound to that set never sees the new numbers. The
-// engine clears that same table with a memset of 454h bytes when it reloads the samplers, and that
-// is what is done here. Every slot then programs itself again on its next bind.
+// In the way is a redundancy shadow: the bind wrapper at Dunia+415D70 compares the sampler set it is
+// about to bind against a table at manager+0C4h and returns without programming anything when they
+// match. The engine clears that table with a memset of 454h bytes when it reloads the samplers, and
+// that is what is done here; every slot then programs itself again on its next bind.
 struct SamplerRecord
 {
     SamplerDesc* pDesc;
@@ -76,7 +72,7 @@ static constexpr ptrdiff_t nManagerBindShadow = 0xC4;
 static constexpr size_t    nManagerShadowSize = 0x454;
 static void** ppSamplerManager = nullptr;
 
-// MaxAnisotropy queried by the loader, or UINT_MAX before a device exists.
+// nDeviceMax is MaxAnisotropy queried by the loader, or UINT_MAX before a device exists.
 static void ApplyAnisotropy(SamplerDesc* pDesc, uint32_t nDeviceMax)
 {
     if (nAnisotropicFiltering < 2)
@@ -94,8 +90,7 @@ static void ApplyAnisotropy(SamplerDesc* pDesc, uint32_t nDeviceMax)
     pDesc->nMaxAnisotropy = nAnisotropicFiltering < nDeviceMax ? nAnisotropicFiltering : nDeviceMax;
 }
 
-// Remembers a descriptor the first time it is seen, so it can be put back later. The parse runs
-// once, so this is the only chance to read what the file actually said.
+// The parse runs once, so this is the only chance to read what the file actually said.
 static void RecordSampler(SamplerDesc* pDesc, uint32_t nDeviceMax)
 {
     if (pDesc == nullptr || nSamplers >= nMaxSamplers)
@@ -108,7 +103,6 @@ static void RecordSampler(SamplerDesc* pDesc, uint32_t nDeviceMax)
     }
 
     Samplers[nSamplers++] = { pDesc, pDesc->nMinFilter, pDesc->nMaxAnisotropy, nDeviceMax };
-
 }
 
 // Puts every descriptor back to what the file said and applies the setting as it now stands, then
@@ -135,7 +129,6 @@ static void ReapplyAnisotropy()
     auto* pManager = ppSamplerManager != nullptr ? static_cast<uint8_t*>(*ppSamplerManager) : nullptr;
     if (pManager != nullptr)
         memset(pManager + nManagerBindShadow, 0, nManagerShadowSize);
-
 }
 
 class AnisotropicFiltering
@@ -147,11 +140,11 @@ public:
         {
             // Hooked after XML parsing, so the descriptor is fully populated and device caps
             // are available.
-            auto pattern = dunia_pattern("8B 4C 24 18 85 C9 74 07 8B 01 8B 50 08 FF D2 8B 06 8B 50 08 8B CE FF D2 5F 5E 5D 5B 81");
-            if (pattern.empty())
+            auto* pSamplerState = dunia_find("8B 4C 24 18 85 C9 74 07 8B 01 8B 50 08 FF D2 8B 06 8B 50 08 8B CE FF D2 5F 5E 5D 5B 81", 15);
+            if (!pSamplerState)
                 return;
 
-            static auto SamplerStateHook = safetyhook::create_mid(pattern.get_first(15), [](SafetyHookContext& regs)
+            static auto SamplerStateHook = safetyhook::create_mid(pSamplerState, [](SafetyHookContext& regs)
             {
                 auto* pDesc = reinterpret_cast<SamplerDesc*>(regs.ebx);
                 const auto nDeviceMax = *reinterpret_cast<uint32_t*>(regs.esp + 0x20);
@@ -162,22 +155,16 @@ public:
 
             // The sampler state manager, taken from the one place its pointer is loaded with the
             // vertex sampler base right behind it. That base, 101h, is what makes the site unique.
-            auto managerPattern = dunia_pattern("8B 41 0C 85 C0 74 20 8B 4C 24 08 0F B7 11 8B 0D ? ? ? ? 81 C2 01 01 00 00");
-            if (!managerPattern.empty())
-                ppSamplerManager = *managerPattern.get_first<void**>(16);
+            if (auto* pManagerRef = dunia_find("8B 41 0C 85 C0 74 20 8B 4C 24 08 0F B7 11 8B 0D ? ? ? ? 81 C2 01 01 00 00", 16))
+                ppSamplerManager = *static_cast<void***>(pManagerRef);
 
-            static auto AnisotropicFilteringCB = []()
-            {
-                nAnisotropicFiltering = static_cast<uint32_t>(JackalFixSettings.GetInt(PREF_ANISOTROPICFILTERING));
-            };
-
-            AnisotropicFilteringCB();
+            BindInt(nAnisotropicFiltering, PREF_ANISOTROPICFILTERING);
 
             // The samplers are parsed once, but they are programmed from the descriptor on every
-            // bind, so a change lands on the next frame rather than the next launch.
+            // bind, so a change lands on the next frame rather than the next launch. Registered
+            // after the bind so the new value is in place before the reapply runs.
             JackalFix::onIniFileChange() += []()
             {
-                AnisotropicFilteringCB();
                 ReapplyAnisotropy();
             };
         };

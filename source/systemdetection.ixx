@@ -188,16 +188,11 @@ public:
         // Hooked on load; Dunia does not load this DLL until InitDuniaEngine is already running.
         CallbackHandler::RegisterCallback(L"systemdetection.dll", []()
         {
-            bSkipSystemDetection = JackalFixSettings.GetInt(PREF_SKIPSYSTEMDETECTION) != 0;
+            // Detection only runs during startup, so a live ini change takes effect next launch.
+            BindBool(bSkipSystemDetection, PREF_SKIPSYSTEMDETECTION);
 
             auto hModule = GetModuleHandleW(L"systemdetection.dll");
             HookImport(hModule, "ole32.dll", "CoCreateInstance", CoCreateInstanceHook, (void**)&pfnCoCreateInstance);
-
-            // Detection only runs during startup, so a live ini change takes effect next launch.
-            JackalFix::onIniFileChange() += []()
-            {
-                bSkipSystemDetection = JackalFixSettings.GetInt(PREF_SKIPSYSTEMDETECTION) != 0;
-            };
         });
     }
 } SystemDetection;

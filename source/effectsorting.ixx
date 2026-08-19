@@ -20,9 +20,8 @@ static constexpr const char* pHairTechnique = "Mesh_Hair";
 static constexpr const char* pSkinningDefine = "SKINNING";
 
 // Ahead of the particle layer at 0 and ahead of the water surface at -1000, so a body lying in a
-// river is drawn under the surface rather than through it. The water's depth only submission is
-// skipped below, so nothing else stops a blended draw from showing over it. Signed: the comparator
-// tests the key with SETL.
+// river is drawn under the surface rather than through it. Signed: the comparator tests the key
+// with SETL.
 static constexpr int32_t nCharacterSortKey = -2000;
 
 // A draw item's 64 bit shader id: the low byte is a one based index into the technique array, and
@@ -43,8 +42,7 @@ static constexpr size_t nDefineRecordSize = 0x20;
 static constexpr ptrdiff_t nRecordName = 0x04;
 static constexpr ptrdiff_t nRecordNameCapacity = 0x18;
 
-// std::string keeps up to 15 characters inline and only allocates past that, which the capacity
-// says. Same layout the game was built with.
+// std::string keeps up to 15 characters inline and only allocates past that, which the capacity says.
 static constexpr size_t nShortStringCapacity = 0x10;
 
 // Into the pattern that resolves the shader manager global.
@@ -186,7 +184,6 @@ static bool IsCharacterTransparent(uint8_t* pDrawItem)
 static void __fastcall QueueDrawItem(void* pDrawList, void* pEdx, uint8_t* pDrawItem, int32_t nSortKey, float fDistance)
 {
     // Clamped rather than assigned, so a material that already asks to draw further back keeps it.
-    // Harmless in the passes that ignore the key entirely, the opaque ones sorting on render state.
     if (nSortKey > nCharacterSortKey && IsCharacterTransparent(pDrawItem))
         nSortKey = nCharacterSortKey;
 
@@ -213,19 +210,16 @@ public:
         {
             // The shader manager global, read out of the CRenderPass::Execute site that resolves a
             // pass wide shader. Without it nothing matches and the hook is a compare.
-            auto managerPattern = dunia_pattern("53 0B D0 8B 86 84 00 00 00 53 6A 01 0B C1 8B 0D ? ? ? ? 50 52 E8");
-            if (!managerPattern.empty())
+            if (auto* pManagerSite = dunia_find("53 0B D0 8B 86 84 00 00 00 53 6A 01 0B C1 8B 0D ? ? ? ? 50 52 E8", nShaderManagerGlobal))
             {
-                ppShaderManager = *managerPattern.get_first<uint8_t**>(nShaderManagerGlobal);
+                ppShaderManager = *static_cast<uint8_t***>(pManagerSite);
 
-                // CRenderPassList::Add, the one function every draw list append goes through: it is
-                // the only caller of the append itself, so this covers the D3D9 and D3D10 frame
-                // graphs and every submitter feeding them: the plain path, the per light path, and
-                // the extra copy a sub-mesh straddling a water plane gets. Entry through the three
-                // argument loads, stopping before the first push.
-                auto queuePattern = dunia_pattern("D9 44 24 0C 8B 44 24 08 8B 54 24 04 6A 00 6A 00 51 8B 09 D9 1C 24 50 52 E8");
-                if (!queuePattern.empty())
-                    QueueDrawItemHook = safetyhook::create_inline(queuePattern.get_first(), QueueDrawItem);
+                // CRenderPassList::Add, the only caller of the draw list append, so this covers the
+                // D3D9 and D3D10 frame graphs and every submitter feeding them, the extra copy a
+                // sub-mesh straddling a water plane gets included. Entry through the three argument
+                // loads, stopping before the first push.
+                if (auto* pQueue = dunia_find("D9 44 24 0C 8B 44 24 08 8B 54 24 04 6A 00 6A 00 51 8B 09 D9 1C 24 50 52 E8"))
+                    QueueDrawItemHook = safetyhook::create_inline(pQueue, QueueDrawItem);
             }
 
             // CSceneParticleEmitterRenderer::Render, across the water plane classifier's return
@@ -251,17 +245,14 @@ public:
             // CWaterRenderer::Render, at the transparent surface arm: the material flag test that
             // selects it, the render mode check, and then the prepass gate whose taken branch skips
             // straight past the depth only draw to the surface submission.
-            auto waterPattern = dunia_pattern("F6 47 4C 02 74 6F 83 7C 24 60 00 0F 84 6A 03 00 00 80 7C 24 12 00 0F 84 28 01 00 00 8B 4B 04");
-            if (!waterPattern.empty())
-                ForceJump(waterPattern.get_first<uint8_t>(nRiverPrepassBranch), nRiverSkipDistance);
+            if (auto* pRiver = dunia_find("F6 47 4C 02 74 6F 83 7C 24 60 00 0F 84 6A 03 00 00 80 7C 24 12 00 0F 84 28 01 00 00 8B 4B 04", nRiverPrepassBranch))
+                ForceJump(static_cast<uint8_t*>(pRiver), nRiverSkipDistance);
 
             // CSceneMeshRenderer::Submit, at its own water branch: the draw item is finished, the
             // flag that asks for a depth copy is tested, and the taken branch lands past the
-            // DepthAlpha submission. The FLDZ and the pushed zero just after are the distance and
-            // key a capture shows for these.
-            auto sectorPattern = dunia_pattern("8B 4B 64 89 44 8B 18 83 43 64 01 80 7C 24 37 00 0F 84 AF 00 00 00 8B 8C 24 8C 00 00 00 6A 01");
-            if (!sectorPattern.empty())
-                ForceJump(sectorPattern.get_first<uint8_t>(nSectorPrepassBranch), nSectorSkipDistance);
+            // DepthAlpha submission.
+            if (auto* pSector = dunia_find("8B 4B 64 89 44 8B 18 83 43 64 01 80 7C 24 37 00 0F 84 AF 00 00 00 8B 8C 24 8C 00 00 00 6A 01", nSectorPrepassBranch))
+                ForceJump(static_cast<uint8_t*>(pSector), nSectorSkipDistance);
         };
     }
 } EffectSorting;

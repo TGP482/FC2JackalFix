@@ -6,8 +6,7 @@
       GetBuddiesManager():SetDefenceRevesalBetrayedBuddies();
 
   A1SM03 branches: defend the church for Maliya, or take the other side. Only the second branch
-  marks the buddies who sided against the player as missing, so on the church branch they never
-  become eligible to spawn in the betrayal segment.
+  marks the buddies who sided against the player as missing.
 
   SetDefenceRevesalBetrayedBuddies is native at 0x10744A00, __fastcall on CBuddiesManager, no
   arguments. It walks the buddy array (base +0x44, count +0x48, stride 0xC0) and for every buddy
@@ -21,13 +20,12 @@
                                              which the Lua Enable binding at 0x10585320 also
                                              calls, so flag 1 is Enable
 
-  Neither alone is enough. GetMission would re-fire on any later query for that path and could
-  re-mark a buddy who had since been rescued; SetState cannot tell which mission it is, because
+  Neither alone is enough: GetMission would re-fire on any later query for that path and could
+  re-mark a buddy who had since been rescued, and SetState cannot tell which mission it is because
   CGameMission+0x04 is an interned id rather than the path.
 
   The manager comes from a latch at 0x10722A96, just after the singleton resolve inside the
-  GetBuddiesManager binding. Every buddy script goes through it and the earliest run in the
-  tutorial, so it is long populated by Act 1 mission 3.
+  GetBuddiesManager binding, which every buddy script goes through.
 */
 
 module;
@@ -144,40 +142,39 @@ public:
         {
             // 0x101E44E0. Anchored on the name intern and the array walk after it, with the intern
             // call displacement wildcarded.
-            auto getMissionPattern = dunia_pattern(
+            auto* pGetMission = dunia_find(
                 "8B 44 24 04 56 8B F1 50 8D 4C 24 0C E8 ? ? ? ? 8B 4E 1C 85 C9 8B D0 5E 74 21");
 
             // 0x10584D40. The jump table's own address is absolute, so those four bytes are
             // wildcarded; the two arms after it are what make the pattern unique.
-            auto setStatePattern = dunia_pattern(
+            auto* pSetState = dunia_find(
                 "8B 44 24 04 83 F8 08 77 36 FF 24 85 ? ? ? ? 8B 01 8B 50 10 FF D2 C2 04 00 "
                 "8B 01 8B 50 14 FF D2 C2 04 00");
 
             // 0x10744A00. Anchored on the lazy init guard of the faction manager it reads to decide
             // which side counts as betrayed.
-            auto setBuddiesPattern = dunia_pattern(
+            auto* pSetBuddies = dunia_find(
                 "53 56 33 DB 39 1D ? ? ? ? 57 8B 3D ? ? ? ? 8B F1 75 07 33 C9 E8 ? ? ? ? "
                 "6A 01 68 ? ? ? ? 8B CF E8 ? ? ? ? 80 78 40 01");
 
             // 0x10722A60, the GetBuddiesManager binding. Same singleton resolve shape as above.
-            auto getBuddiesPattern = dunia_pattern(
+            // +0x36 is the instruction after the resolve, where eax is the manager.
+            auto* pGetBuddies = dunia_find(
                 "56 8B 74 24 08 56 E8 ? ? ? ? 83 C4 04 85 C0 75 47 39 05 ? ? ? ? 57 8B 3D ? ? ? ? "
-                "75 07 33 C9 E8 ? ? ? ? 6A 01 68 ? ? ? ? 8B CF E8 ? ? ? ?");
+                "75 07 33 C9 E8 ? ? ? ? 6A 01 68 ? ? ? ? 8B CF E8 ? ? ? ?", 0x36);
 
-            if (getMissionPattern.empty() || setStatePattern.empty()
-                || setBuddiesPattern.empty() || getBuddiesPattern.empty())
+            if (!pGetMission || !pSetState || !pSetBuddies || !pGetBuddies)
                 return;
 
-            SetBetrayedBuddiesMissing = reinterpret_cast<SetDefenceRevesalBetrayedBuddies_t>(setBuddiesPattern.get_first());
+            SetBetrayedBuddiesMissing = reinterpret_cast<SetDefenceRevesalBetrayedBuddies_t>(pSetBuddies);
 
-            // +0x36 is the instruction after the resolve, where eax is the manager.
-            static auto BuddiesMgrHook = safetyhook::create_mid(getBuddiesPattern.get_first(0x36), [](SafetyHookContext& regs)
+            static auto BuddiesMgrHook = safetyhook::create_mid(pGetBuddies, [](SafetyHookContext& regs)
             {
                 pBuddiesMgr = reinterpret_cast<void*>(regs.eax);
             });
 
-            GetMissionHook = safetyhook::create_inline(getMissionPattern.get_first(), GetMission);
-            SetStateHook = safetyhook::create_inline(setStatePattern.get_first(), SetState);
+            GetMissionHook = safetyhook::create_inline(pGetMission, GetMission);
+            SetStateHook = safetyhook::create_inline(pSetState, SetState);
         };
     }
 } DefenceReversal;

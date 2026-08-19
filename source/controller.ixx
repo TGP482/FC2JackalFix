@@ -72,17 +72,7 @@ public:
             InstallAimAssistSkip<2>();
             InstallAimAssistSkip<3>();
 
-            static auto ControllerCB = []()
-            {
-                bAimAssist = JackalFixSettings.GetInt(PREF_AIMASSIST) != 0;
-            };
-
-            ControllerCB();
-
-            JackalFix::onIniFileChange() += []()
-            {
-                ControllerCB();
-            };
+            BindBool(bAimAssist, PREF_AIMASSIST);
         };
     }
 } Controller;

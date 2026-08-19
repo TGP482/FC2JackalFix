@@ -1,9 +1,8 @@
 /*
   "Added 'v' as a dedicated keyboard button to look back when driving" from Boggalog's
-  Far Cry 2 Patched, in code. Credit to Boggalog for the feature.
-
-  Stock Far Cry 2 already looks behind while driving, but only while both mouse buttons are held.
-  The guide adds a keyboard equivalent by editing config/inputactionmapcommon.xml inside patch.dat.
+  Far Cry 2 Patched, in code. Credit to Boggalog for the feature. The guide adds it by editing
+  config/inputactionmapcommon.xml inside patch.dat; stock Far Cry 2 looks behind while driving only
+  while both mouse buttons are held.
 
   The engine side already works. CPawnInputListener::OnSignal (FUN_10144760) dispatches on a crc32
   of the signal name (table at 0x10F93A68, CMP EAX, [0x10F93A84] for crc32("look_back")) and its
@@ -16,10 +15,10 @@
     pov[0x6C] = y;                                  ; -1.0 here is "looking backwards"
     if (engaged) { pov[0x38..0x4C] = 0; pov[0x05] |= 2; }
 
-  Nothing in that path is mouse-specific and nothing in it tests for a vehicle. The stock feature is
-  mouse-only and driving-only because the binding sits in the common_in_vehicle action map, so only
-  the binding is missing: calling SetPovAxis on key edges is cheaper than fabricating an input event
-  or handing the parser a rewritten config file.
+  Nothing in that path is mouse-specific or tests for a vehicle; the stock feature is mouse-only and
+  driving-only because the binding sits in the common_in_vehicle action map. So only the binding is
+  missing, and calling SetPovAxis on key edges is cheaper than fabricating an input event or handing
+  the parser a rewritten config file.
 
   Hook is CPawnInputListener::Update (FUN_10144AA0), vtable 0x10E20F00 slot 3, the once-per-frame
   pass that turns accumulated input into camera and aim state: CALL FUN_101449B0 integrates look
@@ -28,8 +27,8 @@
   throw away deltas the frame had already consumed.
 
   Vehicle test is FUN_100E7330, which resolves the pawn's entity link 0xFD1BA782 and casts it to the
-  class registered as "CVehicle" at 0x1007EB10. FUN_10143820 makes the same call two instructions
-  later for the same reason, so this is the engine's own in-vehicle predicate.
+  class registered as "CVehicle" at 0x1007EB10 - the engine's own in-vehicle predicate, called the
+  same way by FUN_10143820 two instructions later.
 
   The key does not appear in the in-game controls menu, which is built from defaultusercontrols.xml,
   so rebinding still needs the archive edit.
@@ -110,22 +109,22 @@ public:
         {
             // CPawnInputListener::SetPovAxis. Entry through the axis count check and the two look
             // accumulator stores.
-            auto povPattern = dunia_pattern("83 EC 08 56 57 8B 7C 24 14 83 7F 0C 02 8B F1 0F 82 07 01 00 00 0F 57 C9 F3 0F 11 4E 10 F3 0F 11 4E 14");
+            auto* pPov = dunia_find("83 EC 08 56 57 8B 7C 24 14 83 7F 0C 02 8B F1 0F 82 07 01 00 00 0F 57 C9 F3 0F 11 4E 10 F3 0F 11 4E 14");
 
             // GetVehicle. Entry through the virtual call that resolves the pawn's entity link.
-            auto vehiclePattern = dunia_pattern("83 EC 08 8B 4C 24 0C 8B 01 8B 50 7C 53 FF D2 83 CB FF B9 01 00 00 00");
+            auto* pVehicle = dunia_find("83 EC 08 8B 4C 24 0C 8B 01 8B 50 7C 53 FF D2 83 CB FF B9 01 00 00 00");
 
             // CPawnInputListener::Update. Disabled-input early out through the pawn fetch, stopping
             // before the first call. No absolute addresses in that span.
-            auto updatePattern = dunia_pattern("33 C0 38 44 24 08 56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A");
+            auto* pUpdate = dunia_find("33 C0 38 44 24 08 56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A");
 
-            if (povPattern.empty() || vehiclePattern.empty() || updatePattern.empty())
+            if (!pPov || !pVehicle || !pUpdate)
                 return;
 
-            SetPovAxis = reinterpret_cast<SetPovAxis_t>(povPattern.get_first());
-            GetVehicle = reinterpret_cast<GetVehicle_t>(vehiclePattern.get_first());
+            SetPovAxis = reinterpret_cast<SetPovAxis_t>(pPov);
+            GetVehicle = reinterpret_cast<GetVehicle_t>(pVehicle);
 
-            PawnInputUpdateHook = safetyhook::create_inline(updatePattern.get_first(), PawnInputUpdate);
+            PawnInputUpdateHook = safetyhook::create_inline(pUpdate, PawnInputUpdate);
 
             // No recentre on shutdown; the pawn it would talk to is already gone.
             JackalFix::onShutdownEvent() += []()

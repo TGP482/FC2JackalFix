@@ -16,8 +16,7 @@
 
   The trigger is CFCXMissionManager::MissionCompleted, 0x107532A0, which the box calls one line
   further down and which is handed the same "A1SM01" string the script tests. saveonmissioncomplete
-  mid hooks the same entry, so this is a mid hook too and ReadDuniaString is duplicated here rather
-  than shared.
+  mid hooks the same entry, so this is a mid hook too.
 */
 
 module;
@@ -53,30 +52,6 @@ static bool IsStuckHudMission(const char* pszName)
     return false;
 }
 
-// MSVC8 std::string by value: size at +0x14, capacity at +0x18, buffer inline at +0x04 until it
-// outgrows 16 bytes and +0x04 becomes a pointer to it.
-static const char* ReadDuniaString(uintptr_t pStr, char* pBuf, size_t nBufSize)
-{
-    pBuf[0] = '\0';
-    if (!pStr || nBufSize < 2 || IsBadReadPtr((void*)pStr, 0x1C))
-        return pBuf;
-
-    auto nSize = *(uint32_t*)(pStr + 0x14);
-    auto nCapacity = *(uint32_t*)(pStr + 0x18);
-    if (nSize > 512 || nCapacity > 0x10000)
-        return pBuf;
-
-    auto pSrc = (nCapacity >= 16) ? *(const char**)(pStr + 4) : (const char*)(pStr + 4);
-    if (!pSrc || IsBadReadPtr(pSrc, nSize))
-        return pBuf;
-
-    auto n = (nSize < nBufSize - 1) ? nSize : nBufSize - 1;
-    for (size_t i = 0; i < n; i++)
-        pBuf[i] = pSrc[i];
-    pBuf[n] = '\0';
-    return pBuf;
-}
-
 class CinematicHud
 {
 public:
@@ -86,19 +61,19 @@ public:
         {
             // 0x10724BF0. Anchored on the prologue and the transition cache's refcount bump, with
             // both internal call displacements wildcarded.
-            auto modePattern = dunia_pattern(
+            auto* pMode = dunia_find(
                 "83 EC 24 53 56 57 E8 ? ? ? ? 83 40 08 01 89 44 24 10 8D 44 24 10 50 E8 ? ? ? ? "
                 "83 C4 04 33 DB 84 C0");
 
             // 0x107532A0. __thiscall, MSVC8 std::string by value at [esp+4], callee cleans 0x1C.
-            auto completedPattern = dunia_pattern("83 EC 5C 53 55 56 57 33 ED 55 8D 44 24 24 8B F1 89 6C 24 18");
+            auto* pCompleted = dunia_find("83 EC 5C 53 55 56 57 33 ED 55 8D 44 24 24 8B F1 89 6C 24 18");
 
-            if (modePattern.empty() || completedPattern.empty())
+            if (!pMode || !pCompleted)
                 return;
 
-            SetCinematicUIMode = reinterpret_cast<SetCinematicUIMode_t>(modePattern.get_first());
+            SetCinematicUIMode = reinterpret_cast<SetCinematicUIMode_t>(pMode);
 
-            static auto MissionCompletedHook = safetyhook::create_mid(completedPattern.get_first(), [](SafetyHookContext& regs)
+            static auto MissionCompletedHook = safetyhook::create_mid(pCompleted, [](SafetyHookContext& regs)
             {
                 char szName[64];
                 ReadDuniaString(static_cast<uintptr_t>(regs.esp) + 4, szName, sizeof(szName));

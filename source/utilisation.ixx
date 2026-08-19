@@ -15,7 +15,7 @@
   clamps it into 1 to 3 and switches between three quality tables on the result, so 3 is the
   ceiling the engine was written against. The hook goes on GetThreadCount and compares its return
   address against the one call site inside the CJobScheduler constructor, leaving RENDER_THREAD,
-  PHYSIC_THREADS and FUN_104b8c90's own read on the stock answer. Raising FUN_104b8c90's input
+  PHYSIC_THREADS and FUN_104b8c90's own read on the stock answer: raising FUN_104b8c90's input
   would move it to a different quality table, which is a visual change.
 
   Worker starvation
@@ -36,8 +36,7 @@
   the lock the productive workers need. Three causes: FUN_102b27a0 releases the semaphore for a
   whole batch before pushing any of it, FUN_102b1f50 withholds a job whose barrier sequence has not
   been reached and also returns empty on a failed TryEnterCriticalSection, and FUN_102b2330 takes
-  tokens off the same semaphore with a zero timeout and hands them back. The wasted core count
-  scales with the pool, so the back off matters more once the pool is sized to the machine.
+  tokens off the same semaphore with a zero timeout and hands them back.
 
   GPU frame queue
 
@@ -55,8 +54,8 @@
   overlay prints it as "Multi-GPUs : %d". One fence per GPU is an alternate frame rendering
   construct, so a single GPU gets one frame of CPU run ahead. FUN_103430a0 arms the mechanism only
   when that count is 1, which is every ordinary machine. FUN_1037d120 caps what it builds at five
-  times the GPU count and stores what it built, so a request above that ceiling fails the size
-  check every frame and rebuilds the ring's D3D queries every frame.
+  times the GPU count and stores what it built, so a request above that ceiling rebuilds the ring's
+  D3D queries every frame.
 
   Frame limiter
 
@@ -70,17 +69,15 @@
 
   The hook reads the deadline the loop is spinning towards, renderer+0x338 plus one period of
   gfx_MaxFps at renderer+0x2C's +0xC8, and waits out all but the last fraction of a millisecond on
-  a waitable timer. The loop's own comparison is untouched, so it spins the remainder as before and
-  the pacing is unchanged. The timer is created with CREATE_WAITABLE_TIMER_HIGH_RESOLUTION so this
-  does not depend on HighPrecisionTimer having raised the global period.
+  a waitable timer. The loop's own comparison is untouched, so the pacing is unchanged. The timer is
+  created with CREATE_WAITABLE_TIMER_HIGH_RESOLUTION so this does not depend on HighPrecisionTimer
+  having raised the global period.
 
   Measured and rejected
 
   Breaking the starvation loop back out to the semaphore, by writing a non-zero AL so its
-  CMP byte ptr [EDX+0x14],AL stops comparing equal, hangs the game within seconds. The loop has no
-  other exit, so a worker that gives up spends its token on nothing and a job made available by a
-  lock that was merely busy is left with nobody holding a token for it. PAUSE and SwitchToThread
-  are the ceiling.
+  CMP byte ptr [EDX+0x14],AL stops comparing equal, hangs the game within seconds: the loop has no
+  other exit. PAUSE and SwitchToThread are the ceiling.
 
   MaxDriverBufferedFrames is not the frame queue knob. It has no reader in Dunia.dll outside the
   debug overlay.
@@ -391,7 +388,9 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            bUtilisation = JackalFixSettings.GetInt(PREF_UTILISATION) != 0;
+            // The fence depth, the back off and the limiter are read where they are used, so they
+            // follow the ini live. The worker count is read once, when the pool is built.
+            BindBool(bUtilisation, PREF_UTILISATION);
 
             // The two hooks that pace against the clock check this and do nothing while it is zero,
             // so a counter that cannot be read costs those fixes and not the others.
@@ -406,11 +405,8 @@ public:
 
             // The CJobScheduler constructor asking for JOB_THREADS, matched from the singleton load
             // through the store of the result. Match+0x10 is the instruction after the call.
-            auto poolPattern = dunia_pattern("8B 0D ? ? ? ? 68 ? ? ? ? E8 ? ? ? ? 8B F0 3B F7 89 74 24 10 7E");
-            if (!poolPattern.empty())
+            if (auto* pSite = static_cast<uint8_t*>(dunia_find("8B 0D ? ? ? ? 68 ? ? ? ? E8 ? ? ? ? 8B F0 3B F7 89 74 24 10 7E")))
             {
-                auto* pSite = poolPattern.get_first<uint8_t>();
-
                 // The pushed string is wildcarded, so the site is confirmed by what it names.
                 const auto* pszName = *reinterpret_cast<const char* const*>(pSite + 7);
                 if (WithinDunia(pszName) && strcmp(pszName, "JOB_THREADS") == 0)
@@ -419,34 +415,23 @@ public:
 
             // CThreadingConfig::GetThreadCount, matched from entry through the std::string the name
             // is copied into. The absolute address in the prologue is wildcarded.
-            auto threadCountPattern = dunia_pattern("83 EC 24 53 56 57 8D 44 24 0F 8B F9 50 8D 4C 24 1C 33 DB 51 C7 44 24 1C ? ? ? ? C7 44 24 34 0F 00 00 00 88 5C 24 17");
-            if (!threadCountPattern.empty() && nJobPoolReturnAddress != 0)
-                ThreadCountHook = safetyhook::create_inline(threadCountPattern.get_first(), ThreadCount);
+            if (auto* p = dunia_find("83 EC 24 53 56 57 8D 44 24 0F 8B F9 50 8D 4C 24 1C 33 DB 51 C7 44 24 1C ? ? ? ? C7 44 24 34 0F 00 00 00 88 5C 24 17"); p && nJobPoolReturnAddress != 0)
+                ThreadCountHook = safetyhook::create_inline(p, ThreadCount);
 
             // The dequeue retry loop, matched from the pop call through the branch back. Match+0x0D
             // is the shutdown flag re-read, the only instruction on the empty handed path.
-            auto starvePattern = dunia_pattern("8B CE E8 ? ? ? ? 8B F8 85 FF 75 0D 8B 96 E0 00 00 00 38 42 14 74 E8");
-            if (!starvePattern.empty())
-                WorkerStarvedHook = safetyhook::create_mid(starvePattern.get_first(0x0D), WorkerStarved);
+            if (auto* p = dunia_find("8B CE E8 ? ? ? ? 8B F8 85 FF 75 0D 8B 96 E0 00 00 00 38 42 14 74 E8", 0x0D))
+                WorkerStarvedHook = safetyhook::create_mid(p, WorkerStarved);
 
             // The fence ring size check. Matched from the GPU count call through the rebuild, so
             // both paths that reach the comparison are inside the match.
-            auto frameQueuePattern = dunia_pattern("FF D0 EB 02 33 C0 39 46 34 74 0A 8B CE 89 46 34 E8 ? ? ? ? E8 ? ? ? ? 8B 4E 34 85 C9");
-            if (!frameQueuePattern.empty())
-                FrameQueueHook = safetyhook::create_mid(frameQueuePattern.get_first(6), FrameQueueDepth);
+            if (auto* p = dunia_find("FF D0 EB 02 33 C0 39 46 34 74 0A 8B CE 89 46 34 E8 ? ? ? ? E8 ? ? ? ? 8B 4E 34 85 C9", 6))
+                FrameQueueHook = safetyhook::create_mid(p, FrameQueueDepth);
 
             // The limiter's busy wait, matched from the comparison that enters it through the
             // subtraction of the previous frame's counter. Match+6 is the counter call.
-            auto limiterPattern = dunia_pattern("DF F1 DD D8 76 ? E8 ? ? ? ? 8B C8 8B F9 2B BE 38 03 00 00 8B C2 1B 86 3C 03 00 00");
-            if (!limiterPattern.empty())
-                FrameLimiterHook = safetyhook::create_mid(limiterPattern.get_first(6), FrameLimiterWait);
-
-            // The fence depth, the back off and the limiter are read where they are used, so they
-            // follow the ini live. The worker count is read once, when the pool is built.
-            JackalFix::onIniFileChange() += []()
-            {
-                bUtilisation = JackalFixSettings.GetInt(PREF_UTILISATION) != 0;
-            };
+            if (auto* p = dunia_find("DF F1 DD D8 76 ? E8 ? ? ? ? 8B C8 8B F9 2B BE 38 03 00 00 8B C2 1B 86 3C 03 00 00", 6))
+                FrameLimiterHook = safetyhook::create_mid(p, FrameLimiterWait);
         };
     }
 } Utilisation;

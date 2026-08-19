@@ -18,7 +18,7 @@ public:
     {
         JackalFix::onInitEvent() += []()
         {
-            static auto TimerCB = []()
+            ApplyAndWatch([]()
             {
                 auto wanted = JackalFixSettings.GetInt(PREF_HIGHPRECISIONTIMER) != 0;
                 if (wanted == bTimerRaised)
@@ -30,14 +30,7 @@ public:
                     timeEndPeriod(1);
 
                 bTimerRaised = wanted;
-            };
-
-            TimerCB();
-
-            JackalFix::onIniFileChange() += []()
-            {
-                TimerCB();
-            };
+            });
         };
 
         JackalFix::onShutdownEvent() += []()

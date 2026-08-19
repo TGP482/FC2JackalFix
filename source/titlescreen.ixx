@@ -17,26 +17,12 @@ public:
         {
             // MAINMENU_INITIAL_PRESENTATION waits for input before moving to CFCXMainPage.
             // Taking the existing branch skips the prompt without forcing a page change.
-            auto pattern = dunia_pattern("8B 86 6C 01 00 00 83 E8 01 74 ? 8B 86 68 01 00 00");
-            if (pattern.empty())
+            auto* pSkipTitleScreen = dunia_find("8B 86 6C 01 00 00 83 E8 01 74 ? 8B 86 68 01 00 00", 8);
+            if (!pSkipTitleScreen)
                 return;
 
-            static raw_mem fnSkipTitleScreen(pattern.get_first(8), { 0x00 });
-
-            static auto SkipTitleScreenCB = []()
-            {
-                if (JackalFixSettings.GetInt(PREF_SKIPTITLESCREEN))
-                    fnSkipTitleScreen.Write();
-                else
-                    fnSkipTitleScreen.Restore();
-            };
-
-            SkipTitleScreenCB();
-
-            JackalFix::onIniFileChange() += []()
-            {
-                SkipTitleScreenCB();
-            };
+            static raw_mem fnSkipTitleScreen(pSkipTitleScreen, { 0x00 });
+            BindPatch(fnSkipTitleScreen, PREF_SKIPTITLESCREEN);
         };
     }
 } SkipTitleScreen;

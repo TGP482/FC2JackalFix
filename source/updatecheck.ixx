@@ -17,8 +17,7 @@ export module updatecheck;
 import common;
 
 // Reads the newest release tag off the GitHub API and offers the download page once per release.
-// Answers are kept in FC2JackalFix.update beside the asi rather than in the ini, so the prompt owns
-// its own state and there is no setting to explain.
+// Answers live in FC2JackalFix.update beside the asi rather than in the ini, so there is no setting.
 static constexpr auto szTitle = L"FC2JackalFix";
 
 // Same address rsc_UpdateUrl puts in the version resource, read through the API.
@@ -34,8 +33,8 @@ static constexpr auto nCacheTTLSeconds = 24 * 60 * 60;
 static constexpr auto nManifestResourceId = 2;
 
 // CI passes the released version to premake as --with-version, so the first field is the release
-// number. A local build gets day.month.year instead, whose first field is the day, which reads far
-// ahead of any release and so never prompts.
+// number. A local build gets day.month.year instead, whose first field reads far ahead of any
+// release and so never prompts.
 static constexpr auto szInstalledVersion = rsc_FileVersion;
 
 static std::wstring Widen(const std::string& text)
@@ -86,8 +85,8 @@ static std::filesystem::path GetCachePath()
 
 // Five lines: latest release, when it was fetched, the release already prompted for, the version
 // installed at the time, the release the tick box was ticked for. The installed line expires the
-// cache when the fix itself is updated, so a fresh build is compared rather than trusted. A cache
-// written before the tick box existed has no fifth line and reads as nothing silenced.
+// cache when the fix itself is updated. A cache written before the tick box existed has no fifth
+// line and reads as nothing silenced.
 static bool LoadCache(std::string& latest, std::string& mentioned, bool& bFresh, std::string& silenced)
 {
     std::ifstream file(GetCachePath());
@@ -183,8 +182,7 @@ static bool QueryLatestVersion(std::string& latest)
 
                 response.append(chunk, 0, nRead);
 
-                // tag_name sits near the front of the reply. The release body can run long and none
-                // of it is wanted.
+                // tag_name sits near the front of the reply; the release body can run long.
                 if (response.size() > 256 * 1024)
                     break;
             } while (nAvailable > 0);
@@ -269,6 +267,10 @@ static bool AskAboutUpdate(const std::wstring& instruction, const std::wstring& 
                 using TaskDialogIndirect_t = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
                 auto pTaskDialogIndirect = reinterpret_cast<TaskDialogIndirect_t>(GetProcAddress(hComCtl, "TaskDialogIndirect"));
 
+                auto nButton = 0;
+                auto bChecked = FALSE;
+                auto hr = E_FAIL;
+
                 if (pTaskDialogIndirect)
                 {
                     TASKDIALOGCONFIG config{};
@@ -281,24 +283,16 @@ static bool AskAboutUpdate(const std::wstring& instruction, const std::wstring& 
                     config.pszContent = content.c_str();
                     config.pszVerificationText = verification.c_str();
 
-                    auto nButton = 0;
-                    auto bChecked = FALSE;
-
-                    const auto hr = pTaskDialogIndirect(&config, &nButton, nullptr, &bChecked);
-
-                    FreeLibrary(hComCtl);
-
-                    if (SUCCEEDED(hr))
-                    {
-                        bSilence = bChecked != FALSE;
-                        return nButton == IDYES;
-                    }
-
-                    hComCtl = nullptr;
+                    hr = pTaskDialogIndirect(&config, &nButton, nullptr, &bChecked);
                 }
 
-                if (hComCtl)
-                    FreeLibrary(hComCtl);
+                FreeLibrary(hComCtl);
+
+                if (SUCCEEDED(hr))
+                {
+                    bSilence = bChecked != FALSE;
+                    return nButton == IDYES;
+                }
             }
         }
     }
@@ -374,8 +368,7 @@ static void CheckForUpdates()
 }
 
 // On the main thread, so the game stays on hold until the prompt is answered. First of the startup
-// prompts: an update is worth seeing before anything else is offered, and the check is skipped
-// outright while the cache is fresh.
+// prompts, and skipped outright while the cache is fresh.
 static constexpr auto nStartupPromptPriority = 10;
 
 class UpdateCheck

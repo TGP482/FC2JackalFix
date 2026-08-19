@@ -47,25 +47,14 @@ public:
         {
             // Per frame global shader parameter fill. Entry through the frame prologue, with the
             // two call displacements and the one absolute global wildcarded.
-            auto pattern = dunia_pattern("55 8B EC 83 E4 F0 83 EC 24 53 56 57 8B F1 E8 ? ? ? ? 8B 0D ? ? ? ? 8B F8 89 7C 24 18 E8 ? ? ? ? F3 0F 10 57 10");
-            if (pattern.empty())
+            auto* pFill = dunia_find("55 8B EC 83 E4 F0 83 EC 24 53 56 57 8B F1 E8 ? ? ? ? 8B 0D ? ? ? ? 8B F8 89 7C 24 18 E8 ? ? ? ? F3 0F 10 57 10");
+            if (!pFill)
                 return;
 
             // The hook goes in whatever the setting says, so the toggle can be flipped live.
-            FillShaderParametersHook = safetyhook::create_inline(pattern.get_first(), FillShaderParameters);
+            FillShaderParametersHook = safetyhook::create_inline(pFill, FillShaderParameters);
 
-            static auto RimLightingCB = []()
-            {
-                bRemoveRimLighting.store(JackalFixSettings.GetInt(PREF_NORIMLIGHTING) != 0, std::memory_order_relaxed);
-            };
-
-            RimLightingCB();
-
-            // One store per frame, so a change takes effect on the next one.
-            JackalFix::onIniFileChange() += []()
-            {
-                RimLightingCB();
-            };
+            BindBool(bRemoveRimLighting, PREF_NORIMLIGHTING);
         };
     }
 } RimLighting;

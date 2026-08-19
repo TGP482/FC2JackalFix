@@ -23,9 +23,9 @@ import settings;
 // sample across the live instances and works for indices 2 and 3 as it stands. 0x104F07B0
 // SetVibrationAll(this, float lf, float hf) enumerates vibration capable devices and calls
 // vtable+0x20 on each, honouring its mute byte at this+0x85, which the in-game Vibration option
-// and the pause and teardown silencing ride on. That reaches 0x102C8F80
-// CXInputPad::SetVibration, which scales both 0..1 amplitudes by 65535 into
-// wLeftMotorSpeed/wRightMotorSpeed and calls XInputSetState.
+// and the pause and teardown silencing ride on. That reaches 0x102C8F80 CXInputPad::SetVibration,
+// which scales both 0..1 amplitudes by 65535 into wLeftMotorSpeed/wRightMotorSpeed and calls
+// XInputSetState.
 //
 // Missing is the join. 0x101417E0 is the per frame apply step:
 //
@@ -40,18 +40,17 @@ import settings;
 //     10141817  MOV   ECX,EAX
 //     10141819  CALL  0x104F07B0           ; SetVibrationAll(0.0, 0.0)
 //
-// Curves 2 and 3 are never read anywhere in the binary, and all five callers of
-// SetVibrationAll pass that same FLDZ pair. This substitutes the two rumble curve samples
-// for the zeros one instruction before the dispatcher runs. The curves are authored game data
-// shared with the 360, so nothing here scales magnitude.
+// Curves 2 and 3 are never read anywhere in the binary, and all five callers of SetVibrationAll
+// pass that same FLDZ pair. This substitutes the two rumble curve samples for the zeros one
+// instruction before the dispatcher runs. The curves are authored game data shared with the 360,
+// so nothing here scales magnitude.
 //
-// Departure from the console build: the motors only run while the pad is the active device.
-// Shake events fire from the world rather than from the input, so a plugged in pad would
-// otherwise rumble through a mouse and keyboard session. IsPadActiveDevice from inputdevice
-// watches the three raw input drivers rather than the action map, which by this point has
-// forgotten which device produced anything. Narrowing it regresses this feature: while it
-// tracked only the look axes, a pad went on rumbling through a mouse and keyboard firefight
-// until the player happened to swing the camera.
+// Departure from the console build: the motors only run while the pad is the active device, since
+// shake events fire from the world rather than from the input and a plugged in pad would otherwise
+// rumble through a mouse and keyboard session. IsPadActiveDevice from inputdevice watches the three
+// raw input drivers rather than the action map, which by this point has forgotten which device
+// produced anything. Narrowing it regresses this feature: while it tracked only the look axes, a
+// pad went on rumbling through a mouse and keyboard firefight until the camera was swung.
 
 static bool bVibration = true;
 
@@ -96,11 +95,11 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            auto evaluator = dunia_pattern("83 EC 0C 0F 57 C0 53 55 8B E9 56 8D 45 58 57 F3 0F 11 44 24 14 33 DB");
-            if (evaluator.empty())
+            auto* pEvaluator = dunia_find("83 EC 0C 0F 57 C0 53 55 8B E9 56 8D 45 58 57 F3 0F 11 44 24 14 33 DB");
+            if (!pEvaluator)
                 return;
 
-            EvalCurve = reinterpret_cast<EvalCurve_t>(evaluator.get_first(0));
+            EvalCurve = reinterpret_cast<EvalCurve_t>(pEvaluator);
 
             // Anchored on the prologue, unique to 0x101417E0. The other four callers of
             // SetVibrationAll share the FLDZ block but not this entry, so shutdown, level
@@ -133,17 +132,7 @@ public:
                 *reinterpret_cast<float*>(regs.esp + 4) = fMotorHF;
             });
 
-            static auto VibrationCB = []()
-            {
-                bVibration = JackalFixSettings.GetInt(PREF_VIBRATION) != 0;
-            };
-
-            VibrationCB();
-
-            JackalFix::onIniFileChange() += []()
-            {
-                VibrationCB();
-            };
+            BindBool(bVibration, PREF_VIBRATION);
         };
     }
 } Vibration;

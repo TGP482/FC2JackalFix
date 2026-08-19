@@ -24,11 +24,11 @@ public:
         {
             // Hooked after maxOutput is loaded, so the cap can be raised. The filter is shared
             // with gamepads, so the input type is checked first.
-            auto pattern = dunia_pattern("F3 0F 10 4F 0C F3 0F 5E C2 F3 0F 59 47 10 F3 0F 59 C4 0F 28 F8 0F 54 FD 0F 2F F9 76");
-            if (pattern.empty())
+            auto* pMaxOutput = dunia_find("F3 0F 10 4F 0C F3 0F 5E C2 F3 0F 59 47 10 F3 0F 59 C4 0F 28 F8 0F 54 FD 0F 2F F9 76", 5);
+            if (!pMaxOutput)
                 return;
 
-            static auto MouseSpeedCapHook = safetyhook::create_mid(pattern.get_first(5), [](SafetyHookContext& regs)
+            static auto MouseSpeedCapHook = safetyhook::create_mid(pMaxOutput, [](SafetyHookContext& regs)
             {
                 if (!bRemoveMouseSpeedCap || *(uint32_t*)(regs.edi + 4) != nMouseFilterId)
                     return;
@@ -37,17 +37,7 @@ public:
                     regs.xmm1.f32[0] = fNoCap;
             });
 
-            static auto MouseSpeedCB = []()
-            {
-                bRemoveMouseSpeedCap = JackalFixSettings.GetInt(PREF_MOUSESPEEDCAP) != 0;
-            };
-
-            MouseSpeedCB();
-
-            JackalFix::onIniFileChange() += []()
-            {
-                MouseSpeedCB();
-            };
+            BindBool(bRemoveMouseSpeedCap, PREF_MOUSESPEEDCAP);
         };
     }
 } MouseSpeed;

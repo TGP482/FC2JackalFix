@@ -81,8 +81,8 @@ export float PadThumbAxis(int16_t sValue)
     return std::clamp((fValue - std::copysign(static_cast<float>(nLeftThumbDeadzone), fValue)) / fRange, -1.0f, 1.0f);
 }
 
-// Fires on the flip rather than on every input. Anything that only rebuilds when a page changes
-// has no other way to notice the player put the pad down mid screen.
+// Fires on the flip rather than on every input, so anything that only rebuilds when a page changes
+// can notice the player put the pad down mid screen.
 export JackalFix::Event<>& onInputDeviceChange()
 {
     static JackalFix::Event<> InputDeviceChange;
@@ -118,10 +118,9 @@ public:
             // CInputDriverGamepad::Poll, immediately after a successful XInputGetState. ESI is
             // the driver. Reads the state rather than the engine's packet number comparison at
             // 102C9A02, so a held button counts: XInput only bumps the packet on a change.
-            auto padPollPattern = dunia_pattern("56 8B F1 8B 4E 0C 8B 46 14 57 8D 7E 14 57 51 89 46 24 E8 ? ? ? ? 85 C0 0F 85");
-            if (!padPollPattern.empty())
+            if (auto* pPadPoll = dunia_find("56 8B F1 8B 4E 0C 8B 46 14 57 8D 7E 14 57 51 89 46 24 E8 ? ? ? ? 85 C0 0F 85", nPadStateReady))
             {
-                static auto PadPollHook = safetyhook::create_mid(padPollPattern.get_first(nPadStateReady), [](SafetyHookContext& regs)
+                static auto PadPollHook = safetyhook::create_mid(pPadPoll, [](SafetyHookContext& regs)
                 {
                     auto pPad = regs.esi;
 
@@ -149,10 +148,9 @@ public:
             // CInputDriverKeyboard::OnKey(keyStates, sink, keyIndex), one call per changed key.
             // Only a press counts, which also excludes the 256 key sweep the poll runs on device
             // lost: that sweep passes a zeroed state array, so every key reads as released.
-            auto keyPattern = dunia_pattern("8B 44 24 0C 83 EC 30 8D 14 C5 00 00 00 00 2B D0 56 8D 34 91 0F B7 56 08");
-            if (!keyPattern.empty())
+            if (auto* pKey = dunia_find("8B 44 24 0C 83 EC 30 8D 14 C5 00 00 00 00 2B D0 56 8D 34 91 0F B7 56 08"))
             {
-                static auto KeyboardHook = safetyhook::create_mid(keyPattern.get_first(), [](SafetyHookContext& regs)
+                static auto KeyboardHook = safetyhook::create_mid(pKey, [](SafetyHookContext& regs)
                 {
                     auto pKeyStates = *reinterpret_cast<uint8_t**>(regs.esp + 4);
                     auto nKey = *reinterpret_cast<int32_t*>(regs.esp + 0xC);
@@ -167,10 +165,9 @@ public:
 
             // CInputDriverMouse::OnButton(sink, frameState, buttonIndex, controlId). Same
             // released-state reasoning as the keyboard covers the device lost sweep here.
-            auto mouseButtonPattern = dunia_pattern("8B 44 24 08 83 EC 30 53 56 57 8B 7C 24 48 8A 5C 38 0C 8B F1 C0 EB 07");
-            if (!mouseButtonPattern.empty())
+            if (auto* pMouseButton = dunia_find("8B 44 24 08 83 EC 30 53 56 57 8B 7C 24 48 8A 5C 38 0C 8B F1 C0 EB 07"))
             {
-                static auto MouseButtonHook = safetyhook::create_mid(mouseButtonPattern.get_first(), [](SafetyHookContext& regs)
+                static auto MouseButtonHook = safetyhook::create_mid(pMouseButton, [](SafetyHookContext& regs)
                 {
                     auto pFrameState = *reinterpret_cast<uint8_t**>(regs.esp + 8);
                     auto nButton = *reinterpret_cast<int32_t*>(regs.esp + 0xC);
@@ -184,10 +181,9 @@ public:
             }
 
             // CInputDriverMouse::OnMove, given the x/y accumulated over the frame.
-            auto mouseMovePattern = dunia_pattern("8B 44 24 08 F3 0F 2A 10 F3 0F 2A 58 04 83 EC 14 53 55 8B E9 0F 2E 55 18");
-            if (!mouseMovePattern.empty())
+            if (auto* pMouseMove = dunia_find("8B 44 24 08 F3 0F 2A 10 F3 0F 2A 58 04 83 EC 14 53 55 8B E9 0F 2E 55 18"))
             {
-                static auto MouseMoveHook = safetyhook::create_mid(mouseMovePattern.get_first(), [](SafetyHookContext& regs)
+                static auto MouseMoveHook = safetyhook::create_mid(pMouseMove, [](SafetyHookContext& regs)
                 {
                     auto pAccumulator = *reinterpret_cast<int32_t**>(regs.esp + 8);
                     if (pAccumulator == nullptr)

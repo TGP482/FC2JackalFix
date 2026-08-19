@@ -25,8 +25,8 @@ import inputdevice;
 //   +0x140  input state    flags byte at +0x04: 0x08 ironsight, 0x40 sprint requested
 //   +0x2D0  current state  flags byte at +0x04: 0x40 actually sprinting
 //
-// The request bit is consumed and cleared by the movement update every frame; a run already under
-// way is carried by the current-state bit, which the engine drops whenever the run ends.
+// The request bit is cleared by the movement update every frame; a run already under way is
+// carried by the current-state bit, which the engine drops whenever the run ends.
 static constexpr uintptr_t nControllerPawn = 0x20;
 static constexpr uintptr_t nPawnStateBlock = 0x10;
 
@@ -44,7 +44,7 @@ static bool bSprintToggle = false;
 // A press shorter than this latches the toggle. Longer presses behave as stock.
 static constexpr uint64_t nTapTime = 250;
 
-// Sprint is keyboard only. The pad binds sprint to SprintLock instead of a press/release pair, so
+// Sprint is keyboard only: the pad binds sprint to SprintLock instead of a press/release pair, so
 // it already toggles in the stock game. Aim is toggled on both devices.
 struct ToggleState
 {
@@ -128,29 +128,18 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            static auto InputTogglesCB = []()
-            {
-                bAimToggle = JackalFixSettings.GetInt(PREF_AIMTOGGLE) != 0;
-                bSprintToggle = JackalFixSettings.GetInt(PREF_SPRINTTOGGLE) != 0;
-                bAimToggleController = JackalFixSettings.GetInt(PREF_AIMTOGGLECONTROLLER) != 0;
-            };
-
-            InputTogglesCB();
-
-            JackalFix::onIniFileChange() += []()
-            {
-                InputTogglesCB();
-            };
+            BindBool(bAimToggle, PREF_AIMTOGGLE);
+            BindBool(bSprintToggle, PREF_SPRINTTOGGLE);
+            BindBool(bAimToggleController, PREF_AIMTOGGLECONTROLLER);
 
             // Button down. ECX already holds the pawn, left there by the dispatcher's own guard.
             //
             // 101448A1  CMP   EAX,[0x10F93A94]          ; ironsight down
             // 101448A9  CALL  0x1007E1B0                <- hook
             // 101448AE  OR    byte ptr [EAX+0x4],0x8
-            auto aimPressPattern = dunia_pattern("E8 ? ? ? ? 80 48 04 08 5F 5E 83 C4 10 C2 08 00");
-            if (!aimPressPattern.empty())
+            if (auto* pAimPress = dunia_find("E8 ? ? ? ? 80 48 04 08 5F 5E 83 C4 10 C2 08 00"))
             {
-                static auto AimPressHook = safetyhook::create_mid(aimPressPattern.get_first(), [](SafetyHookContext&)
+                static auto AimPressHook = safetyhook::create_mid(pAimPress, [](SafetyHookContext&)
                 {
                     OnPress(AimState, IsPadActiveDevice() ? bAimToggleController : bAimToggle);
                 });
@@ -179,10 +168,9 @@ public:
             // 101447B5  CMP   EAX,[0x10F93A74]          ; sprint lock, shares the code below
             // 101447C1  CALL  0x1007E1B0                <- hook, also reached for [0x10F93A70]
             // 101447C6  OR    byte ptr [EAX+0x4],0x40
-            auto sprintPressPattern = dunia_pattern("E8 ? ? ? ? 80 48 04 40 5F 5E 83 C4 10 C2 08 00");
-            if (!sprintPressPattern.empty())
+            if (auto* pSprintPress = dunia_find("E8 ? ? ? ? 80 48 04 40 5F 5E 83 C4 10 C2 08 00"))
             {
-                static auto SprintPressHook = safetyhook::create_mid(sprintPressPattern.get_first(), [](SafetyHookContext&)
+                static auto SprintPressHook = safetyhook::create_mid(pSprintPress, [](SafetyHookContext&)
                 {
                     OnPress(SprintState, !IsPadActiveDevice() && bSprintToggle);
                 });
@@ -220,10 +208,9 @@ public:
             // 10143B40  TEST  AL,AL                     <- hook, AL = action is bound in this map
             // 10143B44  MOV   ECX,[ESI+0x20]
             // 10143B4C  AND   byte ptr [EAX+0x4],0xF7
-            auto aimScopePattern = dunia_pattern("84 C0 75 0C 8B 4E 20 E8 ? ? ? ? 80 60 04 F7");
-            if (!aimScopePattern.empty())
+            if (auto* pAimScope = dunia_find("84 C0 75 0C 8B 4E 20 E8 ? ? ? ? 80 60 04 F7"))
             {
-                static auto AimScopeHook = safetyhook::create_mid(aimScopePattern.get_first(), [](SafetyHookContext& regs)
+                static auto AimScopeHook = safetyhook::create_mid(pAimScope, [](SafetyHookContext& regs)
                 {
                     if (!AimState.bEngaged)
                         return;
@@ -238,10 +225,9 @@ public:
                 });
             }
 
-            auto sprintScopePattern = dunia_pattern("84 C0 75 13 8B 4E 20 E8 ? ? ? ? 80 60 04 BF 8B CE");
-            if (!sprintScopePattern.empty())
+            if (auto* pSprintScope = dunia_find("84 C0 75 13 8B 4E 20 E8 ? ? ? ? 80 60 04 BF 8B CE"))
             {
-                static auto SprintScopeHook = safetyhook::create_mid(sprintScopePattern.get_first(), [](SafetyHookContext& regs)
+                static auto SprintScopeHook = safetyhook::create_mid(pSprintScope, [](SafetyHookContext& regs)
                 {
                     if (!SprintState.bEngaged)
                         return;
