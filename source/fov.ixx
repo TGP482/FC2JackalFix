@@ -203,17 +203,22 @@ static bool InDunia(const void* p)
     return nDuniaBase != 0 && n >= nDuniaBase && n < nDuniaEnd;
 }
 
-static bool Readable(const void* p, size_t nBytes)
+static bool IsReadableStruct(uintptr_t nAddress, size_t nSize)
 {
     MEMORY_BASIC_INFORMATION mbi{};
-    if (!p || VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi))
+    if (nAddress == 0 || VirtualQuery((const void*)nAddress, &mbi, sizeof(mbi)) != sizeof(mbi))
         return false;
+
     if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
         return false;
 
-    auto nAvailable = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize
-                    - reinterpret_cast<uintptr_t>(p);
-    return nAvailable >= nBytes;
+    auto nEnd = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    return nAddress + nSize <= nEnd;
+}
+
+static bool Readable(const void* p, size_t nBytes)
+{
+    return IsReadableStruct((uintptr_t)p, nBytes);
 }
 
 struct DuniaClassInfo
@@ -442,7 +447,6 @@ static constexpr uintptr_t nPawnCameraFieldOfView = 0x70;
 // So the values can be re-pushed from outside, which is what happens below: the same two writes
 // the seat makes, with a new number and at the moment the player asks for it.
 static constexpr uintptr_t nPawnFovIronsightValue = 0x1C;   // radians
-static constexpr uintptr_t nPawnFovIronsightArmed = 0x0D;
 
 // Record A's blend weight, the third field the blend reads: how far this channel has taken over,
 // nought to one. Read and never written, since it is the engine's own running state.
@@ -457,22 +461,6 @@ static constexpr size_t    nPawnFovSize           = 0x60;
 // again, because the pawn that owns it does not survive a load.
 static std::atomic<uintptr_t> nPawnFieldOfView = 0;
 static std::atomic<uintptr_t> nPawnFieldOfViewVTable = 0;
-
-static bool IsReadableStruct(uintptr_t nAddress, size_t nSize)
-{
-    if (nAddress == 0)
-        return false;
-
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery((const void*)nAddress, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
-        return false;
-
-    if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
-        return false;
-
-    auto nEnd = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
-    return nAddress + nSize <= nEnd;
-}
 
 static void RememberPawnFieldOfView(uintptr_t nStruct)
 {
@@ -549,10 +537,10 @@ static void PushPawnFieldOfView()
         // Radians. This channel is a straight copy of the weapon's own field, which is radians, so
         // writing degrees here is writing an FOV of about three and a half thousand degrees, which
         // is what stopped the viewmodel matching the sights.
+        //
+        // The armed flag is left as the engine has it: setting one that is already set is a no-op,
+        // and setting one that is clear would start a channel nothing asked for.
         *(float*)(nStruct + nPawnFovIronsightValue) = DegreesToRadians(fIronsightFieldOfView);
-
-        if (*(uint8_t*)(nStruct + nPawnFovIronsightArmed) != 0)
-            *(uint8_t*)(nStruct + nPawnFovIronsightArmed) = 1;
     }
 
     if (*(uint8_t*)(nStruct + nPawnFovBaseArmed) == 0)
@@ -850,8 +838,6 @@ static bool MapIsInVehicle()
 
 // The FOV the near pass ends up drawing with. Both the projection hook and the frustum constants
 // have to agree on it, so it is worked out once.
-// The FOV the near pass ends up drawing with. Both the projection hook and the frustum constants
-// have to agree on it, so it is worked out once.
 static float NearPassFieldOfView(float fCameraFov, float fAspect)
 {
     if (MapIsInVehicle())
@@ -976,6 +962,14 @@ static void ApplySeatFieldOfView(uintptr_t nVehicle)
         *(float*)(nVehicle + nVehicleFieldOfViewAngle) = fVehicleFieldOfView;
 }
 
+// Both seat hooks: EAX is the pawn's FOV channels, the store into its curve slot three
+// instructions back, the same struct the weapon setup hands over, and ESI is the vehicle.
+static void OnSeatFieldOfView(SafetyHookContext& regs)
+{
+    RememberPawnFieldOfView(regs.eax);
+    ApplySeatFieldOfView(regs.esi);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Near pass routing is the engine's own: (renderContext+0x24 & node+0x90), tested at FUN_103c6260,
 // FUN_103c7750, FUN_103c5950 and FUN_103c45f0. node+0x90 is CGraphicComponent+0x12C, the schema
@@ -1009,30 +1003,6 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // Joshua - Old
-            // fFOV setter: MOVSS XMM0,[ESP+4] / MULSS deg to rad / MOVSS [ECX+0x70]
-            /*
-            auto pattern = dunia_pattern("F3 0F 10 44 24 04 F3 0F 59 05 ? ? ? ? F3 0F 11 41 70 C2 04 00");
-            if (pattern.empty())
-                return;
-
-            static auto FieldOfViewHook = safetyhook::create_mid(pattern.get_first(), [](SafetyHookContext& regs)
-            {
-                *(float*)(regs.esp + 4) = fFieldOfView;
-            });
-
-            // Near pass uses a separate projection for weapons and arms, allowing viewmodel FOV
-            // changes without affecting the world.
-            pattern = dunia_pattern("D9 86 28 02 00 00 D9 1C 24 E8 ? ? ? ? D9 45 14");
-            if (pattern.empty())
-                return;
-
-            static auto ViewmodelFovHook = safetyhook::create_mid(pattern.get_first(9), [](SafetyHookContext& regs)
-            {
-                auto pFov = (float*)regs.esp;
-                *pFov = ScaleFov(*pFov, fViewmodelScale);
-            });*/
-
             // Image bounds for the beautifier name walk. Everything it dereferences past the
             // instance itself is a vtable, a class descriptor or a string literal, all inside
             // Dunia, so this is what makes a stray pointer fail closed.
@@ -1084,19 +1054,10 @@ public:
                 {
                     ReleaseWithheldLayerIfStale();
 
+                    // With the map open in a vehicle NearPassFieldOfView hands the camera FOV
+                    // straight back, so the markers keep their alignment.
                     auto pFov = (float*)regs.esp;
-                    auto fAspect = *(float*)(regs.esi + 0x18);
-                    auto fCamera = *pFov;
-
-                    // In vehicles the near-pass FOV stays at the world FOV, so map markers keep
-                    // their alignment.
-                    auto bInVehicle = MapIsInVehicle();
-                    auto fNear = bInVehicle ? fCamera : NearPassFieldOfView(fCamera, fAspect);
-
-                    if (bInVehicle)
-                        return;
-
-                    *pFov = fNear;
+                    *pFov = NearPassFieldOfView(*pFov, *(float*)(regs.esi + 0x18));
                 });
             }
 
@@ -1412,25 +1373,13 @@ public:
             auto gliderFovPattern = dunia_pattern("8B CB E8 ? ? ? ? D9 86 30 02 00 00 D9 58 2C 8B 8E 54 02 00 00 89 48 3C F3 0F 10 86 34 02 00 00 F3 0F 59 05 ? ? ? ? F3 0F 11 40 38 C6 40 29 01");
             if (!gliderFovPattern.empty())
             {
-                static auto GliderFovHook = safetyhook::create_mid(gliderFovPattern.get_first(0x19), [](SafetyHookContext& regs)
-                {
-                    // EAX is the pawn's FOV channels; the store into its curve slot is three
-                    // instructions back. Same struct the weapon setup hands over.
-                    RememberPawnFieldOfView(regs.eax);
-                    ApplySeatFieldOfView(regs.esi);
-                });
+                static auto GliderFovHook = safetyhook::create_mid(gliderFovPattern.get_first(0x19), OnSeatFieldOfView);
             }
 
             auto gliderSeatFovPattern = dunia_pattern("8B 4C 24 08 74 ? E8 ? ? ? ? D9 86 30 02 00 00 D9 58 2C 8B 8E 54 02 00 00 89 48 3C F3 0F 10 86 34 02 00 00 F3 0F 59 05 ? ? ? ? F3 0F 11 40 38 C6 40 29 01");
             if (!gliderSeatFovPattern.empty())
             {
-                static auto GliderSeatFovHook = safetyhook::create_mid(gliderSeatFovPattern.get_first(0x1D), [](SafetyHookContext& regs)
-                {
-                    // EAX is the pawn's FOV channels; the store into its curve slot is three
-                    // instructions back. Same struct the weapon setup hands over.
-                    RememberPawnFieldOfView(regs.eax);
-                    ApplySeatFieldOfView(regs.esi);
-                });
+                static auto GliderSeatFovHook = safetyhook::create_mid(gliderSeatFovPattern.get_first(0x1D), OnSeatFieldOfView);
             }
 
             // Ironsight FOV, where the weapon hands it to the pawn rather than where the archive

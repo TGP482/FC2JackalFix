@@ -476,9 +476,7 @@ static void ApplyCanvas(SafetyHookContext& regs)
     const Canvas authored = ReadAuthoredCanvas(pPackage);
 
     Canvas fixed;
-    const PageKind kind = bGameplayHudPage ? PageKind::GameplayHud : PageKind::Menu;
-
-    if (!BuildPageCanvas(authored, fAspect, kind, fixed))
+    if (!BuildPageCanvas(authored, fAspect, PageKindOf(pPackage), fixed))
     {
         bPageCorrected = false;
         bGameplayHudPage = false;

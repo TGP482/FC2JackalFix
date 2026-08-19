@@ -184,7 +184,6 @@ static constexpr float fStockSunShadowRange2 = 140.0f;
 static constexpr float fStockLeavesShadowRatio = 0.5f;
 static constexpr float fStockMaxHemiMapDistance = 160.0f;
 
-
 // BeyondUltraTerrain. The same four steps over the Ultra High terrain block. TerrainLodScale runs
 // backwards like the geometry scales and bottoms out at 0; the two detail distances are plain
 // quantities that double. Step 3 goes well past Boggalog, who only moves
@@ -408,39 +407,21 @@ static void TakeSettings()
   ambient one, so a Beyond Ultra setting does nothing unless the game is running the preset it
   edits.
 
-  A quality on CRenderProfile is NOT an int. Reading one as an int is what made every row read as
-  ultra: the schema at Dunia+3F7F00 registers TerrainQuality at 114h, GeometryQuality at 130h,
-  AmbientQuality at 14Ch and ShadowQuality at 168h, twelve of them 1Ch apart, which is the size of a
-  string rather than of an int, and the property's own Serialise, the first slot of the quality
-  vtable
-  at Dunia+F7460, hands object+offset to the visitor's 0DCh slot rather than the 114h int slot the
-  plain ints use. The display page proves what is there: Dunia+7779C0 reads each one as a string,
-  buffer at field+4 and capacity at field+18h, taken by pointer instead once that capacity reaches
-  sixteen, and puts the text through Dunia+3F2D30 to get a list position. So the field holds
-  "ultrahigh", "veryhigh", "high", "medium" or "low", and the answer is a string compare.
+  A quality on CRenderProfile is a string, not an int. The schema at Dunia+3F7F00 registers
+  TerrainQuality at 114h, GeometryQuality at 130h, AmbientQuality at 14Ch and ShadowQuality at 168h,
+  twelve of them 1Ch apart, which is the size of a string rather than of an int, and the property's
+  own Serialise hands object+offset to the visitor's 0DCh slot rather than the 114h int slot the
+  plain ints use. So the field holds "ultrahigh", "veryhigh", "high", "medium" or "low", and the
+  answer is a string compare.
 
   Making a change take hold is a second byte on the render manager. Dunia+354B30 sets +31h when it
   copies the profile in, and Dunia+33E540, the ordinary per-frame path on the engine's own thread,
-  tests that byte, clears it and runs the functor at +13Ch, which is what re-reads the profile and
-  picks the blocks up again. That is precisely what lowering the quality and putting it back was
-  doing by hand. Setting the byte asks for the same thing without a device rebuild: +30h is the mode
-  change and is deliberately left alone here.
+  tests that byte, clears it and runs the functor at +13Ch, which re-reads the profile and picks the
+  blocks up again. +30h is the mode change and is deliberately left alone here.
 */
 static constexpr uint32_t nProfileTerrainQuality = 0x114;
 static constexpr uint32_t nProfileGeometryQuality = 0x130;
 static constexpr uint32_t nProfileShadowQuality = 0x168;
-
-// The rest of the same schema, kept only so the log can say whether a profile is the live one.
-// Three names cannot tell a stale object from a true one, since a profile really can have Shadow
-// alone off ultra, but the whole set can, because the display page shows every one of these and
-// they cannot all be wrong at once by accident.
-static constexpr uint32_t nProfilePostFxQuality = 0x6C;
-static constexpr uint32_t nProfileTextureQuality = 0x88;
-static constexpr uint32_t nProfileTextureResolutionQuality = 0xA4;
-static constexpr uint32_t nProfileWaterQuality = 0xC0;
-static constexpr uint32_t nProfileDepthPassQuality = 0xDC;
-static constexpr uint32_t nProfileVegetationQuality = 0xF8;
-static constexpr uint32_t nProfileAmbientQuality = 0x14C;
 
 // The engine's string: four bytes of header, then sixteen of buffer, the length, and the capacity
 // that says whether the buffer is the text or a pointer to it.
@@ -454,21 +435,11 @@ static const char* const szUltraHigh = "ultrahigh";
   Which CRenderProfile is the one the game is actually running.
 
   There are a dozen of them: low, medium, high, veryhigh, ultrahigh, optimal, custom, the d3d10
-  variants of several, and the console ones. Every attempt to identify the right one by
-  remembering what some hook last handed back has picked the wrong one. The log finally said why:
+  variants of several, and the console ones. Applying a level in the display options does not modify
+  the profile in force, it makes a DIFFERENT profile the one in force, out of the preset store, so
+  remembering whatever a hook last handed back names the boot-time profile for the whole session.
 
-    live [custom customd3d10 custom customd3d10]
-    preset [optimal ultrahigh ultrahighd3d10 ... optimal low low low low medium high veryhigh]
-
-  Four live lookups, all of them at startup, and never another one. Applying a level in the display
-  options does not modify the profile in force. It makes a DIFFERENT profile the one in force, and
-  that one comes out of the preset store. So the object being read was the boot-time "custom"
-  profile for the whole session, and the only reason Shadows ever greyed correctly is that the
-  launcher config happened to leave it on high from the start. Everything else stayed at whatever
-  the auto-detect wrote and never moved again, which is exactly what was on screen.
-
-  The engine keeps no secret about which one it is. Dunia+402150 is the setter, and it is four
-  instructions long:
+  Dunia+402150 is the setter, and it is four instructions long:
 
     MOV ESI,ECX
     LEA ECX,[ESI+04h]        ; the name of the profile in force
@@ -477,10 +448,8 @@ static const char* const szUltraHigh = "ultrahigh";
     CALL <the render settings broadcast>
 
   So the name lives at +04h on the global profile, as a plain std::string, and it is written every
-  time the level changes. That is read directly, with no hook, no capture and nothing to go stale,
-  and the
-  profile it names is taken from a small table of everything the find has handed out, which is the
-  one thing hooking that function is genuinely good for.
+  time the level changes. That is read directly, and the profile it names is taken from a small
+  table of everything the find has handed out.
 */
 static constexpr ptrdiff_t nProfileCurrentName = 0x04;
 
@@ -608,27 +577,6 @@ static void* __fastcall ProfileFind(void* pStore, void* pEdx, void* pName)
     return pProfile;
 }
 
-// Every profile the engine has named this session, for the log.
-export const char* JackalFixProfileFinds()
-{
-    static char szList[320]{};
-
-    szList[0] = '\0';
-
-    const auto nCount = nProfiles.load(std::memory_order_acquire);
-    for (size_t i = 0; i < nCount; i++)
-    {
-        const auto nUsed = strlen(szList);
-        if (nUsed + 28 >= sizeof(szList))
-            break;
-
-        _snprintf_s(szList + nUsed, sizeof(szList) - nUsed, _TRUNCATE, "%s%.20s",
-            nUsed != 0 ? " " : "", Profiles[i].szName);
-    }
-
-    return szList[0] != '\0' ? szList : "none";
-}
-
 // The manager's only construction, the same anchor borderless resolves it from.
 static const char* const szRenderManagerPattern =
     "6A 00 68 B8 03 00 00 E8 ? ? ? ? 83 C4 08 85 C0 74 0D 8B C8 E8 ? ? ? ? A3 ? ? ? ?";
@@ -673,13 +621,7 @@ static RaiseRenderSettingsChanged_t RaiseRenderSettingsChanged = nullptr;
 // Set where a setting moves, spent on the engine's thread.
 static std::atomic<bool> bRenderSettingsMoved = false;
 
-// Counted so the log can say which half of the live apply is not happening.
-static uint32_t nReapplied = 0;
-static uint32_t nBroadcasts = 0;
-static uint32_t nTickWrites = 0;
-
-// The profile's own copies of the four config blocks. Declared here because the status line reads
-// them and it is written above the code that fills them.
+// The profile's own copies of the four config blocks.
 static uint8_t* pProfileGeometry = nullptr;
 static uint8_t* pProfileTerrain = nullptr;
 static uint8_t* pProfileShadow = nullptr;
@@ -694,21 +636,14 @@ static void WriteBeyondUltraBlocks();
 /*
   Written every frame rather than once when the setting moves.
 
-  The log had the mod's whole side of this working: all four blocks recognised, the values
-  rewritten eight times, the broadcast raised five, and no change in the game at all. Which leaves
-  one place for it to be going: the values are not still there when the renderer looks. A block is
-  the engine's own object and it is free to put its own numbers back into it, and the broadcast is
-  precisely the thing that would make it do so, so writing once and hoping is a race that cannot be
-  won by argument.
-
-  It is not worth winning by argument either. The whole of the write is about twenty five floats and
-  three ints into four objects that are already in cache, so it costs nothing to do it on every tick
-  and be certain. Whatever puts the stock numbers back has them for at most one frame, and the state
-  the renderer reads is the state that was asked for.
+  A block is the engine's own object and it is free to put its own numbers back into it, the
+  broadcast being precisely the thing that makes it do so, so writing once is a race. The whole
+  write is about twenty five floats and three ints into four objects already in cache, so it costs
+  nothing to do it every tick and be certain.
 
   The broadcast is still raised when something moves, because that is what makes the renderer look
-  at the blocks again rather than at whatever it took from them last time. It is raised BEFORE the
-  write now, so the write is the last thing to touch the block on that tick.
+  at the blocks again. It is raised BEFORE the write, so the write is the last thing to touch the
+  block on that tick.
 */
 static void __fastcall DeviceTick(void* pManager, void* pEdx, void* pArg)
 {
@@ -718,7 +653,6 @@ static void __fastcall DeviceTick(void* pManager, void* pEdx, void* pArg)
     {
         if (auto* pProfile = *ppGlobalRenderProfile)
         {
-            nBroadcasts++;
             RaiseRenderSettingsChanged(pProfile);
         }
     }
@@ -753,7 +687,6 @@ static void FindRenderProfile()
     auto tick = dunia_pattern(szDeviceTickPattern);
     if (!tick.empty())
         DeviceTickHook = safetyhook::create_inline(tick.get_first(), DeviceTick);
-
 }
 
 // VirtualQuery rather than a guess, and every read below goes through it. This crashed once already
@@ -826,92 +759,6 @@ export bool JackalFixGeometryIsUltra() { return SectionIsUltra(nProfileGeometryQ
 export bool JackalFixShadowsAreUltra() { return SectionIsUltra(nProfileShadowQuality); }
 export bool JackalFixTerrainIsUltra() { return SectionIsUltra(nProfileTerrainQuality); }
 
-// The three names as they read right now, or nullptr where the profile could not be reached. Handed
-// out so the menu can put them in its own log next to the rows they decide. A Beyond Ultra row
-// that
-// will not grey is either a quality that really says ultra or a profile that was never found, and
-// from the row alone the two look identical.
-export const char* JackalFixGeometryQuality() { return SectionQuality(nProfileGeometryQuality); }
-export const char* JackalFixShadowQuality() { return SectionQuality(nProfileShadowQuality); }
-export const char* JackalFixTerrainQuality() { return SectionQuality(nProfileTerrainQuality); }
-
-/*
-  What this module actually resolved, in one line, for the log the menu writes.
-
-  Two sessions in a row have read all three qualities as ultrahigh with the game on medium, and
-  from the name alone there is no telling which of the three ways that happens: the getter hook
-  never went in, the object it caught is a preset template rather than the profile in force, or the
-  profile is right and the strings really do say ultrahigh. The pointer and the hook states
-  separate them.
-*/
-static char szRenderConfigStatus[224]{};
-
-export const char* JackalFixRenderConfigStatus()
-{
-    const auto* pName = CurrentProfileName();
-
-    _snprintf_s(szRenderConfigStatus, _TRUNCATE,
-        "find %s, in force \"%.20s\", profile %p, %zu known, global %p, broadcast %p, tick %s",
-        ProfileFindHook.enabled() ? "in" : "FAILED",
-        pName != nullptr ? pName : "?",
-        QualityProfile(), nProfiles.load(std::memory_order_relaxed),
-        ppGlobalRenderProfile != nullptr ? *ppGlobalRenderProfile : nullptr,
-        RaiseRenderSettingsChanged, DeviceTickHook.enabled() ? "in" : "FAILED");
-
-    return szRenderConfigStatus;
-}
-
-static char szQualityDump[320]{};
-
-export const char* JackalFixQualityDump()
-{
-    auto Name = [](uint32_t nOffset)
-    {
-        const auto* pName = SectionQuality(nOffset);
-        return pName != nullptr ? pName : "?";
-    };
-
-    _snprintf_s(szQualityDump, _TRUNCATE,
-        "vegetation %s, postfx %s, texture %s, textureres %s, water %s, depthpass %s, ambient %s",
-        Name(nProfileVegetationQuality), Name(nProfilePostFxQuality),
-        Name(nProfileTextureQuality), Name(nProfileTextureResolutionQuality),
-        Name(nProfileWaterQuality), Name(nProfileDepthPassQuality),
-        Name(nProfileAmbientQuality));
-
-    return szQualityDump;
-}
-
-// What the live apply has actually managed, for the log the menu writes. A Beyond Ultra row that
-// appears to do nothing is either a block that was never recognised at load, a rewrite that never
-// happened, or a rewrite the renderer was never told about, and from the game those look identical.
-static char szBeyondUltraStatus[224]{};
-
-export const char* JackalFixBeyondUltraStatus()
-{
-    // Read straight back out of the block, because "the write happened" and "the value is there"
-    // are not the same claim and only the second one matters.
-    auto Field = [](const void* pBlock, uint32_t nOffset)
-    {
-        return pBlock != nullptr && IsReadable(pBlock, nOffset + sizeof(float))
-            ? *reinterpret_cast<const float*>(static_cast<const uint8_t*>(pBlock) + nOffset)
-            : -1.0f;
-    };
-
-    _snprintf_s(szBeyondUltraStatus, _TRUNCATE,
-        "steps %d/%d/%s, ticks %u, block caps %.1f terrain %.1f sun %.1f, "
-        "profile %p/%p/%p/%p caps %.1f terrain %.1f sun %.1f",
-        nGeometryStep, nTerrainStep, bBeyondUltraShadows ? "on" : "off", nTickWrites,
-        Field(pUltraGeometry, nGeometryRealTreeCapsMaxDistance),
-        Field(pUltraTerrain, nTerrainDetailViewDistance),
-        Field(pUltraShadow, nShadowSunShadowRange2),
-        pProfileGeometry, pProfileTerrain, pProfileShadow, pProfileAmbient,
-        Field(pProfileGeometry, nGeometryRealTreeCapsMaxDistance),
-        Field(pProfileTerrain, nTerrainDetailViewDistance),
-        Field(pProfileShadow, nShadowSunShadowRange2));
-
-    return szBeyondUltraStatus;
-}
-
 // Writes the current settings over the blocks the loader built, then asks the renderer to pick them
 // up. Every field written is one the renderer reads out of the active block, and the byte below is
 // what makes it read the block again rather than whatever it took from it last time.
@@ -973,27 +820,18 @@ static void FindEmbeddedBlocks()
         const auto nBase = reinterpret_cast<uintptr_t>(RaiseRenderSettingsChanged) - nRenderSettingsChangedRva;
         pProfileGeometry = FindEmbedded(pProfile, nBase + nGeometryConfigVTableRva);
     }
-
 }
 
 static void WriteBeyondUltraBlocks()
 {
-    nTickWrites++;
-
     FindEmbeddedBlocks();
 
     /*
-      Two objects per section and no more.
-
-      Following every copy the engine made was a mistake that cost a crash. The log has why: the
-      geometry block was copied to 18100AA8, then 181009C8, then 19966CA8, a new address each time.
-      Those are temporaries, made and read and destroyed, and a list of them is a list of freed
-      pointers
-      being written to on every tick, which walks the heap until something falls over.
-
-      The two that are real are the parsed block, so a quality applied later is copied with these
-      values already in it, and the one embedded in the global profile, which is what the renderer
-      reads. Both are owned for the life of the process.
+      Two objects per section and no more: the parsed block, so a quality applied later is copied
+      with these values already in it, and the one embedded in the global profile, which is what the
+      renderer reads. Both are owned for the life of the process. Following every copy the engine
+      makes writes to temporaries it has already destroyed, which walks the heap until something
+      falls over.
     */
     if (pUltraGeometry != nullptr)
         ApplyGeometry(static_cast<uint8_t*>(const_cast<void*>(pUltraGeometry)));
@@ -1037,8 +875,6 @@ static void WriteBeyondUltraBlocks()
 
 static void ReapplyBeyondUltra()
 {
-    nReapplied++;
-
     WriteBeyondUltraBlocks();
 
     // The blocks are only half of it. The other half is telling the renderer they moved, which is
@@ -1055,9 +891,7 @@ static void ReapplyBeyondUltra()
     // Written from the file watcher's thread and read from the engine's, which is one byte either
     // way and the same shape the engine uses on itself.
     *(pManager + nRenderManagerProfileMoved) = 1;
-
 }
-
 
 /*
   RealTree instance budget, the other half of the map 2 foliage flicker.
@@ -1234,7 +1068,6 @@ static const char* const szSplineLodPattern =
 static constexpr ptrdiff_t nSplineScaleOpcode = 0x14;
 
 static constexpr uint8_t nOpcodeDivss = 0x5E;
-
 
 static void PatchRoadLodPolarity()
 {

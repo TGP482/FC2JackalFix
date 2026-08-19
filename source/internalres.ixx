@@ -99,12 +99,6 @@ static uint32_t nInternalH = 0;
 static uint32_t nOutputW = 0;           // what the swapchain actually presents
 static uint32_t nOutputH = 0;
 
-// The fullscreen byte is read once, at the present-parameter write, and answers two questions at
-// the same time: which of SetResolution's three branches computed the aspect ratio, and whether the
-// device is about to be windowed. That only works because DisplayMode settles the byte before the
-// branch reads it. The old Borderless option cleared it after the branch instead, which made the
-// two readings disagree and left a windowed device carrying a fullscreen aspect.
-
 // The last surface the device confirmed as its own backbuffer. Only a fast path, since the
 // identity is re-established from the device whenever an unfamiliar surface turns up, so a device
 // that is destroyed and recreated rather than reset needs no special handling.
@@ -178,7 +172,7 @@ class CResolver
     // backbuffer, so bars are the only thing that ever separates the two.
     static bool Blit(IDirect3DDevice9* pDevice, IDirect3DSurface9* pDst, UINT nTargetW, UINT nTargetH,
                      int32_t nDstX, int32_t nDstY, UINT nDstW, UINT nDstH,
-                     IDirect3DTexture9* pSrc, UINT nSrcW, UINT nSrcH, int32_t eFilter)
+                     IDirect3DTexture9* pSrc, int32_t eFilter)
     {
         // Depth goes first every time. D3D9 rejects a render target smaller than the depth-stencil
         // currently bound to it, and while supersampling the engine's depth buffer is larger than
@@ -366,7 +360,7 @@ public:
 
             // A stage that did not run leaves its target holding the previous frame, so the chain
             // stops here rather than sampling it.
-            if (!Blit(pDevice, Chain[stage].pSurf, dw, dh, 0, 0, dw, dh, pSrc, nSrcW, nSrcH, FILTER_BILINEAR))
+            if (!Blit(pDevice, Chain[stage].pSurf, dw, dh, 0, 0, dw, dh, pSrc, FILTER_BILINEAR))
                 break;
 
             pSrc = Chain[stage].pTex;
@@ -374,8 +368,7 @@ public:
             nSrcH = dh;
         }
 
-        Blit(pDevice, pBackBuffer, desc.Width, desc.Height, nFitX, nFitY, nFitW, nFitH,
-             pSrc, nSrcW, nSrcH, nFilter);
+        Blit(pDevice, pBackBuffer, desc.Width, desc.Height, nFitX, nFitY, nFitW, nFitH, pSrc, nFilter);
 
         if (bOpenedScene)
             pDevice->EndScene();
@@ -917,8 +910,10 @@ class CResolver
     static inline Target Chain[nMaxChain];
 
     static inline ID3D10VertexShader* pVertexShader = nullptr;
-    static inline ID3D10PixelShader* pBlitShader = nullptr;    static inline ID3D10SamplerState* pPointSampler = nullptr;
-    static inline ID3D10SamplerState* pLinearSampler = nullptr;    static inline bool bSetupFailed = false;
+    static inline ID3D10PixelShader* pBlitShader = nullptr;
+    static inline ID3D10SamplerState* pPointSampler = nullptr;
+    static inline ID3D10SamplerState* pLinearSampler = nullptr;
+    static inline bool bSetupFailed = false;
 
     static bool Compile(const char* szSource, const char* szEntry, const char* szProfile,
                         std::vector<uint8_t>& vOut)
@@ -991,7 +986,7 @@ class CResolver
     // backbuffer, so bars are the only thing that ever separates the two.
     static void Blit(ID3D10Device* pDevice, ID3D10RenderTargetView* pDst,
                      int32_t nDstX, int32_t nDstY, UINT nDstW, UINT nDstH,
-                     ID3D10ShaderResourceView* pSrc, UINT nSrcW, UINT nSrcH, int32_t eFilter)
+                     ID3D10ShaderResourceView* pSrc, int32_t eFilter)
     {
         pDevice->OMSetRenderTargets(1, &pDst, nullptr);
 
@@ -1096,7 +1091,7 @@ public:
             if (!Chain[stage].Ensure(pDevice, dw, dh, Substitute.eFormat))
                 break;
 
-            Blit(pDevice, Chain[stage].pRtv, 0, 0, dw, dh, pSrc, nSrcW, nSrcH, FILTER_BILINEAR);
+            Blit(pDevice, Chain[stage].pRtv, 0, 0, dw, dh, pSrc, FILTER_BILINEAR);
 
             pSrc = Chain[stage].pSrv;
             nSrcW = dw;
@@ -1111,7 +1106,7 @@ public:
             pDevice->ClearRenderTargetView(pTargetView, fBlack);
         }
 
-        Blit(pDevice, pTargetView, nFitX, nFitY, nFitW, nFitH, pSrc, nSrcW, nSrcH, nFilter);
+        Blit(pDevice, pTargetView, nFitX, nFitY, nFitW, nFitH, pSrc, nFilter);
 
         // The engine re-issues everything else next frame from a state shadow that is zeroed right
         // after Present. These two are the exception: where its next wanted value is also null it

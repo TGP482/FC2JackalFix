@@ -422,19 +422,16 @@ static void InstallFpsCounter()
 
     pShowFps = *reinterpret_cast<int32_t**>(pattern.get_first(nShowFpsOperand));
 
-    static auto FpsCounterCB = []()
+    static constexpr auto ApplyFpsCounter = []()
     {
         *pShowFps = JackalFixSettings.GetInt(PREF_FPSCOUNTER) != 0;
     };
 
     // Written before the console registers the variable, which only reads the global to publish its
     // starting value, so the setting is what the console reports.
-    FpsCounterCB();
+    ApplyFpsCounter();
 
-    JackalFix::onIniFileChange() += []()
-    {
-        FpsCounterCB();
-    };
+    JackalFix::onIniFileChange() += ApplyFpsCounter;
 }
 
 class Borderless
@@ -730,12 +727,12 @@ public:
                 });
             }
 
-            static auto DisplayModeCB = []()
+            static constexpr auto ApplyDisplayMode = []()
             {
                 nDisplayMode = JackalFixSettings.GetInt(PREF_DISPLAYMODE);
             };
 
-            DisplayModeCB();
+            ApplyDisplayMode();
 
             // The window is made in this mode, so it starts out wearing it and the reset hook has
             // nothing to do until the setting actually moves.
@@ -744,10 +741,7 @@ public:
             // The window style, its rect and the boot resolution path are all read while the engine
             // starts up, so an ini change lands on the next launch rather than the current one. The
             // device's fullscreen byte and the cursor clip do follow it live.
-            JackalFix::onIniFileChange() += []()
-            {
-                DisplayModeCB();
-            };
+            JackalFix::onIniFileChange() += ApplyDisplayMode;
 
             JackalFix::onShutdownEvent() += []()
             {
