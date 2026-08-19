@@ -1,56 +1,43 @@
 /*
-  Debug and testing aids. Mechanism and pattern anchors live inline with each hook; this is the map.
+  Debug and testing aids. Offsets, patterns and the reasons a given approach was rejected live
+  inline with each hook; this is the map.
 
-  GameProfile
-  Four dwords on the settings object, registered from defaultgameconfig.xml, each tested by its
-  consumer with nothing in front of it. No build flag, no master gate, no mission check. Writing
-  them is what -GameProfile_GodMode 1 does.
+  GameProfile   Four dwords on the settings object, registered from defaultgameconfig.xml, each
+                tested by its consumer with nothing in front of it. No build flag, no master gate.
+                GodMode +0x94, UnlimitedAmmo +0x98, UnlimitedReliability +0x9C, AllWeaponsUnlock
+                +0xA0. Writing them is what -GameProfile_GodMode 1 does.
 
-      GodMode  +0x94    UnlimitedAmmo  +0x98    UnlimitedReliability  +0x9C    AllWeaponsUnlock  +0xA0
+  Syringes      The item decrementer is shared by ammo, throwables and syringes, and returns early
+                on UnlimitedAmmo, so Infinite Ammo took healing with it. The flag is cleared for the
+                duration of a call from one of the three syringe sites, leaving the rest infinite.
 
-  Syringes
-  The engine's item decrementer is shared by ammo, throwables and syringes, and it treats the
-  GameProfile UnlimitedAmmo dword as "this pool is infinite" and returns before touching the counts.
-  Infinite Ammo therefore took healing with it. The flag is cleared for the duration of a call that
-  came from one of the three sites that spend a syringe, so everything else stays infinite.
+  Health floor  GodMode blocks negative health deltas and skips the health-failure branch but
+                restores nothing, so a player already below the failure threshold when it goes on
+                has no bleed-out, no death and no regen. The module lifts them back out. Read
+                out of the health tick's two invulnerability gates, not reproduced in game.
 
-  Health floor
-  GodMode on its own is not invincibility. It blocks negative health deltas and skips the
-  health-failure branch, but restores nothing, so a player already under the failure threshold when
-  it goes on has no bleed-out, no death and no regen, and stays there. The module lifts them back
-  out. Not reproduced in game, only read out of the health tick's two invulnerability gates.
+  Vehicles      No vehicle damage path reads GodMode, so the player's vehicle takes two hooks on
+                CVehiclePhysComponent. Drowning, scripted destruction and the damage-state override
+                at +0x107/+0x108 bypass the damage model and are not covered.
 
-  Not the cause of the infinite syringes above, though the branch is there: below the threshold
-  every heal is the free self-patch, which never reaches the decrement. Measured in game, that
-  branch is only taken below 320 of 1600 health, and the logged case was Infinite Ammo instead.
+  Weapons       AllWeaponsUnlock only bypasses the per-weapon unlock list. The other map's weapons
+                are hidden by the two act gates ahead of it in CWeaponBazaar::IsWeaponUnlocked,
+                which are patched out separately.
 
-  Vehicles
-  No vehicle damage path reads GodMode, so the player's vehicle is covered by two hooks on
-  CVehiclePhysComponent. Drowning, scripted destruction and the damage-state override at
-  +0x107/+0x108 all reach a vehicle without going through the damage model, and are not covered.
+  Diamonds      One int32 at CEconomyComponent+0x10, serialised through the generic int32 property
+                visitor. Real progress is always live - nGranted, and the save hook subtracts the
+                grant for the duration of the visitor call, so a grant never reaches the disc.
 
-  Both regions' weapons
-  AllWeaponsUnlock only bypasses the per-weapon unlock list. What hides the other map's weapons is
-  the pair of act gates ahead of it in CWeaponBazaar::IsWeaponUnlocked, and those are patched out.
+  Freecam       cameras.Camera.Free, a self contained fly camera in the retail entity library,
+                gated on nothing.
 
-  Diamonds
-  The wallet is one int32 on CEconomyComponent+0x10, serialised through the engine's generic int32
-  property visitor. Granted diamonds never reach the disc: real progress is always live - nGranted,
-  and the save hook subtracts the grant for the duration of the visitor call.
+  Noclip        Built on the gameplay camera, not cameras.Camera.Ghost: the ghost drives the
+                player's transform after the animation pass that places the arms, leaving the
+                viewmodel a frame behind. Here the camera is left alone and the player moved
+                underneath it, so HUD, aiming, weapons and viewmodel stay stock.
 
-  Freecam
-  cameras.Camera.Free ships in the retail entity library, a self contained fly camera gated on
-  nothing that pushes an exclusive input mapping and parks the pawn.
-
-  Noclip
-  Built on the gameplay camera rather than cameras.Camera.Ghost, which drives the player's transform
-  after the animation pass that places the arms and so leaves the viewmodel a frame behind. Here the
-  camera is left alone and the player moved underneath it, leaving camera, HUD, aiming, weapons and
-  viewmodel stock.
-
-  The clock
-  A mid hook on CPawnInputListener::Update, past its check that gameplay input is enabled, so menus
-  and cutscenes take the debug keys with them.
+  The clock     A mid hook on CPawnInputListener::Update, past its check that gameplay input is
+                enabled, so menus and cutscenes take the debug keys with them.
 */
 
 module;
@@ -62,6 +49,7 @@ module;
 #include <cctype>
 #include <intrin.h>
 #include <string_view>
+#include <chrono>
 
 export module debug;
 
@@ -216,37 +204,11 @@ static constexpr size_t nAnglePitch = 0;
 // that constant.
 static constexpr float fLookRadiansPerUnit = 3.14159265f;
 
-// The pad, read straight from XInput rather than off the engine's poll, which inputdevice.ixx has
-// already mid-hooked. Movement and the speed step only. Look arrives on the pawn's accumulator
-// whichever device is in use.
-struct XInputGamepad
-{
-    uint16_t nButtons;
-    uint8_t nLeftTrigger;
-    uint8_t nRightTrigger;
-    int16_t sThumbLX;
-    int16_t sThumbLY;
-    int16_t sThumbRX;
-    int16_t sThumbRY;
-};
-
-struct XInputState
-{
-    uint32_t nPacket;
-    XInputGamepad Gamepad;
-};
-
-using XInputGetState_t = uint32_t(WINAPI*)(uint32_t nUser, XInputState* pState);
-
-static XInputGetState_t XInputGetStateFn = nullptr;
-
-// The standard left-stick deadzone.
-static constexpr float fThumbDeadzone = 7849.0f;
-static constexpr float fThumbRange = 32767.0f;
-
-// XINPUT_GAMEPAD_LEFT_THUMB and RIGHT_THUMB. Left steps the speed up, right steps it down. Left is
-// the sprint button, free to reuse because noclip clears the sprint request anyway; both are only
-// read while a mode is up.
+// XINPUT_GAMEPAD_LEFT_THUMB and RIGHT_THUMB, the speed steps up and down. Pad state comes off
+// inputdevice.ixx, which already mid-hooks the engine's own poll. Movement and the speed step only:
+// look arrives on the pawn's accumulator whichever device is in use. Left thumb is also the sprint
+// button, free to reuse because noclip clears the sprint request and both are read only while a
+// mode is up.
 static constexpr uint16_t nPadSpeedCycle = 0x0040;
 static constexpr uint16_t nPadSlowCycle = 0x0080;
 
@@ -257,15 +219,6 @@ static constexpr uint32_t nSignalQuickLoad = 0x9F8F5553; // "quickload"
 
 // The euler triple the renderer reads off the render camera.
 static constexpr ptrdiff_t nRenderCameraEuler = 0x6C;
-
-// Just short of straight up and down. With physics off, nothing else holds the pitch.
-static constexpr float fLookPitchLimit = 1.55f;
-
-// Which way a positive pitch tilts the flight direction. Flip if looking up flies down.
-static constexpr float fNoclipPitchSign = 1.0f;
-
-static constexpr size_t nLookAccumulatorPitch = 0;
-static constexpr size_t nLookAccumulatorYaw = 1;
 
 // Metres a second at the baseline step. The engine's free camera starts at 5, which crawls.
 static constexpr float fNoclipBaseSpeed = 12.0f;
@@ -286,9 +239,6 @@ static constexpr int nKeyLookDown = VK_DOWN;
 
 // A whole unit of the camera's look rate is a half turn a second, far too fast for a key.
 static constexpr float fLookRate = 0.35f;
-
-// The units already line up, so 1.0 matches ordinary looking.
-static constexpr float fMouseLookGain = 1.0f;
 
 // Stepped through rather than held: Shift walks up the array, Alt walks down, and either wraps back
 // to the baseline off its own end, so one key alone always gets back to normal speed.
@@ -411,9 +361,6 @@ static void* pNoclipPhysics = nullptr;
 // else's. Zero whenever noclip is not engaged.
 static uintptr_t nNoclipStateBlock = 0;
 
-// Wall clock for the frame delta, since the input pass does not carry one.
-static int64_t nNoclipLastCounter = 0;
-
 // The view angles noclip keeps on the player's behalf. See ApplyNoclip for why it has to.
 static float fNoclipYaw = 0.0f;
 static float fNoclipPitch = 0.0f;
@@ -429,9 +376,7 @@ static size_t nSpeedStep = nBaseSpeedStep;
 // The highest step the mode currently up allows.
 static size_t TopSpeedStep()
 {
-    return (eCameraMode == CameraMode::Noclip)
-        ? nNoclipTopStep
-        : (sizeof(fSpeedSteps) / sizeof(fSpeedSteps[0]) - 1);
+    return (eCameraMode == CameraMode::Noclip) ? nNoclipTopStep : std::size(fSpeedSteps) - 1;
 }
 
 // Look input since the camera last consumed it, in the units its look fields want. Sampled from the
@@ -458,56 +403,36 @@ static size_t nSyringeConsumeSiteCount = 0;
 static void* pCounters = nullptr;
 static void* pCountersVTable = nullptr;
 
-// The physics component of the vehicle the player is in, with the ref block and entity it was
-// derived through. Re-derived every frame and cleared first, so exiting the vehicle, a level load
+// The vehicle the player is in, re-derived every frame and cleared first, so exiting, a level load
 // and the option going off all end the protection on the next tick.
 //
-// All three are checked in the damage hooks, because the allocator can hand the component's address
-// back for something else and reading the entity out of the ref block is the engine's own liveness
-// test. They are written last to first and cleared first to last: the hooks run on physics jobs,
-// and a torn read that fails the component test lets the damage through.
+// All three are checked in the damage hooks: the allocator can hand the component's address back
+// for something else, and reading the entity out of the ref block is the engine's own liveness
+// test. Written last to first and cleared first to last, because the hooks run on physics jobs and
+// a torn read that fails the component test lets the damage through.
 static void* pVehiclePhysics = nullptr;
 static void* pVehicleRefBlock = nullptr;
 static void* pVehicleEntity = nullptr;
-
-// Mirrored out of the ini so the per-frame path is not reading a variant.
-static int32_t nDiamondTarget = 0;
-
-static bool bInvincibility = false;
-static bool bInfiniteAmmo = false;
-static bool bUnlockAllWeapons = false;
-static bool bNoclipEnabled = false;
-static bool bFreecamEnabled = false;
 
 static int nNoclipKey = 0;
 static int nFreecamKey = 0;
 
 /*
-  The multiplayer gate.
+  The multiplayer gate. Every setting here is a cheat, so none may be live in a match.
 
-  Every setting in this module is a cheat, so none of them may be live in a match. The engine's
-  answer is the session type, an int at +18h on the session object, and its names are in the binary:
-  the status line at 101F3450 switches on it for
+  Session type, an int at +18h on the session object. The status line at 101F3450 names the values:
 
       0 Invalid   1 Offline   2 Online   3 Lan   4 Split   5 Single
 
-  so a match is 2 or 3. FUN_107BDD00 agrees from the other side, handing out the network session
-  object for those two and null for every other value.
+  A match is 2 or 3; FUN_107BDD00 agrees, handing out a network session object for those two only.
 
-  Dead end. An 8 byte singleton made at engine init carries a flag at +4 that the gameplay code
-  tests everywhere and reads like "this session is networked". It is not. It is derived from this
-  same type as "not Offline", at 107A3D9A:
+  Do not use the 8 byte singleton's flag at +4, which reads like "this session is networked" and is
+  not: it is this same type as "not Offline", derived at 107A3D9A, so it stands at 1 in
+  singleplayer and on the main menu.
 
-      8B 8E E4 00 00 00   MOV ECX,[ESI+0E4h]     ; the session
-      E8 ? ? ? ?          CALL <get session type>
-      83 F8 01            CMP EAX,1
-      0F 95 C1            SETNZ CL               ; Single and the main menu are not Offline either
-
-  so it stands at 1 in singleplayer and on the main menu, and greys every row all the time.
-
-  The pattern is that same MOV, in the handler the engine runs on every session change. The type is
-  read there and kept, rather than the slot address being kept and read later: the object does not
-  outlive the session, and +18h through a dead one is whatever the allocator left behind.
+  The pattern is the MOV in the handler the engine runs on every session change. The type is read
+  there and kept rather than the slot address being kept and read later, because the object does not
+  outlive the session and +18h through a dead one is whatever the allocator left behind.
 */
 static const char* const szSessionSlotPattern =
     "8B 8E E4 00 00 00 E8 ? ? ? ? 83 F8 01 0F 95 C1 88 4C 24 50";
@@ -517,17 +442,32 @@ static constexpr uintptr_t nSessionType = 0x18;
 static constexpr int32_t nSessionOnline = 2;
 static constexpr int32_t nSessionLan = 3;
 
-// Written from the engine's thread inside the handler, read from the menu's.
+// Written from the engine's thread inside the handler, read from the menu's and from physics jobs.
 static std::atomic<int32_t> nLiveSessionType = 0;
 
-// The ini's own answers, before the gate. The mirrors above are what the rest of the module reads,
-// so those carry the gated values and a match turns everything off without the file moving.
+export bool JackalFixInMultiplayer()
+{
+    const auto nType = nLiveSessionType.load();
+
+    return nType == nSessionOnline || nType == nSessionLan;
+}
+
+// The ini's own answers, and the gate over them. Asked per read rather than mirrored, since a match
+// starts and ends without the file moving. Every path that owns a setting handles it going off
+// underneath: a camera mode puts the player back, a target of zero retires the diamond grant.
 static bool bIniInvincibility = false;
 static bool bIniInfiniteAmmo = false;
 static bool bIniUnlockAllWeapons = false;
 static bool bIniNoclipEnabled = false;
 static bool bIniFreecamEnabled = false;
 static int32_t nIniDiamondTarget = 0;
+
+static bool Invincibility() { return bIniInvincibility && !JackalFixInMultiplayer(); }
+static bool InfiniteAmmo() { return bIniInfiniteAmmo && !JackalFixInMultiplayer(); }
+static bool UnlockAllWeapons() { return bIniUnlockAllWeapons && !JackalFixInMultiplayer(); }
+static bool NoclipEnabled() { return bIniNoclipEnabled && !JackalFixInMultiplayer(); }
+static bool FreecamEnabled() { return bIniFreecamEnabled && !JackalFixInMultiplayer(); }
+static int32_t DiamondTarget() { return JackalFixInMultiplayer() ? 0 : nIniDiamondTarget; }
 
 // ------------------------------------------------------------------------------------------------
 // Key names.
@@ -612,64 +552,44 @@ static bool KeyPressed(int nKey, bool& bLatch)
     return bEdge;
 }
 
-// Deadzoned and normalised, so a worn stick resting off centre is not input.
-static float ThumbAxis(int16_t sValue)
-{
-    auto fValue = static_cast<float>(sValue);
-    if (fValue > -fThumbDeadzone && fValue < fThumbDeadzone)
-        return 0.0f;
-
-    auto fScaled = (fValue - (fValue > 0.0f ? fThumbDeadzone : -fThumbDeadzone)) / (fThumbRange - fThumbDeadzone);
-
-    return std::clamp(fScaled, -1.0f, 1.0f);
-}
-
-// The first connected pad, through whichever XInput the game loaded.
-static bool ReadPad(XInputGamepad& Pad)
-{
-    if (XInputGetStateFn == nullptr)
-    {
-        static const wchar_t* pModules[]{ L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll", L"xinput1_2.dll", L"xinput1_1.dll" };
-
-        for (auto pModule : pModules)
-        {
-            auto hModule = GetModuleHandleW(pModule);
-            if (hModule == nullptr)
-                hModule = LoadLibraryW(pModule);
-
-            if (hModule != nullptr)
-            {
-                XInputGetStateFn = reinterpret_cast<XInputGetState_t>(GetProcAddress(hModule, "XInputGetState"));
-                if (XInputGetStateFn != nullptr)
-                    break;
-            }
-        }
-
-        if (XInputGetStateFn == nullptr)
-            return false;
-    }
-
-    for (uint32_t nUser = 0; nUser < 4; nUser++)
-    {
-        XInputState State{};
-        if (XInputGetStateFn(nUser, &State) == ERROR_SUCCESS)
-        {
-            Pad = State.Gamepad;
-            return true;
-        }
-    }
-
-    return false;
-}
-
 // KeyPressed, for a pad button.
-static bool PadPressed(uint16_t nButtons, uint16_t nButton, bool& bLatch)
+static bool PadPressed(uint16_t nButton, bool& bLatch)
 {
-    auto bDown = (nButtons & nButton) != 0;
+    auto bDown = (GetPadState().nButtons & nButton) != 0;
     auto bEdge = bDown && !bLatch;
     bLatch = bDown;
 
     return bEdge;
+}
+
+// Fixed bindings, unit axes. The left stick is added rather than replacing the keys, and only where
+// the engine's own mapping is not already feeding the same fields. Height stays on the keyboard:
+// the triggers are aim and fire, and these modes leave the weapons working.
+struct MoveAxes
+{
+    float fStrafe;
+    float fForward;
+    float fVertical;
+};
+
+static MoveAxes ReadMoveAxes(bool bWithPad)
+{
+    MoveAxes Move
+    {
+        (KeyDown(nKeyStrafeRight) ? 1.0f : 0.0f) - (KeyDown(nKeyStrafeLeft) ? 1.0f : 0.0f),
+        (KeyDown(nKeyForward) ? 1.0f : 0.0f) - (KeyDown(nKeyBack) ? 1.0f : 0.0f),
+        (KeyDown(nKeyUp) ? 1.0f : 0.0f) - (KeyDown(nKeyDown) ? 1.0f : 0.0f),
+    };
+
+    if (bWithPad)
+    {
+        const auto& Pad = GetPadState();
+
+        Move.fStrafe = std::clamp(Move.fStrafe + PadThumbAxis(Pad.sThumbLX), -1.0f, 1.0f);
+        Move.fForward = std::clamp(Move.fForward + PadThumbAxis(Pad.sThumbLY), -1.0f, 1.0f);
+    }
+
+    return Move;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -686,31 +606,32 @@ static void ApplyProfileFlags()
     if (pProfile == 0)
         return;
 
-    *reinterpret_cast<int32_t*>(pProfile + nProfileGodMode) = bInvincibility ? nCheatOn : nCheatOff;
-    *reinterpret_cast<int32_t*>(pProfile + nProfileUnlimitedAmmo) = bInfiniteAmmo ? nCheatOn : nCheatOff;
-    *reinterpret_cast<int32_t*>(pProfile + nProfileAllWeaponsUnlock) = bUnlockAllWeapons ? nCheatOn : nCheatOff;
+    *reinterpret_cast<int32_t*>(pProfile + nProfileGodMode) = Invincibility() ? nCheatOn : nCheatOff;
+    *reinterpret_cast<int32_t*>(pProfile + nProfileUnlimitedAmmo) = InfiniteAmmo() ? nCheatOn : nCheatOff;
+    *reinterpret_cast<int32_t*>(pProfile + nProfileAllWeaponsUnlock) = UnlockAllWeapons() ? nCheatOn : nCheatOff;
 }
 
 // ------------------------------------------------------------------------------------------------
 // Health floor.
 
-// Same guard as the economy component: a live local player, and the object still beginning with the
-// vtable its constructor wrote.
-static bool CountersAreLive()
+// Guards every write to a component this module only holds a pointer to: a live local player, and
+// the object still beginning with the vtable it was first seen carrying. Without it a level load
+// leaves an int32 being written into freed heap.
+static bool ObjectIsLive(void* pObject, void* pVTable)
 {
-    if (pCounters == nullptr || pCountersVTable == nullptr)
+    if (pObject == nullptr || pVTable == nullptr)
         return false;
 
     if (GetLocalPlayer == nullptr || GetLocalPlayer() == nullptr)
         return false;
 
-    return *reinterpret_cast<void**>(pCounters) == pCountersVTable;
+    return *reinterpret_cast<void**>(pObject) == pVTable;
 }
 
 // Puts the player back above the health-failure threshold, which GodMode on its own will not do.
 static void ApplyHealthFloor()
 {
-    if (!bInvincibility || !CountersAreLive())
+    if (!Invincibility() || !ObjectIsLive(pCounters, pCountersVTable))
         return;
 
     auto nCounters = reinterpret_cast<uintptr_t>(pCounters);
@@ -741,7 +662,7 @@ static void ApplyHealthFloor()
 
 static bool VehicleIsProtected(void* pComponent)
 {
-    if (!bInvincibility || pComponent == nullptr || pComponent != pVehiclePhysics)
+    if (!Invincibility() || pComponent == nullptr || pComponent != pVehiclePhysics)
         return false;
 
     auto pRefBlock = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pComponent) + nVehicleRefBlock);
@@ -759,7 +680,7 @@ static void ApplyVehicleProtection(uintptr_t nPawn)
     pVehicleRefBlock = nullptr;
     pVehicleEntity = nullptr;
 
-    if (!bInvincibility || nPawn == 0)
+    if (!Invincibility() || nPawn == 0)
         return;
 
     if (GetCurrentVehicle == nullptr || GetVehiclePhysics == nullptr)
@@ -810,18 +731,6 @@ static int32_t* LiveDiamonds()
     return reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(pEconomy) + nEconomyDiamondCount);
 }
 
-// Guards against writing an int32 into freed heap on the far side of a level load.
-static bool EconomyIsLive()
-{
-    if (pEconomy == nullptr || pEconomyVTable == nullptr)
-        return false;
-
-    if (GetLocalPlayer == nullptr || GetLocalPlayer() == nullptr)
-        return false;
-
-    return *reinterpret_cast<void**>(pEconomy) == pEconomyVTable;
-}
-
 // Hands the grant back to the wallet. Abandoning it would promote granted diamonds to real
 // progress, and the save hook only sanitises while a grant is outstanding.
 static void RetireGrant()
@@ -829,7 +738,7 @@ static void RetireGrant()
     if (nGranted <= 0)
         return;
 
-    if (EconomyIsLive())
+    if (ObjectIsLive(pEconomy, pEconomyVTable))
     {
         auto pLive = LiveDiamonds();
         *pLive = (*pLive > nGranted) ? (*pLive - nGranted) : 0;
@@ -878,25 +787,25 @@ static void ApplyDiamonds()
 {
     // The pointer is not dropped on a failure here. Settling the grant needs a live wallet, and the
     // constructor hook re-points it on the next load anyway.
-    if (!EconomyIsLive())
+    if (!ObjectIsLive(pEconomy, pEconomyVTable))
         return;
 
     auto pLive = LiveDiamonds();
+    const auto nTarget = DiamondTarget();
 
-    if (nDiamondTarget > 0)
+    if (nTarget > 0)
     {
-        if (*pLive < nDiamondTarget)
+        if (*pLive < nTarget)
         {
-            nGranted += nDiamondTarget - *pLive;
-            *pLive = nDiamondTarget;
+            nGranted += nTarget - *pLive;
+            *pLive = nTarget;
         }
-        else if (nGranted > 0 && *pLive > nDiamondTarget)
+        else if (nGranted > 0 && *pLive > nTarget)
         {
             // The ini was lowered. Hand back only the part of the grant above the new target, so
             // the balance follows the setting without reaching into real progress.
-            auto nBack = *pLive - nDiamondTarget;
-            if (nBack > nGranted)
-                nBack = nGranted;
+            auto nOver = *pLive - nTarget;
+            auto nBack = (nOver < nGranted) ? nOver : nGranted;
 
             *pLive -= nBack;
             nGranted -= nBack;
@@ -904,10 +813,7 @@ static void ApplyDiamonds()
 
         // If something outside these hooks lowered the count, trim the grant to what is still in
         // the wallet rather than leave it overstated.
-        if (nGranted > *pLive)
-            nGranted = *pLive;
-        if (nGranted < 0)
-            nGranted = 0;
+        nGranted = std::clamp(nGranted, 0, (*pLive > 0) ? *pLive : 0);
 
         return;
     }
@@ -1055,8 +961,12 @@ static bool ReadViewPitch(float& fPitch)
     return true;
 }
 
+// Owns the mode as well as the state, so no caller has to remember to clear it.
 static void LeaveNoclip()
 {
+    if (eCameraMode == CameraMode::Noclip)
+        eCameraMode = CameraMode::None;
+
     if (pNoclipEntityRef == nullptr)
         return;
 
@@ -1137,25 +1047,14 @@ static void ApplyNoclip(uintptr_t nListener, uintptr_t nPawn, float fDelta)
     // cannot drift out of the view the way an integrated pitch did, because the body it is written
     // to is what the camera follows.
     if (nListener != 0 && fDelta > 0.0f)
-    {
-        auto pAccumulator = reinterpret_cast<const float*>(nListener + nListenerLookX);
-
-        fNoclipYaw -= pAccumulator[nLookAccumulatorYaw] * fDelta * fLookRadiansPerUnit;
-    }
+        fNoclipYaw -= *reinterpret_cast<const float*>(nListener + nListenerLookY) * fDelta * fLookRadiansPerUnit;
 
     // Pitch never went through the body and is only tracked for the flight direction, so it is read
-    // back off the camera. Integrating it ran the same arithmetic on this module's wall clock while
-    // the engine ran on its own frame time, and the two drifting apart sent flight diagonally away
-    // from a level view. Reading it back is a frame behind and cannot drift.
-    if (!ReadViewPitch(fNoclipPitch) && nListener != 0 && fDelta > 0.0f)
-    {
-        auto pAccumulator = reinterpret_cast<const float*>(nListener + nListenerLookX);
-
-        fNoclipPitch += pAccumulator[nLookAccumulatorPitch] * fDelta * fLookRadiansPerUnit;
-
-        // The controller also held the pitch short of vertical.
-        fNoclipPitch = std::clamp(fNoclipPitch, -fLookPitchLimit, fLookPitchLimit);
-    }
+    // back off the camera rather than integrated. Integrating it ran on this module's wall clock
+    // while the engine ran on its own frame time, and the two drifting apart sent flight diagonally
+    // away from a level view. A camera to ask always exists here; if there were not, pitch holds at
+    // zero and flight is level.
+    ReadViewPitch(fNoclipPitch);
 
     // Angle triples here are (pitch, roll, yaw). The body takes the yaw and stays upright: pitching
     // it would pitch the head bone, and with it the arms, away from a view that is not pitching with
@@ -1166,24 +1065,9 @@ static void ApplyNoclip(uintptr_t nListener, uintptr_t nPawn, float fDelta)
     if (fDelta <= 0.0f || !HasFocus())
         return;
 
-    auto fStrafe = (KeyDown(nKeyStrafeRight) ? 1.0f : 0.0f) - (KeyDown(nKeyStrafeLeft) ? 1.0f : 0.0f);
-    auto fForward = (KeyDown(nKeyForward) ? 1.0f : 0.0f) - (KeyDown(nKeyBack) ? 1.0f : 0.0f);
-    auto fVertical = (KeyDown(nKeyUp) ? 1.0f : 0.0f) - (KeyDown(nKeyDown) ? 1.0f : 0.0f);
+    const auto Move = ReadMoveAxes(true);
 
-    // The pad adds to the keyboard rather than replacing it. Height stays on the keyboard: the
-    // triggers are aim and fire, and this mode is meant to leave the weapons working.
-    XInputGamepad Pad{};
-    if (ReadPad(Pad))
-    {
-        fStrafe += ThumbAxis(Pad.sThumbLX);
-        fForward += ThumbAxis(Pad.sThumbLY);
-    }
-
-    fStrafe = std::clamp(fStrafe, -1.0f, 1.0f);
-    fForward = std::clamp(fForward, -1.0f, 1.0f);
-    fVertical = std::clamp(fVertical, -1.0f, 1.0f);
-
-    if (fStrafe == 0.0f && fForward == 0.0f && fVertical == 0.0f)
+    if (Move.fStrafe == 0.0f && Move.fForward == 0.0f && Move.fVertical == 0.0f)
         return;
 
     auto fStep = fNoclipBaseSpeed * fSpeedSteps[nSpeedStep] * fDelta;
@@ -1199,13 +1083,13 @@ static void ApplyNoclip(uintptr_t nListener, uintptr_t nPawn, float fDelta)
     // The body is upright, so the pitch that makes flying follow the view is applied here rather
     // than read out of the basis.
     auto fCos = std::cos(fNoclipPitch);
-    auto fSin = std::sin(fNoclipPitch) * fNoclipPitchSign;
+    auto fSin = std::sin(fNoclipPitch);
 
     float fMove[3]{};
     for (auto i = 0; i < 3; i++)
     {
         auto fAheadTilted = pAhead[i] * fCos + pUp[i] * fSin;
-        fMove[i] = (fStrafe * pRight[i] + fForward * fAheadTilted + fVertical * pUp[i]) * fStep;
+        fMove[i] = (Move.fStrafe * pRight[i] + Move.fForward * fAheadTilted + Move.fVertical * pUp[i]) * fStep;
     }
 
     SetEntityPosition(pEntity, nullptr,
@@ -1228,13 +1112,9 @@ static bool DebugCameraStillOurs()
     return GetActiveCamera(pManager) == pDebugCamera;
 }
 
-// Puts the Locked byte back if its manager is still live, then forgets everything. Every exit path
-// ends here, including the ones where the camera is already gone.
-static void ForgetCameraMode()
+// Fields only, so it is also safe from shutdown, which runs under the loader lock.
+static void ResetCameraState()
 {
-    if (pDebugCameraManager != nullptr && pDebugCameraManager == ResolveCameraManager())
-        *reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(pDebugCameraManager) + nManagerLocked) = nSavedLocked;
-
     eCameraMode = CameraMode::None;
     pDebugCamera = nullptr;
     pDebugCameraManager = nullptr;
@@ -1243,6 +1123,16 @@ static void ForgetCameraMode()
     bFedCameraLook = false;
     fMouseLookX = 0.0f;
     fMouseLookY = 0.0f;
+}
+
+// Puts the Locked byte back if its manager is still live, then forgets everything. Every exit path
+// ends here, including the ones where the camera is already gone.
+static void ForgetCameraMode()
+{
+    if (pDebugCameraManager != nullptr && pDebugCameraManager == ResolveCameraManager())
+        *reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(pDebugCameraManager) + nManagerLocked) = nSavedLocked;
+
+    ResetCameraState();
 }
 
 static void LeaveCameraMode()
@@ -1297,14 +1187,12 @@ static bool EnterFreecam()
     ClearCameraAxes(pCamera);
     SnapCameraToFocus(pManager, pCamera);
 
+    ResetCameraState();
+
     eCameraMode = CameraMode::Freecam;
     pDebugCamera = pCamera;
     pDebugCameraManager = pManager;
     nSavedLocked = nWasLocked;
-    bFedCameraMove = false;
-    bFedCameraLook = false;
-    fMouseLookX = 0.0f;
-    fMouseLookY = 0.0f;
 
     return true;
 }
@@ -1326,16 +1214,16 @@ static void FeedCameraInput(void* pCamera)
     *reinterpret_cast<float*>(pComponent + nCameraSpeed) = fFreecamBaseSpeed * fSpeedSteps[nSpeedStep];
 
     // ---- movement ----
-    auto fForward = (bFocused && KeyDown(nKeyForward) ? 1.0f : 0.0f) - (bFocused && KeyDown(nKeyBack) ? 1.0f : 0.0f);
-    auto fStrafe = (bFocused && KeyDown(nKeyStrafeRight) ? 1.0f : 0.0f) - (bFocused && KeyDown(nKeyStrafeLeft) ? 1.0f : 0.0f);
-    auto fVertical = (bFocused && KeyDown(nKeyUp) ? 1.0f : 0.0f) - (bFocused && KeyDown(nKeyDown) ? 1.0f : 0.0f);
+    //
+    // No pad here: the retail free_camera mapping already feeds these fields from the stick.
+    const auto Move = bFocused ? ReadMoveAxes(false) : MoveAxes{};
 
-    if (fForward != 0.0f || fStrafe != 0.0f || fVertical != 0.0f)
+    if (Move.fForward != 0.0f || Move.fStrafe != 0.0f || Move.fVertical != 0.0f)
     {
         // Unit axes. The speed is on the field written above.
-        *reinterpret_cast<float*>(pComponent + nCameraMoveForward) = fForward;
-        *reinterpret_cast<float*>(pComponent + nCameraMoveStrafe) = fStrafe;
-        *reinterpret_cast<float*>(pComponent + nCameraMoveVertical) = fVertical;
+        *reinterpret_cast<float*>(pComponent + nCameraMoveForward) = Move.fForward;
+        *reinterpret_cast<float*>(pComponent + nCameraMoveStrafe) = Move.fStrafe;
+        *reinterpret_cast<float*>(pComponent + nCameraMoveVertical) = Move.fVertical;
 
         bFedCameraMove = true;
     }
@@ -1404,7 +1292,10 @@ static int32_t __fastcall ItemConsume(void* pPool, void* pEdx, int32_t nAmount)
     for (size_t i = 0; i < nSyringeConsumeSiteCount; i++)
     {
         if (nCaller == pSyringeConsumeSite[i])
+        {
             bSyringe = true;
+            break;
+        }
     }
 
     auto pProfile = (ppGameProfile != nullptr) ? *ppGameProfile : nullptr;
@@ -1496,13 +1387,6 @@ static void __fastcall FreeCameraUpdate(void* pInterface, void* pEdx, float fDel
 
 // ------------------------------------------------------------------------------------------------
 
-export bool JackalFixInMultiplayer()
-{
-    const auto nType = nLiveSessionType.load();
-
-    return nType == nSessionOnline || nType == nSessionLan;
-}
-
 // The two act gates, patched only while Unlock All Weapons is live. Null until init has matched the
 // pattern they sit in.
 static raw_mem* pFirstActGate = nullptr;
@@ -1511,12 +1395,15 @@ static raw_mem* pSecondActGate = nullptr;
 // -1 rather than a bool so the first call always writes, whichever way it goes.
 static int nActGateWritten = -1;
 
+// Run every frame as well as on an ini change, because a match starts and ends without the file
+// moving. Everything else the gate covers is read through its accessor; only this one is a patch
+// that has to be written and taken back.
 static void ApplyActGate()
 {
     if (pFirstActGate == nullptr)
         return;
 
-    const auto nWanted = bUnlockAllWeapons ? 1 : 0;
+    const auto nWanted = UnlockAllWeapons() ? 1 : 0;
     if (nWanted == nActGateWritten)
         return;
 
@@ -1532,24 +1419,6 @@ static void ApplyActGate()
         pFirstActGate->Restore();
         pSecondActGate->Restore();
     }
-}
-
-// Run every frame as well as on an ini change, because a match starts and ends without the file
-// moving. Turning the settings off is all it does: the paths that own them already handle one going
-// off underneath, so a camera mode puts the player back and a diamond target of zero retires the
-// grant, handing the granted diamonds back rather than leaving them banked.
-static void ApplySessionGate()
-{
-    const auto bLocked = JackalFixInMultiplayer();
-
-    bInvincibility = bIniInvincibility && !bLocked;
-    bInfiniteAmmo = bIniInfiniteAmmo && !bLocked;
-    bUnlockAllWeapons = bIniUnlockAllWeapons && !bLocked;
-    bNoclipEnabled = bIniNoclipEnabled && !bLocked;
-    bFreecamEnabled = bIniFreecamEnabled && !bLocked;
-    nDiamondTarget = bLocked ? 0 : nIniDiamondTarget;
-
-    ApplyActGate();
 }
 
 static void ReadSettings()
@@ -1570,7 +1439,7 @@ static void ReadSettings()
     if (nFreecamKey != 0 && nFreecamKey == nNoclipKey)
         nFreecamKey = 0;
 
-    ApplySessionGate();
+    ApplyActGate();
 }
 
 // Once a frame from CPawnInputListener::Update, on the branch taken when gameplay input is enabled.
@@ -1581,20 +1450,17 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
 {
     // The input pass carries no delta. A hitch, a load or a breakpoint comes back as zero rather
     // than a very large step, so nothing downstream launches the player across the map.
-    LARGE_INTEGER counter{};
-    LARGE_INTEGER frequency{};
-    QueryPerformanceCounter(&counter);
-    QueryPerformanceFrequency(&frequency);
+    static std::chrono::steady_clock::time_point LastTick{};
 
-    auto fFrameDelta = 0.0f;
-    if (nNoclipLastCounter != 0 && frequency.QuadPart != 0)
-        fFrameDelta = static_cast<float>(static_cast<double>(counter.QuadPart - nNoclipLastCounter) / static_cast<double>(frequency.QuadPart));
-    nNoclipLastCounter = counter.QuadPart;
+    const auto Now = std::chrono::steady_clock::now();
+    auto fFrameDelta = (LastTick == std::chrono::steady_clock::time_point{})
+        ? 0.0f : std::chrono::duration<float>(Now - LastTick).count();
+    LastTick = Now;
 
     if (fFrameDelta < 0.0f || fFrameDelta > 0.25f)
         fFrameDelta = 0.0f;
 
-    ApplySessionGate();
+    ApplyActGate();
 
     ApplyProfileFlags();
     ApplyHealthFloor();
@@ -1611,22 +1477,17 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     // Skipped on a pad, where the engine's mapping already feeds these and would double them.
     if (eCameraMode == CameraMode::Freecam && nListener != 0 && !IsPadActiveDevice())
     {
-        fMouseLookX = *reinterpret_cast<float*>(nListener + nListenerLookX) * fMouseLookGain;
-        fMouseLookY = *reinterpret_cast<float*>(nListener + nListenerLookY) * fMouseLookGain;
+        fMouseLookX = *reinterpret_cast<float*>(nListener + nListenerLookX);
+        fMouseLookY = *reinterpret_cast<float*>(nListener + nListenerLookY);
     }
 
     if (eCameraMode == CameraMode::Noclip)
     {
         // The entity going away is a level load. Drop the reference rather than follow it.
         if (FocusEntity(pNoclipEntityRef) == nullptr)
-        {
             LeaveNoclip();
-            eCameraMode = CameraMode::None;
-        }
         else
-        {
             ApplyNoclip(nListener, nPawn, fFrameDelta);
-        }
     }
 
     // A level load or a cutscene taking the camera ends the mode where it stands. No switch is
@@ -1634,16 +1495,12 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     if (eCameraMode == CameraMode::Freecam && !DebugCameraStillOurs())
         ForgetCameraMode();
 
-    // Switching a mode off in the ini while it is engaged has to put the player back.
-    if (eCameraMode == CameraMode::Noclip && !bNoclipEnabled)
-    {
+    // Switching a mode off in the ini, or a match starting, while it is engaged has to put the
+    // player back.
+    if (eCameraMode == CameraMode::Noclip && !NoclipEnabled())
         LeaveNoclip();
-        eCameraMode = CameraMode::None;
-    }
-    else if (eCameraMode == CameraMode::Freecam && !bFreecamEnabled)
-    {
+    else if (eCameraMode == CameraMode::Freecam && !FreecamEnabled())
         LeaveCameraMode();
-    }
 
     if (!HasFocus())
         return;
@@ -1660,10 +1517,8 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     static bool bPadSpeedLatch = false;
     static bool bPadSlowLatch = false;
 
-    XInputGamepad Pad{};
-    auto bPadRead = ReadPad(Pad);
-    auto bPadSpeedEdge = bPadRead && PadPressed(Pad.nButtons, nPadSpeedCycle, bPadSpeedLatch);
-    auto bPadSlowEdge = bPadRead && PadPressed(Pad.nButtons, nPadSlowCycle, bPadSlowLatch);
+    auto bPadSpeedEdge = PadPressed(nPadSpeedCycle, bPadSpeedLatch);
+    auto bPadSlowEdge = PadPressed(nPadSlowCycle, bPadSlowLatch);
 
     if ((KeyPressed(nKeySpeedCycle, bSpeedLatch) || bPadSpeedEdge) && eCameraMode != CameraMode::None)
         nSpeedStep = (nSpeedStep >= TopSpeedStep()) ? nBaseSpeedStep : nSpeedStep + 1;
@@ -1671,12 +1526,11 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     if ((KeyPressed(nKeySlowCycle, bSlowLatch) || bPadSlowEdge) && eCameraMode != CameraMode::None)
         nSpeedStep = (nSpeedStep == 0) ? nBaseSpeedStep : nSpeedStep - 1;
 
-    if (bNoclipEnabled && bNoclipEdge)
+    if (NoclipEnabled() && bNoclipEdge)
     {
         if (eCameraMode == CameraMode::Noclip)
         {
             LeaveNoclip();
-            eCameraMode = CameraMode::None;
         }
         else
         {
@@ -1691,7 +1545,7 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
             }
         }
     }
-    else if (bFreecamEnabled && bFreecamEdge)
+    else if (FreecamEnabled() && bFreecamEdge)
     {
         if (eCameraMode == CameraMode::Freecam)
         {
@@ -1700,7 +1554,6 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
         else
         {
             LeaveNoclip();
-            eCameraMode = CameraMode::None;
             EnterFreecam();
         }
     }
@@ -2097,12 +1950,8 @@ public:
             // above are different: restoring those is a VirtualProtect and a memcpy.
             JackalFix::onShutdownEvent() += []()
             {
-                eCameraMode = CameraMode::None;
-                pDebugCamera = nullptr;
-                pDebugCameraManager = nullptr;
-                nSavedLocked = 0;
-                bFedCameraMove = false;
-                bFedCameraLook = false;
+                ResetCameraState();
+
                 pVehiclePhysics = nullptr;
                 pVehicleRefBlock = nullptr;
                 pVehicleEntity = nullptr;

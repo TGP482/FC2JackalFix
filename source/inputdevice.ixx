@@ -53,6 +53,34 @@ export bool IsPadActiveDevice()
     return bPadIsActiveDevice;
 }
 
+// The state the driver's last successful poll had in hand, so nothing else has to open its own
+// XInput. Stale, not zeroed, once the pad is unplugged: the hook is past the failure branch.
+export struct PadState
+{
+    uint16_t nButtons;
+    int16_t sThumbLX;
+    int16_t sThumbLY;
+};
+
+static PadState LastPad{};
+
+export const PadState& GetPadState()
+{
+    return LastPad;
+}
+
+// Deadzoned and normalised, so a worn stick resting off centre is not input.
+export float PadThumbAxis(int16_t sValue)
+{
+    auto fValue = static_cast<float>(sValue);
+    if (std::abs(fValue) < nLeftThumbDeadzone)
+        return 0.0f;
+
+    constexpr auto fRange = 32767.0f - nLeftThumbDeadzone;
+
+    return std::clamp((fValue - std::copysign(static_cast<float>(nLeftThumbDeadzone), fValue)) / fRange, -1.0f, 1.0f);
+}
+
 // Fires on the flip rather than on every input. Anything that only rebuilds when a page changes
 // has no other way to notice the player put the pad down mid screen.
 export JackalFix::Event<>& onInputDeviceChange()
@@ -104,6 +132,8 @@ public:
                     auto sThumbLY = *reinterpret_cast<int16_t*>(pPad + nPadThumbLY);
                     auto sThumbRX = *reinterpret_cast<int16_t*>(pPad + nPadThumbRX);
                     auto sThumbRY = *reinterpret_cast<int16_t*>(pPad + nPadThumbRY);
+
+                    LastPad = { nButtons, sThumbLX, sThumbLY };
 
                     if (nButtons != 0
                         || nLeftTrigger > nTriggerThreshold
