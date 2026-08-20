@@ -1,66 +1,8 @@
-/*
-  Restores the controller button prompts on the menu nav bar, the gameplay HUD and the shop
-  computer. Nothing is disabled in code: there is no platform check and no pad flag, and
-  FUN_105362E0 already resolves ui/360.mgb into a valid sprite on stock PC.
-
-  The menus fail twice. FUN_101D26D0 builds attribute names with a literal "_pc" suffix, and shipped
-  data has 300 icon_xenon, 300 icon_ps3, zero icon_pc, so every icon lookup misses. Only the icon
-  copy of the suffix is redirected; show_pc has 140 real uses and must not be touched. Then
-  CNavBarPrompt::SetIcon (FUN_10189BA0, attached flag +0x51, element +0x08) only pushes the sprite
-  into a child named "i_placeholder", which the PC art pass deleted. What survives is:
-
-      "action"         crc 0x47CC8C92   magma::Placeholder   invisible, empty rect
-      "i_background"   crc 0x7A8A6532   magma::Image         the pill behind the label
-      "t_button_text"  crc 0x49D78B9C   magma::Text          the label
-
-  So the glyph is built through magma's factory and measured off the label. Borrowing i_background
-  as the carrier was tried and hands the glyph the pill's rect, a wide rounded box.
-
-  Size is the rect and nothing else. magma::Image has no scale field: Image::Draw (FUN_10AB93F0 into
-  FUN_10AB8CF0) builds the quad from State+0x24..0x2A unless ACTUALSIZE, bit 2 of the flags byte at
-  +0x40, is set. Widgets come out of a recycling pool carrying the last tenant's flags, which drew
-  every glyph at 64x64 texels wherever it was placed, and the UV pair at +0x30..+0x3C rides along.
-
-  PC draws each prompt as a pill, i_background behind t_button_text. 360 has no pill, so its
-  visibility bit at node+0x34 goes off while a pad is active. The mouse pointer goes off with it,
-  through the enabled bitmask at screenManager+0x29: both handlers and the draw loop read it, and
-  the position getter FUN_10AB5710 already answers -32768 for a disabled slot. Pad navigation does
-  not touch either bitmask.
-
-  Dead ends, in rough order of cost:
-
-      Console's HUD markup. Prompts expand {use} into ~AA and magma's text layout draws the glyph
-      inline. The machinery survives in Dunia (scan at 0x1061B1F8, code map at renderer+0x468, keys
-      are zlib CRC-32 of the two characters) but the data does not: no prompt subtree holds a
-      t_button or any magma::Text at all, so there is nothing to write markup into.
-
-      A GlyphFont type is registered but its DynamicCast rejects Font, it has no character lookup,
-      and nothing instantiates it. Prompts are sprites on both platforms.
-
-      Two console prompts do not exist. A bed is an ordinary usable entity on the plain interact
-      prompt, and the phone is a CHud+0x1F4 member driven by a keyframe with no glyph on it.
-
-  magma layout, which every offset below depends on:
-
-      Widget + 0x08          -> State
-      Widget + 0x0C          -> component lock mask, bit set = engine must not write
-      Widget + 0x3C          -> child Area
-      Area   + 0x28 / + 0x2C -> child node vector, begin and end, stride 4
-      node   + 0x08          -> zlib CRC-32 of the child's name; no strings are kept
-      node   + 0x14          -> the drawable
-      State  + 0x24/26/28/2A -> int16 left / right / top / bottom
-      Image  + 0x20          -> sprite
-
-  Type identity is exact vtable equality; magma::Image has no subclasses. A rect written into
-  State+0x24 does not survive a frame unless the matching bit is set in Widget+0x0C: 0xF00 pins the
-  rectangle, 0xE0 rotation and pivot, 0x0F800000 the vertex colours.
-*/
-
 module;
 
 #include <common.hxx>
 #include <cstdint>
-#include <set>
+#include <vector>
 
 export module controllerprompts;
 
@@ -965,7 +907,9 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
   every prompt without detaching anything. CNavBarPrompt opens with a vftable, which tells a live
   object from a freed block, and OnDetach clears the attached flag at +0x51.
 */
-static std::set<uint8_t*> sAttachedPrompts;
+// A vector rather than a set: the pad buttons below want the most recently attached prompt for a
+// button id, and attach order is the only thing that tells a modal's prompts from the page's.
+static std::vector<uint8_t*> sAttachedPrompts;
 
 // VirtualQuery rather than an SEH frame, so the check costs the same whether the page is there or
 // not and the walk stays an ordinary function.
@@ -1926,6 +1870,411 @@ static void RefreshBazaarGlyphs()
     ApplyBazaarArrows();
 }
 
+// --------------------------------------------------------------------------------------------
+// Menu buttons the PC build left on the mouse
+// --------------------------------------------------------------------------------------------
+
+/*
+  Default, Apply, Create and Edit have a nav bar prompt and a pad glyph and no pad input: the only
+  way to reach them is the pointer. The exit box is the same shape one step further, its Cancel and
+  Accept reachable by pointer or by walking the focus onto them with the arrows, where console just
+  wanted B or A.
+
+  The pad does reach the UI. FUN_104F1A90 fills a map from action id to a UI key, keyed on the
+  gamepad event type, and the ids are zlib CRC-32 of the action names, the same hash the widget
+  tree uses:
+
+      "a"  -> 0x0D    "x"     -> 0x202    "left_shoulder"  -> 0x206    "left_trigger"  -> 0x204
+      "b"  -> 0x1B    "y"     -> 0x203    "right_shoulder" -> 0x207    "right_trigger" -> 0x205
+                      "start" -> 0x20B    "back"           -> 0x20A
+
+  So A and B arrive as Enter and Escape and land on whatever holds the focus, and X and Y arrive as
+  0x202 and 0x203, which nothing in Dunia compares against: a search of every decoded instruction
+  finds no CMP against either. The console handling is data, not code, and the PC .mgb does not
+  carry it.
+
+  What the pointer does is reachable. FUN_10AA5930, a page's mouse button handler, does not hit
+  test: the hit test ran on the last move and left the Node it found at page+0x1C, and the press
+  dispatches to it through that Node's vtable+0x8C. FUN_10AA23E0 is that hit test and it walks
+  Nodes, which is what CNavBarPrompt keeps at +0x04. Its +0x08 is the widget the Node draws, and
+  handing that over instead is a crash rather than a miss: a magma::ButtonInstance vftable is 21
+  entries and +0x8C reads twenty past the end.
+
+  Three things have to be right and none of them can be assumed:
+
+      the page      Nothing in a prompt points back at it, and more than one page can reach the
+                    same Node. The stack is walked and the tree of each page searched, top down.
+
+      the position  A press is not done with it: the Node's own handler descends the widget with
+                    it. magma::ButtonInstance keeps a position at State+0x24 where an Image or a
+                    Text keeps a rect, and the label inside it is the one child whose State does
+                    carry a rect, so the middle of the label is the point.
+
+      the transform FUN_10AA16C0 takes a pair off the page's vtable+0x20 object and subtracts it on
+                    the way in. Reading that pair back gives 160,40 while the engine subtracted
+                    231,40 from the very press it was reading them for, so it is measured instead:
+                    a move is sent with a known number and FUN_10AA5EC0, which receives the event
+                    after the transform, is caught with the number the page ended up with.
+
+  With those three the pointer's own hit test still does not pick the prompt up on the menu pages,
+  only on the exit box, so the slot the press reads is written directly when a move does not land.
+  Pages above the one being pressed are emptied for the two calls: FUN_10AB6690 walks top down and
+  stops at the first page that handles the press, and a page with nothing hovered and nothing
+  captured returns 0 from both handlers.
+
+      manager + 0x04 / + 0x08   page stack, begin and end, 8 bytes a slot, page first
+      manager + 0x28 / + 0x29   device and cursor bitmasks, both refused by the handlers when clear
+      manager + 0x2C            pointer position per device, 8 bytes a slot, written by a press
+      page    + 0x28 / + 0x2C   its own child vector, a Page being an Area
+      page    + 100 + d * 0x3C  per device: + 0x1C hovered Node, + 0x20 captured
+
+  A and B are only taken over on a message box. Everywhere else Enter already activates what the
+  player walked to, and a page's "(A) Select" prompt is not always the same action, so pressing its
+  glyph instead of the focused item would be a different game. On a box it is the point: the two
+  prompts are the two buttons. The pad's A and B are cleared out of the driver's XINPUT_STATE for
+  as long as one is open, so the action map cannot also send Enter and close the box twice.
+*/
+
+static constexpr uint32_t nMenuPadDevice = 0;
+
+static constexpr ptrdiff_t nScreenStackBegin = 0x04;
+static constexpr ptrdiff_t nScreenStackEnd = 0x08;
+static constexpr ptrdiff_t nDeviceActiveMask = 0x28;
+static constexpr ptrdiff_t nCursorPosition = 0x2C;
+static constexpr size_t nScreenStackStride = 8;
+static constexpr size_t nScreenStackLimit = 8;
+
+static constexpr ptrdiff_t nScreenDeviceBase = 100;
+static constexpr size_t nScreenDeviceStride = 0x3C;
+static constexpr ptrdiff_t nScreenHovered = 0x1C;
+static constexpr ptrdiff_t nScreenCaptured = 0x20;
+
+// FUN_104F1A90 again, the mouse half of the same map: "lb" -> 1, "rb" -> 2.
+static constexpr uint32_t nLeftMouseButton = 1;
+
+// The event every handler takes: button, packed position, device byte, then a flag the dispatcher
+// sets on everything it builds.
+static constexpr size_t nMouseEventWords = 4;
+
+static constexpr ptrdiff_t nStateOriginX = 0x24;
+static constexpr ptrdiff_t nStateOriginY = 0x26;
+
+static constexpr ptrdiff_t nMessageBoxVtableRva = 0xE1E3C8;
+
+static constexpr uint16_t nXInputA = 0x1000;
+static constexpr uint16_t nXInputB = 0x2000;
+static constexpr uint16_t nXInputX = 0x4000;
+static constexpr uint16_t nXInputY = 0x8000;
+
+static constexpr uint16_t nNoPadButtonMask = 0xFFFF;
+
+using UiMouseEvent_t = char(__thiscall*)(void*, uint32_t*);
+static UiMouseEvent_t UiMouseMove = nullptr;
+static UiMouseEvent_t UiMouseDown = nullptr;
+static UiMouseEvent_t UiMouseUp = nullptr;
+
+// CGameMessageBox's own constructor and destructor, which every box in the family runs. The
+// derived classes overwrite the vftable straight after, so which kind of box this is is a question
+// asked of the live object rather than of the hook.
+static std::vector<uint8_t*> sLiveMessageBoxes;
+
+static bool PlainMessageBoxOpen()
+{
+    for (auto* pBox : sLiveMessageBoxes)
+    {
+        if (IsReadable(pBox) && *reinterpret_cast<uintptr_t*>(pBox) == Rva(nMessageBoxVtableRva))
+            return true;
+    }
+
+    return false;
+}
+
+// Filled by the hook on FUN_10AA5EC0 while a probe move is in flight.
+static uint8_t* pCalibrateScreen = nullptr;
+static int32_t nCalibrateX = 0;
+static int32_t nCalibrateY = 0;
+static bool bCalibrated = false;
+
+// Two int16 in one word, x low. FUN_104EFAD0 packs the pointer's own the same way.
+static uint32_t PackPosition(int32_t nX, int32_t nY)
+{
+    return (static_cast<uint32_t>(static_cast<uint16_t>(static_cast<int16_t>(nY))) << 16)
+        | static_cast<uint16_t>(static_cast<int16_t>(nX));
+}
+
+// Whether a page holds the Node, and how far into it. FUN_10AA23E0 takes a child's rect off the
+// position before descending into its sub tree, so a widget a frame down is not at its own origin
+// as far as a press is concerned, and the walk that finds it adds up what it descended through.
+static bool AreaHoldsNode(uint8_t* pArea, uint8_t* pWanted, int32_t& nOffsetX, int32_t& nOffsetY,
+    int nDepth = 0)
+{
+    if (!pArea || nDepth > 8)
+        return false;
+
+    auto bFound = false;
+
+    ForEachChildNode(pArea, [&](uint32_t, uint8_t* pNode, uint8_t* pDrawable)
+    {
+        if (bFound)
+            return;
+
+        if (pNode == pWanted)
+        {
+            bFound = true;
+            return;
+        }
+
+        // +0x3C is a child Area on the classes that have one and whatever happens to sit there on
+        // the ones that do not, so both ends go through the page tables rather than through the
+        // shape of a pointer. A walk that took it on trust faulted three levels down reading
+        // 0x22772228, which is 0x28 past a number that was aligned and in range and not mapped.
+        if (!IsObject(pDrawable))
+            return;
+
+        auto pChild = *reinterpret_cast<uint8_t**>(pDrawable + nWidgetChildArea);
+        if (!IsReadable(pChild) || !AreaHoldsNode(pChild, pWanted, nOffsetX, nOffsetY, nDepth + 1))
+            return;
+
+        bFound = true;
+
+        if (auto pState = GetState(pDrawable))
+        {
+            nOffsetX += *reinterpret_cast<int16_t*>(pState + nStateOriginX);
+            nOffsetY += *reinterpret_cast<int16_t*>(pState + nStateOriginY);
+        }
+    });
+
+    return bFound;
+}
+
+static uint8_t** HoveredSlot(uint8_t* pScreen)
+{
+    return reinterpret_cast<uint8_t**>(
+        pScreen + nScreenDeviceBase + nMenuPadDevice * nScreenDeviceStride + nScreenHovered);
+}
+
+// Backwards, so a modal's prompts win over whatever was attached behind it. The Node and the
+// widget are checked as a pair: a Node whose drawable is not the prompt's widget is not the Node
+// this prompt is drawn through, whatever else it may be.
+static uint8_t* FindPrompt(int32_t nButton)
+{
+    for (auto it = sAttachedPrompts.rbegin(); it != sAttachedPrompts.rend(); ++it)
+    {
+        if (!IsLivePrompt(*it) || *reinterpret_cast<int32_t*>(*it + nPromptButtonId) != nButton)
+            continue;
+
+        auto pNode = *reinterpret_cast<uint8_t**>(*it + nPromptNode);
+        auto pWidget = *reinterpret_cast<uint8_t**>(*it + nPromptElement);
+
+        if (IsObject(pNode) && IsObject(pWidget)
+            && *reinterpret_cast<uint8_t**>(pNode + nNodeDrawable) == pWidget)
+        {
+            return *it;
+        }
+    }
+
+    return nullptr;
+}
+
+static bool PressPrompt(uint8_t* pPrompt)
+{
+    if (!UiMouseMove || !UiMouseDown || !UiMouseUp || !pPrompt)
+        return false;
+
+    auto pNode = *reinterpret_cast<uint8_t**>(pPrompt + nPromptNode);
+    auto pWidget = *reinterpret_cast<uint8_t**>(pPrompt + nPromptElement);
+    if (!IsObject(pNode) || !IsObject(pWidget))
+        return false;
+
+    auto pState = GetState(pWidget);
+    auto pArea = pState ? *reinterpret_cast<uint8_t**>(pWidget + nWidgetChildArea) : nullptr;
+    if (!IsReadable(pArea))
+        return false;
+
+    static const auto nLabelName = NameId("t_button_text");
+
+    auto box = ReadRect(GetState(FindNamedDeep(pArea, nLabelName, 0)));
+    if (!box.Valid())
+        return false;
+
+    auto pManager = ScreenManager();
+    if (!pManager)
+        return false;
+
+    auto pBegin = *reinterpret_cast<uint8_t**>(pManager + nScreenStackBegin);
+    auto pEnd = *reinterpret_cast<uint8_t**>(pManager + nScreenStackEnd);
+    if (!pBegin || !pEnd || pEnd <= pBegin)
+        return false;
+
+    uint8_t* pPage = nullptr;
+    int32_t nOffsetX = 0;
+    int32_t nOffsetY = 0;
+
+    for (size_t i = 0; i < nScreenStackLimit; ++i)
+    {
+        auto pSlot = pEnd - (i + 1) * nScreenStackStride;
+        if (pSlot < pBegin)
+            break;
+
+        auto pScreen = *reinterpret_cast<uint8_t**>(pSlot);
+        if (IsObject(pScreen) && AreaHoldsNode(pScreen, pNode, nOffsetX, nOffsetY))
+        {
+            pPage = pScreen;
+            break;
+        }
+    }
+
+    if (!pPage)
+        return false;
+
+    auto pCursor = reinterpret_cast<uint32_t*>(pManager + nCursorPosition + nMenuPadDevice * nScreenStackStride);
+    auto nSavedCursor = *pCursor;
+    auto nSavedActive = *(pManager + nDeviceActiveMask);
+    auto nSavedEnabled = *(pManager + nCursorEnabledMask);
+
+    // Every handler refuses a device that is not on, and this module turns the pointer off for the
+    // pad. Written rather than set through FUN_10AB75C0, which fires a leave on the way.
+    auto nBit = static_cast<uint8_t>(1 << nMenuPadDevice);
+    *(pManager + nDeviceActiveMask) = static_cast<uint8_t>(nSavedActive | nBit);
+    *(pManager + nCursorEnabledMask) = static_cast<uint8_t>(nSavedEnabled | nBit);
+
+    // The probe goes to 0,0, which is off every page and so hits nothing on the way past. What
+    // comes back is the transform and nothing else.
+    bCalibrated = false;
+    pCalibrateScreen = pPage;
+
+    uint32_t probe[nMouseEventWords] = { 0, 0, nMenuPadDevice, 0 };
+    UiMouseMove(pManager, probe);
+
+    pCalibrateScreen = nullptr;
+
+    auto bPressed = false;
+
+    if (bCalibrated)
+    {
+        auto nPosition = PackPosition(
+            nCalibrateX + nOffsetX + *reinterpret_cast<int16_t*>(pState + nStateOriginX) + (box.nLeft + box.nRight) / 2,
+            nCalibrateY + nOffsetY + *reinterpret_cast<int16_t*>(pState + nStateOriginY) + (box.nTop + box.nBottom) / 2);
+
+        uint32_t move[nMouseEventWords] = { 0, nPosition, nMenuPadDevice, 0 };
+        UiMouseMove(pManager, move);
+
+        auto ppHovered = HoveredSlot(pPage);
+        auto bLanded = *ppHovered == pNode;
+        auto pSavedHovered = *ppHovered;
+
+        struct Emptied { uint8_t** ppHovered; uint8_t** ppCaptured; uint8_t* pHovered; uint8_t* pCaptured; };
+        std::array<Emptied, nScreenStackLimit> emptied{};
+        size_t nEmptied = 0;
+
+        if (!bLanded)
+        {
+            for (size_t i = 0; i < nScreenStackLimit; ++i)
+            {
+                auto pSlot = pEnd - (i + 1) * nScreenStackStride;
+                if (pSlot < pBegin)
+                    break;
+
+                auto pScreen = *reinterpret_cast<uint8_t**>(pSlot);
+                if (pScreen == pPage)
+                    break;
+
+                if (!IsObject(pScreen))
+                    continue;
+
+                auto ppAbove = HoveredSlot(pScreen);
+                auto ppCaptured = reinterpret_cast<uint8_t**>(
+                    pScreen + nScreenDeviceBase + nMenuPadDevice * nScreenDeviceStride + nScreenCaptured);
+
+                emptied[nEmptied++] = { ppAbove, ppCaptured, *ppAbove, *ppCaptured };
+                *ppAbove = nullptr;
+                *ppCaptured = nullptr;
+            }
+
+            *ppHovered = pNode;
+        }
+
+        uint32_t press[nMouseEventWords] = { nLeftMouseButton, nPosition, nMenuPadDevice, 1 };
+        UiMouseDown(pManager, press);
+        UiMouseUp(pManager, press);
+
+        if (!bLanded && *ppHovered == pNode)
+            *ppHovered = pSavedHovered;
+
+        for (size_t i = 0; i < nEmptied; ++i)
+        {
+            *emptied[i].ppHovered = emptied[i].pHovered;
+            *emptied[i].ppCaptured = emptied[i].pCaptured;
+        }
+
+        bPressed = true;
+    }
+
+    *(pManager + nDeviceActiveMask) = nSavedActive;
+    *(pManager + nCursorEnabledMask) = nSavedEnabled;
+    *pCursor = nSavedCursor;
+
+    return bPressed;
+}
+
+struct MenuPadButton
+{
+    uint16_t nBit;
+    int32_t nPromptButton;
+
+    // A and B mean something already. See the note at the top of this section.
+    bool bMessageBoxOnly;
+};
+
+static constexpr std::array<MenuPadButton, 4> sMenuPadButtons =
+{{
+    { nXInputA, nPadA, true },
+    { nXInputB, nPadB, true },
+    { nXInputX, nPadX, false },
+    { nXInputY, nPadY, false },
+}};
+
+// Runs off the UI draw, which is the one place that is already walking the attached prompts and
+// only runs while there is a menu to walk.
+static void UpdateMenuPadButtons()
+{
+    static uint16_t nHeld = 0;
+
+    if (!IsPadActiveDevice())
+    {
+        nHeld = 0;
+        SetPadButtonMask(nNoPadButtonMask);
+        return;
+    }
+
+    auto nButtons = GetPadState().nButtons;
+    auto nPressed = static_cast<uint16_t>(nButtons & ~nHeld);
+    nHeld = nButtons;
+
+    auto bMessageBox = PlainMessageBoxOpen();
+    auto nMask = nNoPadButtonMask;
+
+    for (const auto& button : sMenuPadButtons)
+    {
+        if (button.bMessageBoxOnly != bMessageBox)
+            continue;
+
+        auto pPrompt = FindPrompt(button.nPromptButton);
+        if (!pPrompt)
+            continue;
+
+        // Held back for as long as the prompt is there to take it, not just on the frame it is
+        // pressed: the action map runs on its own poll and would otherwise get there first.
+        if (button.bMessageBoxOnly)
+            nMask = static_cast<uint16_t>(nMask & ~button.nBit);
+
+        if (nPressed & button.nBit)
+            PressPrompt(pPrompt);
+    }
+
+    SetPadButtonMask(nMask);
+}
+
 class ControllerPrompts
 {
 public:
@@ -2030,7 +2379,8 @@ public:
                     if (!pPrompt)
                         return;
 
-                    sAttachedPrompts.insert(pPrompt);
+                    if (std::find(sAttachedPrompts.begin(), sAttachedPrompts.end(), pPrompt) == sAttachedPrompts.end())
+                        sAttachedPrompts.push_back(pPrompt);
                     ApplyMenuGlyph(pPrompt);
                 });
 
@@ -2058,6 +2408,7 @@ public:
                     static auto UiDrawHook = safetyhook::create_mid(uiDrawPattern.get_first(nUiDrawEntry), [](SafetyHookContext&)
                     {
                         RefreshMenuGlyphs();
+                        UpdateMenuPadButtons();
                     });
                 }
 
@@ -2196,6 +2547,107 @@ public:
                         RestoreCursors();
 
                     bInCursorUpdate = false;
+                });
+            }
+
+            // FUN_104F0FB0's own two calls into the screen manager, one after the other, so both
+            // handlers come off one anchor and neither needs a prologue of its own.
+            //
+            //   8B 76 08        MOV  ESI,[ESI+0x08]
+            //   3B 35 ? ? ? ?   CMP  ESI,[button down event type]
+            //   75 1E           JNZ  the button up case
+            //   8B 0D ? ? ? ?   MOV  ECX,[0x10FE3178]
+            //   8D 54 24 10     LEA  EDX,[ESP+0x10]
+            //   52              PUSH EDX
+            //   83 C1 04        ADD  ECX,0x4
+            //   E8 ? ? ? ?      CALL FUN_10AB6690          <- + 0x19
+            //   ...
+            //   E8 ? ? ? ?      CALL FUN_10AB6840          <- + 0x43
+            static constexpr ptrdiff_t nUiMouseDownCall = 0x19;
+            static constexpr ptrdiff_t nUiMouseUpCall = 0x43;
+            auto uiMousePattern = dunia_pattern("8B 76 08 3B 35 ? ? ? ? 75 1E 8B 0D ? ? ? ? 8D 54 24 10 52 83 C1 04 E8");
+            if (!uiMousePattern.empty())
+            {
+                auto pMatch = reinterpret_cast<uint8_t*>(uiMousePattern.get_first());
+                UiMouseDown = reinterpret_cast<UiMouseEvent_t>(CallTarget(pMatch + nUiMouseDownCall));
+                UiMouseUp = reinterpret_cast<UiMouseEvent_t>(CallTarget(pMatch + nUiMouseUpCall));
+            }
+
+            // The move, a few instructions ahead of the pair above and off the same global.
+            //
+            //   8B 46 04        MOV  EAX,[ESI+0x04]
+            //   3B 05 ? ? ? ?   CMP  EAX,[move event type]
+            //   75 1E           JNZ  past it
+            //   8D 4C 24 10     LEA  ECX,[ESP+0x10]
+            //   51              PUSH ECX
+            //   8B 0D ? ? ? ?   MOV  ECX,[0x10FE3178]
+            //   83 C1 04        ADD  ECX,0x4
+            //   E8 ? ? ? ?      CALL FUN_10AB7580          <- + 0x19
+            static constexpr ptrdiff_t nUiMouseMoveCall = 0x19;
+            auto uiMovePattern = dunia_pattern("8B 46 04 3B 05 ? ? ? ? 75 1E 8D 4C 24 10 51 8B 0D ? ? ? ? 83 C1 04 E8");
+            if (!uiMovePattern.empty())
+            {
+                auto pMatch = reinterpret_cast<uint8_t*>(uiMovePattern.get_first());
+                UiMouseMove = reinterpret_cast<UiMouseEvent_t>(CallTarget(pMatch + nUiMouseMoveCall));
+            }
+
+            /*
+              FUN_10AA5EC0, a page's own mouse move, past its prologue where ECX is still the page
+              and the event is the stack argument. The event has already been through
+              FUN_10AA16C0 by this point, so what it carries is the page's own number and the
+              difference from what was sent is the transform.
+
+                8B F9                 MOV   EDI,ECX                <- hook
+                8B B4 24 84 ...       MOV   ESI,[ESP+0x84]         ; the event
+                0F B6 46 08           MOVZX EAX,byte [ESI+0x08]    ; the device
+            */
+            static constexpr ptrdiff_t nPageMoveEvent = 0x84;
+            if (auto* pPageMouseMove = dunia_find("8B F9 8B B4 24 84 00 00 00 0F B6 46 08 8B C8 C1 E1 04 2B C8 8D 6C 8F 64 8A 4D 38"))
+            {
+                static auto PageMouseMoveHook = safetyhook::create_mid(pPageMouseMove, [](SafetyHookContext& regs)
+                {
+                    if (!pCalibrateScreen || reinterpret_cast<uint8_t*>(regs.ecx) != pCalibrateScreen)
+                        return;
+
+                    auto pEvent = *reinterpret_cast<uint32_t**>(regs.esp + nPageMoveEvent);
+                    if (!IsReadable(pEvent))
+                        return;
+
+                    // The probe carries 0,0, so what the page ended up with is the transform
+                    // negated and nothing has to be remembered from the send.
+                    nCalibrateX = -static_cast<int16_t>(pEvent[1] & 0xFFFF);
+                    nCalibrateY = -static_cast<int16_t>(pEvent[1] >> 16);
+                    bCalibrated = true;
+                });
+            }
+
+            // CGameMessageBox::CGameMessageBox. ECX is the box, and the base vftable it writes here
+            // is replaced by whichever class is actually being built, which is the point: the kind
+            // is read later, off the live object.
+            if (auto* pMessageBoxCtor = dunia_find("83 EC 14 8B 44 24 18 53 55 56 57 50 8B F1 E8 ? ? ? ? C7 46 70 ? ? ? ? 8D 6E 74 8B CD C7 06"))
+            {
+                static auto MessageBoxCtorHook = safetyhook::create_mid(pMessageBoxCtor, [](SafetyHookContext& regs)
+                {
+                    auto pBox = reinterpret_cast<uint8_t*>(regs.ecx);
+                    if (pBox && std::find(sLiveMessageBoxes.begin(), sLiveMessageBoxes.end(), pBox) == sLiveMessageBoxes.end())
+                        sLiveMessageBoxes.push_back(pBox);
+                });
+            }
+
+            // CGameMessageBox::~CGameMessageBox, at the first instruction, before it puts the base
+            // vftable back over whatever the object was.
+            if (auto* pMessageBoxDtor = dunia_find("83 EC 18 56 8B F1 8D 8E 04 01 00 00 C7 06 ? ? ? ? C7 46 04 ? ? ? ? C7 46 70 ? ? ? ? E8"))
+            {
+                static auto MessageBoxDtorHook = safetyhook::create_mid(pMessageBoxDtor, [](SafetyHookContext& regs)
+                {
+                    auto pBox = reinterpret_cast<uint8_t*>(regs.ecx);
+                    sLiveMessageBoxes.erase(std::remove(sLiveMessageBoxes.begin(), sLiveMessageBoxes.end(), pBox),
+                        sLiveMessageBoxes.end());
+
+                    // The draw is what puts the mask back, and the last box going away can be the
+                    // last thing to happen before the menu stops drawing at all.
+                    if (sLiveMessageBoxes.empty())
+                        SetPadButtonMask(nNoPadButtonMask);
                 });
             }
         };

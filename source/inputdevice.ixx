@@ -1,6 +1,7 @@
 module;
 
 #include <common.hxx>
+#include <atomic>
 #include <cstdint>
 
 export module inputdevice;
@@ -69,6 +70,20 @@ export const PadState& GetPadState()
     return LastPad;
 }
 
+// Buttons the pad driver is allowed to keep this frame. The menus hand a few of the pad's face
+// buttons to their own nav bar prompts, and the action map turns A and B into the UI's Enter and
+// Escape long before a prompt could be reached, so the bits are cleared in the driver's own
+// XINPUT_STATE, ahead of the poll that reads it into actions.
+//
+// Written from the game thread and read on whichever thread polls, so it is atomic rather than
+// guarded: one stale frame either way is a button that acts once late.
+static std::atomic<uint16_t> nPadButtonMask{ 0xFFFF };
+
+export void SetPadButtonMask(uint16_t nMask)
+{
+    nPadButtonMask = nMask;
+}
+
 // Deadzoned and normalised, so a worn stick resting off centre is not input.
 export float PadThumbAxis(int16_t sValue)
 {
@@ -133,6 +148,12 @@ public:
                     auto sThumbRY = *reinterpret_cast<int16_t*>(pPad + nPadThumbRY);
 
                     LastPad = { nButtons, sThumbLX, sThumbLY };
+
+                    // Taken from the raw read, so the mask never hides a press from the device
+                    // vote or from whoever asked for the mask in the first place.
+                    auto nMask = nPadButtonMask.load();
+                    if (nMask != 0xFFFF)
+                        *reinterpret_cast<uint16_t*>(pPad + nPadButtons) = static_cast<uint16_t>(nButtons & nMask);
 
                     if (nButtons != 0
                         || nLeftTrigger > nTriggerThreshold
