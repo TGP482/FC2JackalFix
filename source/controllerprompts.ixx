@@ -1,3 +1,61 @@
+/*
+  Restores the controller button prompts on the menu nav bar, the gameplay HUD and the shop
+  computer. Nothing is disabled in code: there is no platform check and no pad flag, and
+  FUN_105362E0 already resolves ui/360.mgb into a valid sprite on stock PC.
+
+  The menus fail twice. FUN_101D26D0 builds attribute names with a literal "_pc" suffix, and shipped
+  data has 300 icon_xenon, 300 icon_ps3, zero icon_pc, so every icon lookup misses. Only the icon
+  copy of the suffix is redirected; show_pc has 140 real uses and must not be touched. Then
+  CNavBarPrompt::SetIcon (FUN_10189BA0, attached flag +0x51, element +0x08) only pushes the sprite
+  into a child named "i_placeholder", which the PC art pass deleted. What survives is:
+
+      "action"         crc 0x47CC8C92   magma::Placeholder   invisible, empty rect
+      "i_background"   crc 0x7A8A6532   magma::Image         the pill behind the label
+      "t_button_text"  crc 0x49D78B9C   magma::Text          the label
+
+  So the glyph is built through magma's factory and measured off the label. Borrowing i_background
+  as the carrier was tried and hands the glyph the pill's rect, a wide rounded box.
+
+  Size is the rect and nothing else. magma::Image has no scale field: Image::Draw (FUN_10AB93F0 into
+  FUN_10AB8CF0) builds the quad from State+0x24..0x2A unless ACTUALSIZE, bit 2 of the flags byte at
+  +0x40, is set. Widgets come out of a recycling pool carrying the last tenant's flags, which drew
+  every glyph at 64x64 texels wherever it was placed, and the UV pair at +0x30..+0x3C rides along.
+
+  PC draws each prompt as a pill, i_background behind t_button_text. 360 has no pill, so its
+  visibility bit at node+0x34 goes off while a pad is active. The mouse pointer goes off with it,
+  through the enabled bitmask at screenManager+0x29: both handlers and the draw loop read it, and
+  the position getter FUN_10AB5710 already answers -32768 for a disabled slot. Pad navigation does
+  not touch either bitmask.
+
+  Dead ends, in rough order of cost:
+
+      Console's HUD markup. Prompts expand {use} into ~AA and magma's text layout draws the glyph
+      inline. The machinery survives in Dunia (scan at 0x1061B1F8, code map at renderer+0x468, keys
+      are zlib CRC-32 of the two characters) but the data does not: no prompt subtree holds a
+      t_button or any magma::Text at all, so there is nothing to write markup into.
+
+      A GlyphFont type is registered but its DynamicCast rejects Font, it has no character lookup,
+      and nothing instantiates it. Prompts are sprites on both platforms.
+
+      Two console prompts do not exist. A bed is an ordinary usable entity on the plain interact
+      prompt, and the phone is a CHud+0x1F4 member driven by a keyframe with no glyph on it.
+
+  magma layout, which every offset below depends on:
+
+      Widget + 0x08          -> State
+      Widget + 0x0C          -> component lock mask, bit set = engine must not write
+      Widget + 0x3C          -> child Area
+      Area   + 0x28 / + 0x2C -> child node vector, begin and end, stride 4
+      node   + 0x08          -> zlib CRC-32 of the child's name; no strings are kept
+      node   + 0x14          -> the drawable
+      State  + 0x24/26/28/2A -> int16 left / right / top / bottom
+      Image  + 0x20          -> sprite
+
+  Type identity is exact vtable equality; magma::Image has no subclasses. A rect written into
+  State+0x24 does not survive a frame unless the matching bit is set in Widget+0x0C: 0xF00 pins the
+  rectangle, 0xE0 rotation and pivot, 0x0F800000 the vertex colours.
+*/
+
 module;
 
 #include <common.hxx>
@@ -2047,6 +2105,22 @@ static bool AreaHoldsNode(uint8_t* pArea, uint8_t* pWanted, int32_t& nOffsetX, i
     return bFound;
 }
 
+// A press can take the page down under it, so what was saved only goes back on a page that is
+// still there to hold it.
+static bool PageOnStack(uint8_t* pManager, uint8_t* pPage)
+{
+    auto pBegin = *reinterpret_cast<uint8_t**>(pManager + nScreenStackBegin);
+    auto pEnd = *reinterpret_cast<uint8_t**>(pManager + nScreenStackEnd);
+
+    for (auto* pSlot = pBegin; pBegin && pEnd && pSlot + nScreenStackStride <= pEnd; pSlot += nScreenStackStride)
+    {
+        if (*reinterpret_cast<uint8_t**>(pSlot) == pPage)
+            return true;
+    }
+
+    return false;
+}
+
 static uint8_t** HoveredSlot(uint8_t* pScreen)
 {
     return reinterpret_cast<uint8_t**>(
@@ -2078,6 +2152,8 @@ static uint8_t* FindPrompt(int32_t nButton)
 
 static bool PressPrompt(uint8_t* pPrompt)
 {
+    auto bActed = false;
+
     if (!UiMouseMove || !UiMouseDown || !UiMouseUp || !pPrompt)
         return false;
 
@@ -2148,8 +2224,6 @@ static bool PressPrompt(uint8_t* pPrompt)
 
     pCalibrateScreen = nullptr;
 
-    auto bPressed = false;
-
     if (bCalibrated)
     {
         auto nPosition = PackPosition(
@@ -2160,6 +2234,9 @@ static bool PressPrompt(uint8_t* pPrompt)
         UiMouseMove(pManager, move);
 
         auto ppHovered = HoveredSlot(pPage);
+        auto ppCaptured = reinterpret_cast<uint8_t**>(pPage + nScreenDeviceBase
+            + nMenuPadDevice * nScreenDeviceStride + nScreenCaptured);
+
         auto bLanded = *ppHovered == pNode;
         auto pSavedHovered = *ppHovered;
 
@@ -2167,38 +2244,57 @@ static bool PressPrompt(uint8_t* pPrompt)
         std::array<Emptied, nScreenStackLimit> emptied{};
         size_t nEmptied = 0;
 
-        if (!bLanded)
+        // FUN_10AB6690 walks the stack top down and stops at the first page that handles the
+        // press, and a page with nothing hovered and nothing captured returns 0 from both handlers.
+        for (size_t i = 0; i < nScreenStackLimit; ++i)
         {
-            for (size_t i = 0; i < nScreenStackLimit; ++i)
-            {
-                auto pSlot = pEnd - (i + 1) * nScreenStackStride;
-                if (pSlot < pBegin)
-                    break;
+            auto pSlot = pEnd - (i + 1) * nScreenStackStride;
+            if (pSlot < pBegin)
+                break;
 
-                auto pScreen = *reinterpret_cast<uint8_t**>(pSlot);
-                if (pScreen == pPage)
-                    break;
+            auto pScreen = *reinterpret_cast<uint8_t**>(pSlot);
+            if (pScreen == pPage)
+                break;
 
-                if (!IsObject(pScreen))
-                    continue;
+            if (!IsObject(pScreen))
+                continue;
 
-                auto ppAbove = HoveredSlot(pScreen);
-                auto ppCaptured = reinterpret_cast<uint8_t**>(
-                    pScreen + nScreenDeviceBase + nMenuPadDevice * nScreenDeviceStride + nScreenCaptured);
+            auto ppAbove = HoveredSlot(pScreen);
+            auto ppAboveCaptured = reinterpret_cast<uint8_t**>(
+                pScreen + nScreenDeviceBase + nMenuPadDevice * nScreenDeviceStride + nScreenCaptured);
 
-                emptied[nEmptied++] = { ppAbove, ppCaptured, *ppAbove, *ppCaptured };
-                *ppAbove = nullptr;
-                *ppCaptured = nullptr;
-            }
-
-            *ppHovered = pNode;
+            emptied[nEmptied++] = { ppAbove, ppAboveCaptured, *ppAbove, *ppAboveCaptured };
+            *ppAbove = nullptr;
+            *ppAboveCaptured = nullptr;
         }
 
+        /*
+          One press, and the caller is told whether it did anything.
+
+          What the page answers with is whether the press acted: a forced press that did leaves
+          nothing under the pointer, one that was spent hands back the neighbour the move had
+          found, and a press that landed on its own says so through the handler's own return.
+
+          Pressing twice on the spot does not help. Two down and up pairs one after the other in
+          the same frame both come back spent, and a press one frame later does not, so whatever
+          the first one is spent on only moves on when the page next updates. The retry belongs a
+          frame away, which is the caller's business and not this function's.
+        */
+        if (!bLanded)
+            *ppHovered = pNode;
+
+        // FUN_10AA5930 skips the press whole if + 0x20 is already taken, while FUN_10AA2F80 takes
+        // it as the thing to release.
+        *ppCaptured = nullptr;
+
         uint32_t press[nMouseEventWords] = { nLeftMouseButton, nPosition, nMenuPadDevice, 1 };
-        UiMouseDown(pManager, press);
+        auto bDown = UiMouseDown(pManager, press) != 0;
         UiMouseUp(pManager, press);
 
-        if (!bLanded && *ppHovered == pNode)
+        auto bAlive = PageOnStack(pManager, pPage);
+        bActed = !bAlive || (bLanded ? bDown : *ppHovered == nullptr);
+
+        if (!bLanded && bAlive)
             *ppHovered = pSavedHovered;
 
         for (size_t i = 0; i < nEmptied; ++i)
@@ -2206,15 +2302,13 @@ static bool PressPrompt(uint8_t* pPrompt)
             *emptied[i].ppHovered = emptied[i].pHovered;
             *emptied[i].ppCaptured = emptied[i].pCaptured;
         }
-
-        bPressed = true;
     }
 
     *(pManager + nDeviceActiveMask) = nSavedActive;
     *(pManager + nCursorEnabledMask) = nSavedEnabled;
     *pCursor = nSavedCursor;
 
-    return bPressed;
+    return bActed;
 }
 
 struct MenuPadButton
@@ -2234,6 +2328,22 @@ static constexpr std::array<MenuPadButton, 4> sMenuPadButtons =
     { nXInputY, nPadY, false },
 }};
 
+/*
+  A press that did nothing is tried again on the next draw, up to a few.
+
+  Whatever a forced press is spent on the first time only moves on when the page updates: two
+  down and up pairs in the same frame both come back spent, and one a frame later does not. So the
+  retry is a frame away rather than a call away, which is a handful of milliseconds and invisible.
+
+  ponytail: a retry on a read-back, not on knowing what the widget wants on the way in. A pointer
+  gives it an enter first and never sees any of this; if that enter is ever worth synthesising,
+  this goes.
+*/
+static constexpr int nPressRetries = 4;
+
+static uint8_t* pPendingPrompt = nullptr;
+static int nPendingTries = 0;
+
 // Runs off the UI draw, which is the one place that is already walking the attached prompts and
 // only runs while there is a menu to walk.
 static void UpdateMenuPadButtons()
@@ -2243,15 +2353,26 @@ static void UpdateMenuPadButtons()
     if (!IsPadActiveDevice())
     {
         nHeld = 0;
+        pPendingPrompt = nullptr;
         SetPadButtonMask(nNoPadButtonMask);
         return;
     }
 
+    if (auto* pPending = pPendingPrompt)
+    {
+        pPendingPrompt = nullptr;
+
+        if (++nPendingTries < nPressRetries && IsLivePrompt(pPending) && !PressPrompt(pPending))
+            pPendingPrompt = pPending;
+    }
+
     auto nButtons = GetPadState().nButtons;
     auto nPressed = static_cast<uint16_t>(nButtons & ~nHeld);
-    nHeld = nButtons;
 
     auto bMessageBox = PlainMessageBoxOpen();
+
+    nHeld = nButtons;
+
     auto nMask = nNoPadButtonMask;
 
     for (const auto& button : sMenuPadButtons)
@@ -2269,7 +2390,10 @@ static void UpdateMenuPadButtons()
             nMask = static_cast<uint16_t>(nMask & ~button.nBit);
 
         if (nPressed & button.nBit)
-            PressPrompt(pPrompt);
+        {
+            nPendingTries = 0;
+            pPendingPrompt = PressPrompt(pPrompt) ? nullptr : pPrompt;
+        }
     }
 
     SetPadButtonMask(nMask);
