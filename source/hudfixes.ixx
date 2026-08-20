@@ -136,6 +136,56 @@ static constexpr int nRightZoneMin = 700;
 // Canvas shorts are written and read back as int16.
 static constexpr int nCanvasCeiling = 32767;
 
+// Overlay packages. Not the HUD: the developer console, the save notification and the version line
+// are authored on common.mgb, which is drawn over whatever page is up and is not in the HUD's
+// anchor table, so none of the edge offsets above reach it.
+static constexpr const char* pszOverlayPackages[] =
+{
+    "common.mgb",
+    "common_mp.mgb",
+};
+static constexpr int nOverlayPackages = static_cast<int>(sizeof(pszOverlayPackages) / sizeof(pszOverlayPackages[0]));
+
+// Learned from the same lookup as the HUD's, and for the same reason: a package carries no name.
+static void* pOverlayPackages[nOverlayPackages] = {};
+
+// The screen those positions were placed against. common.mgb is authored 1280x800 and the PC drew it
+// across a 16:9 frame, so its horizontal was stretched by 16/9 divided by 1280/800, and every offset
+// on it was chosen while looking at that stretch: the console line reads 70 px from the left edge on
+// a 720p capture, not the 63 px its 70 units are worth once the stretch is gone.
+//
+// So the placement is kept and the stretch is not.
+static constexpr float fReferenceAspect = 1280.0f / 720.0f;
+
+// One shift for the left of the page and one for the right, each measured off the element it exists
+// for: the console text at -90, the version line at 931. Not one worked out from each element's own
+// anchor, which is right for a line of text and wrong for everything that follows one -- the console
+// caret carries its own anchor and advances a glyph at a time, so an anchor dependent shift walked
+// it out from under the text at about a ninth of whatever had been typed.
+static constexpr float fOverlayLeftReference = -90.0f;
+static constexpr float fOverlayRightReference = 931.0f;
+
+// The version line is the only thing on the strip that belongs to the right edge.
+static constexpr float fOverlayRightZoneMin = 900.0f;
+
+// The console strip is a page of its own with nothing else authored on it, so all of it moves. It is
+// named by the strip itself: a quad the full width of the canvas and about half its height, drawn
+// before anything else on the page. Full height is not the strip, it is a dialog's vignette, and
+// that distinction is the point of the window -- the vignette is what put the quit box off centre
+// when the test was width alone.
+static constexpr float fConsoleStripMinHeight = 0.35f;
+static constexpr float fConsoleStripMaxHeight = 0.65f;
+
+// Every other overlay page moves only its top left corner, which is where the save and load
+// indicator is authored. It is one cluster -- a pill at -92.5..23.5, a spinner at -90.6..-58.2 and
+// its caption -- and the pill and spinner are anchored right of the caption, so an anchor band or an
+// extent test takes the text and leaves the artwork behind. The whole corner moves or none of it.
+//
+// Nothing else on common.mgb is authored up there. The quit dialog is centred, its glyphs carry an
+// anchor each, and it is well outside this box, which is what keeps it whole.
+static constexpr float fCornerMaxX = 200.0f;
+static constexpr float fCornerMaxY = 60.0f;
+
 // ---------------------------------------------------------------------------------------------
 // Engine entry points
 // ---------------------------------------------------------------------------------------------
@@ -199,7 +249,7 @@ static const char* ReadDuniaString(uintptr_t pStr, char* pBuf, size_t nBufSize)
 
 // Callers pass "ui/hud.mgb" and FUN_10554FC0 expands it to ui\localized\<branch>\<lang>\ui\, so only
 // the leaf can be compared. Returns the slot so a reload of one package is not read as another.
-static int GameplayHudSlot(const char* pszPath)
+static const char* PathLeaf(const char* pszPath)
 {
     const char* pLeaf = pszPath;
     for (const char* p = pszPath; *p != '\0'; p++)
@@ -208,23 +258,30 @@ static int GameplayHudSlot(const char* pszPath)
             pLeaf = p + 1;
     }
 
-    for (int i = 0; i < nGameplayHudPackages; i++)
+    return pLeaf;
+}
+
+static int PackageSlot(const char* pszPath, const char* const* pszNames, int nNames)
+{
+    const char* pLeaf = PathLeaf(pszPath);
+
+    for (int i = 0; i < nNames; i++)
     {
-        if (_stricmp(pLeaf, pszGameplayHudPackages[i]) == 0)
+        if (_stricmp(pLeaf, pszNames[i]) == 0)
             return i;
     }
 
     return -1;
 }
 
-static bool IsGameplayHudPackage(const void* pPackage)
+static bool IsKnownPackage(const void* pPackage, void* const* pKnown, int nKnown)
 {
     if (pPackage == nullptr)
         return false;
 
-    for (int i = 0; i < nGameplayHudPackages; i++)
+    for (int i = 0; i < nKnown; i++)
     {
-        if (pGameplayHudPackages[i] == pPackage)
+        if (pKnown[i] == pPackage)
             return true;
     }
 
@@ -238,13 +295,19 @@ static void* __stdcall GetPackageForPath(void* pPath)
     char szPath[MAX_PATH];
     ReadDuniaString(reinterpret_cast<uintptr_t>(pPath), szPath, sizeof(szPath));
 
-    const int nSlot = (szPath[0] != '\0') ? GameplayHudSlot(szPath) : -1;
-
-    if (pPackage != nullptr && nSlot >= 0 && pGameplayHudPackages[nSlot] != pPackage)
+    if (pPackage != nullptr && szPath[0] != '\0')
     {
-        // A reload hands back different pages, so anything learned about the old ones is stale.
-        pGameplayHudPackages[nSlot] = pPackage;
-        nAnchorPages = 0;
+        const int nHudSlot = PackageSlot(szPath, pszGameplayHudPackages, nGameplayHudPackages);
+        if (nHudSlot >= 0 && pGameplayHudPackages[nHudSlot] != pPackage)
+        {
+            // A reload hands back different pages, so anything learned about the old ones is stale.
+            pGameplayHudPackages[nHudSlot] = pPackage;
+            nAnchorPages = 0;
+        }
+
+        const int nOverlaySlot = PackageSlot(szPath, pszOverlayPackages, nOverlayPackages);
+        if (nOverlaySlot >= 0)
+            pOverlayPackages[nOverlaySlot] = pPackage;
     }
 
     return pPackage;
@@ -258,7 +321,7 @@ enum class PageKind { GameplayHud, Menu };
 
 static PageKind PageKindOf(const void* pPackage)
 {
-    return IsGameplayHudPackage(pPackage) ? PageKind::GameplayHud : PageKind::Menu;
+    return IsKnownPackage(pPackage, pGameplayHudPackages, nGameplayHudPackages) ? PageKind::GameplayHud : PageKind::Menu;
 }
 
 // The frame the engine composes into, not the window. It is fitted to the output whole, so a frame
@@ -355,6 +418,12 @@ static bool BuildPageCanvas(const Canvas& authored, float fAspect, PageKind kind
 static bool bPageCorrected = false;
 static bool bGameplayHudPage = false;
 static bool bAnchorPage = false;
+static bool bOverlayPage = false;
+
+static bool bConsoleStripPage = false;
+
+static float fOverlayDeltaLeft = 0.0f;
+static float fOverlayDeltaRight = 0.0f;
 
 // The authored sizes double as the backdrop test, so they stay as extents rather than folding into
 // the scales.
@@ -459,8 +528,10 @@ static void ApplyCanvas(SafetyHookContext& regs)
     auto* pPackage = reinterpret_cast<uint8_t*>(regs.esi);
 
     bPageCorrected = pPackage != nullptr;
-    bGameplayHudPage = IsGameplayHudPackage(pPackage);
+    bGameplayHudPage = IsKnownPackage(pPackage, pGameplayHudPackages, nGameplayHudPackages);
     bAnchorPage = false;
+    bOverlayPage = bPageCorrected && !bGameplayHudPage && IsKnownPackage(pPackage, pOverlayPackages, nOverlayPackages);
+    bConsoleStripPage = false;
 
     if (!bPageCorrected)
         return;
@@ -470,6 +541,7 @@ static void ApplyCanvas(SafetyHookContext& regs)
     {
         bPageCorrected = false;
         bGameplayHudPage = false;
+        bOverlayPage = false;
         return;
     }
 
@@ -480,6 +552,7 @@ static void ApplyCanvas(SafetyHookContext& regs)
     {
         bPageCorrected = false;
         bGameplayHudPage = false;
+        bOverlayPage = false;
         return;
     }
 
@@ -492,6 +565,19 @@ static void ApplyCanvas(SafetyHookContext& regs)
     fContentCentre = (authored.nWidth - 2 * authored.nOriginX) * 0.5f;
     fDeltaLeft = -(fixed.nWidth - nDesignWidthLeft) * 0.5f;
     fDeltaRight = (fixed.nWidth - nDesignWidthRight) * 0.5f;
+
+    // Where the reference element sat once the authored canvas had been stretched to 16:9, in units
+    // of the corrected canvas. The right band is measured from the right edge instead, or the
+    // version line would stay where a 16:9 frame put it and drift inward as the frame widens.
+    const float fStretch = (authored.nWidth > 0)
+        ? fReferenceAspect * static_cast<float>(authored.nHeight) / static_cast<float>(authored.nWidth)
+        : 1.0f;
+    const float fAuthoredOriginX = static_cast<float>(authored.nOriginX);
+    const float fFixedOriginX = static_cast<float>(fixed.nOriginX);
+    const float fRightEdge = static_cast<float>(fixed.nWidth) - static_cast<float>(authored.nWidth) * fStretch;
+
+    fOverlayDeltaLeft = (fAuthoredOriginX + fOverlayLeftReference) * fStretch - fFixedOriginX - fOverlayLeftReference;
+    fOverlayDeltaRight = (fAuthoredOriginX + fOverlayRightReference) * fStretch - fFixedOriginX - fOverlayRightReference + fRightEdge;
 
     fAuthoredCanvasWidth = static_cast<float>(authored.nWidth);
     fAuthoredCanvasHeight = static_cast<float>(authored.nHeight);
@@ -593,10 +679,33 @@ static void ShiftQuad(SafetyHookContext& regs)
     const bool bBackdropY = IsBackdropAxis(fBottom - fTop, fAuthoredCanvasHeight);
     if (bBackdropX || bBackdropY)
     {
+        // Drawn before anything else on its page, so the flag is up by the time the console's own
+        // quads arrive.
+        const float fHeight = fBottom - fTop;
+        if (bOverlayPage && bBackdropX
+            && fHeight >= fAuthoredCanvasHeight * fConsoleStripMinHeight
+            && fHeight <= fAuthoredCanvasHeight * fConsoleStripMaxHeight)
+        {
+            bConsoleStripPage = true;
+        }
+
         if (bBackdropX)
             Remap(pRender, nRenderVertexX, fBackdropOffsetX, fBackdropScaleX);
         if (bBackdropY)
             Remap(pRender, nRenderVertexY, fBackdropOffsetY, fBackdropScaleY);
+        return;
+    }
+
+    if (bOverlayPage)
+    {
+        // The strip is a page of its own with nothing on it but the console, so all of it moves, the
+        // version line to the right edge and everything else to the left. Any other overlay page,
+        // only the top left corner.
+        if (bConsoleStripPage)
+            Move(pRender, nRenderVertexX, (fGroupX > fOverlayRightZoneMin) ? fOverlayDeltaRight : fOverlayDeltaLeft);
+        else if (fRight <= fCornerMaxX && fBottom <= fCornerMaxY)
+            Move(pRender, nRenderVertexX, fOverlayDeltaLeft);
+
         return;
     }
 
@@ -659,6 +768,8 @@ static void ApplyCursorCanvas(SafetyHookContext& regs)
     bPageCorrected = false;
     bGameplayHudPage = false;
     bAnchorPage = false;
+    bOverlayPage = false;
+    bConsoleStripPage = false;
 
     auto* pPackage = reinterpret_cast<uint8_t*>(regs.esi);
     if (pPackage == nullptr)
