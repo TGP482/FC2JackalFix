@@ -513,10 +513,9 @@ static MenuRow DisplayRows[]
 static const MenuRow GraphicsRows[]
 {
     Heading(L"GRAPHICS"),
-    Boolean(L"Utilisation", PREF_UTILISATION, "General", "Utilisation"),
+    Boolean(L"Improved Utilisation", PREF_UTILISATION, "Graphics", "ImprovedUtilisation"),
     Enumeration(L"Anisotropic Filtering", PREF_ANISOTROPICFILTERING, "Graphics", "AnisotropicFiltering",
                 AnisotropyValues, AnisotropyLabels),
-    Boolean(L"Xbox 360 Gamma", PREF_X360GAMMA,     "Graphics", "Xbox360Gamma"),
     Boolean(L"No Rim Lighting", PREF_NORIMLIGHTING, "Graphics", "NoRimLighting"),
     Range  (L"Saturation", PREF_SATURATION, "Graphics", "Saturation", VALUE_FLOAT, 0, 100, 5, 100.0f, L"%.2f"),
 };
@@ -541,7 +540,6 @@ static const MenuRow GameplayRows[]
     Boolean(L"Limited Saving",    PREF_LIMITEDSAVING,    "Gameplay", "LimitedSaving"),
     Boolean(L"Console Autosaves", PREF_CONSOLEAUTOSAVES, "Gameplay", "ConsoleAutosaves"),
     Boolean(L"No Blinking Items", PREF_NOBLINKINGITEMS,  "Gameplay", "NoBlinkingItems"),
-    Boolean(L"No Colored Signs",  PREF_NOCOLOREDSIGNS,   "Gameplay", "NoColoredSigns"),
     Boolean(L"No Hit Indicator",  PREF_NOHITINDICATOR,   "Gameplay", "NoHitIndicator"),
 };
 
@@ -752,7 +750,6 @@ static const PrefDefault PrefDefaults[]
     { PREF_FPSCOUNTER,              0   },
 
     { PREF_ANISOTROPICFILTERING,    16  },
-    { PREF_X360GAMMA,               1   },
     { PREF_NORIMLIGHTING,           0   },
     { PREF_SATURATION,              50  }, // 0.50
 
@@ -768,7 +765,6 @@ static const PrefDefault PrefDefaults[]
     { PREF_LIMITEDSAVING,           0   },
     { PREF_CONSOLEAUTOSAVES,        1   },
     { PREF_NOBLINKINGITEMS,         0   },
-    { PREF_NOCOLOREDSIGNS,          0   },
     { PREF_NOHITINDICATOR,          0   },
 
     { PREF_FIELDOFVIEW,             9131 }, // 91.31

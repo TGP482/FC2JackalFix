@@ -19,7 +19,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 - **FPS Counter** - Shows the engine's built-in frame rate counter.
 
 ### Graphics
-- **Utilisation** - Improves GPU and CPU utilisation, increasing performance across the board
+- **Improved Utilisation** - Improves GPU and CPU utilisation, increasing performance across the board
 <div align="center">
   <table>
     <tr>
@@ -27,27 +27,13 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
       <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/eed3b612-2a68-42bb-83ec-4ad895dc37e4"></td>
     </tr>
     <tr>
-      <td align="center">Utilization Off</td>
-      <td align="center">Utilization On</td>
+      <td align="center">Improved Utilisation Off</td>
+      <td align="center">Improved Utilisation On</td>
     </tr>
   </table>
 </div>
 
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures instead of using the game's inconsistent defaults.
-- **Xbox 360 Gamma** - Restores the Xbox 360's darker gamma look with deeper blacks and stronger contrast, reducing the washed out appearance.
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/99975709-f262-40d0-8ca2-93f295d7b8e2"></td>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/d6e2b079-7eaa-49de-8f48-b2e3884c67d2"></td>
-    </tr>
-    <tr>
-      <td align="center">Off</td>
-      <td align="center">On</td>
-    </tr>
-  </table>
-</div>
-
 - **No Rim Lighting** - Removes the rim lighting glow on the edges of characters, mainly visible at night
 - **Saturation** - Adjust the saturation levels from the 0.5 default, rage: 0.0 - 1.0
 
@@ -67,7 +53,6 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 <img width="400" height="224" alt="ConsoleAutosave" src="https://github.com/user-attachments/assets/0be95623-8b88-4a51-b09b-c5683d450228" />
 
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
-- **No Colored Signs** - Prevents road and safe house signs from tinting red or blue when they belong to an active objective.
 - **No Hit Indicator** - Disables the directional hit indicators.
 
 ### Field of View
@@ -140,5 +125,5 @@ FreecamKey = F2
 ### Credits
 - [Boggalog](https://www.nexusmods.com/profile/Boggalog) - Various fixes and [An Almost Complete Guide to Far Cry 2 Modding](https://www.nexusmods.com/farcry2/mods/299)
 - [scubrah](https://www.nexusmods.com/profile/scubrah) - Various fixes
-- [ThirteenAG](https://github.com/ThirteenAG) - [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) and [Xbox 360 gamma](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix/blob/e5d53963cce44c38eacbad2e721ae023318ad0a5/source/consolegamma.ixx)
+- [ThirteenAG](https://github.com/ThirteenAG) - [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader)
 - [FoxAhead](https://github.com/FoxAhead) - Various [Far Cry 2 Multi Fixer](https://github.com/FoxAhead/Far-Cry-2-Multi-Fixer) improvements

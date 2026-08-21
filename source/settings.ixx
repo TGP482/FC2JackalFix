@@ -32,7 +32,6 @@ export enum Pref
     PREF_LARGEADDRESSAWARE,
     PREF_MAXFRAMERATE,
     PREF_ANISOTROPICFILTERING,
-    PREF_X360GAMMA,
     PREF_NORIMLIGHTING,
     PREF_SATURATION,
     PREF_BEYONDULTRAGEOMETRY,
@@ -49,7 +48,6 @@ export enum Pref
     PREF_LIMITEDSAVING,
     PREF_CONSOLEAUTOSAVES,
     PREF_NOBLINKINGITEMS,
-    PREF_NOCOLOREDSIGNS,
     PREF_NOHITINDICATOR,
     PREF_PREDECESSORTAPES,
     PREF_MACHETES,
@@ -98,7 +96,7 @@ public:
         mPrefs[PREF_SKIPTUTORIALS] = std::clamp(iniReader.ReadInteger("General", "SkipTutorials", 0), 0, 2);
 
         mPrefs[PREF_CPUAFFINITY] = std::clamp(iniReader.ReadInteger("General", "CpuAffinity", 0), 0, 64);
-        mPrefs[PREF_UTILISATION] = std::clamp(iniReader.ReadInteger("General", "Utilisation", 1), 0, 1);
+        mPrefs[PREF_UTILISATION] = std::clamp(iniReader.ReadInteger("Graphics", "ImprovedUtilisation", 1), 0, 1);
         mPrefs[PREF_HIGHPRECISIONTIMER] = std::clamp(iniReader.ReadInteger("General", "HighPrecisionTimer", 1), 0, 1);
         mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
         mPrefs[PREF_LARGEADDRESSAWARE] = std::clamp(iniReader.ReadInteger("General", "LargeAddressAware", 0), 0, 1);
@@ -132,8 +130,6 @@ public:
         mPrefs[PREF_MAXFRAMERATE] = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 1), 0, 9999);
 
         mPrefs[PREF_ANISOTROPICFILTERING] = std::clamp(iniReader.ReadInteger("Graphics", "AnisotropicFiltering", 16), 0, 16);
-        mPrefs[PREF_X360GAMMA] = std::clamp(iniReader.ReadInteger("Graphics", "Xbox360Gamma", 0), 0, 1);
-
         mPrefs[PREF_NORIMLIGHTING] = std::clamp(iniReader.ReadInteger("Graphics", "NoRimLighting", 0), 0, 1);
 
         mPrefs[PREF_SATURATION] = std::clamp(iniReader.ReadFloat("Graphics", "Saturation", 0.5f), 0.0f, 4.0f);
@@ -157,7 +153,6 @@ public:
         mPrefs[PREF_LIMITEDSAVING] = std::clamp(iniReader.ReadInteger("Gameplay", "LimitedSaving", 0), 0, 1);
         mPrefs[PREF_CONSOLEAUTOSAVES] = std::clamp(iniReader.ReadInteger("Gameplay", "ConsoleAutosaves", 1), 0, 1);
         mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
-        mPrefs[PREF_NOCOLOREDSIGNS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoColoredSigns", 0), 0, 1);
         mPrefs[PREF_NOHITINDICATOR] = std::clamp(iniReader.ReadInteger("Gameplay", "NoHitIndicator", 0), 0, 1);
 
         auto fMouseLookSensitivity = iniReader.ReadFloat("Gameplay", "MouseLookSensitivity", 1.0f);
