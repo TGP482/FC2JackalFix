@@ -68,77 +68,73 @@ static constexpr int nCanvasHeightDenominator = 30;
 // -72 here dragged the health bar into place and took the reticle with it.
 static constexpr int nContentOffsetY = 0;
 
-// Element origin bands. Console runs banner to health bar in 466 px against this package's 571, so
-// the top and bottom clusters move and the middle is left alone:
+// Row bands. Console runs banner to health bar in 466 px against this package's 571, so the top and
+// bottom clusters move and the middle is left alone:
 //
 //     banner     authored y 118 .. 167     console 199    +62
 //     reticle    authored y 317 .. 407     console 359      0
 //     health     authored y 664 .. 725     console 661    -72
 //
-// Each boundary has to fall in a gap between whole elements, since anything landing inside one tears
-// it in half. Known origins: banner backing -274.4, banner text 105, multiplayer crest 176 to 250,
-// reticle and weapon swap 444 to 541.5, call icon 612 to 635 while it animates, then 663, 677, 682,
-// and the ammo and health block 702 to 733.
-//
-// Top is 150. At 270 the multiplayer mode banner split, its crest taking the +62 and its text not.
-//
-// The bottom boundary is per column, because each column's cluster starts at a different height.
-// Left is 400, below the diamond pickup pair at 548 and 580 so they move with the health bar. Centre
-// is 620, clear of the weapon swap prompt. Right is 600, below the call icon's lowest origin.
+// Every boundary falls in a gap between whole elements; inside one tears it in half. Origins run
+// banner backing -274.4, banner text 105, crest 176..250, reticle and weapon swap 444..541.5, call
+// icon 612..682, ammo and health 702..733. The bottom bound is per column because each column's
+// cluster starts at a different height.
 static constexpr int nTopZoneMax = 150;
 static constexpr int nBottomZoneMinLeft = 400;
 static constexpr int nBottomZoneMin = 620;
 static constexpr int nBottomZoneMinRight = 600;
 
-// The diamond block rides the left column but lands 2 px right and 4 px high of console once the
-// column shift is applied, measured on the icon's own edges rather than the digits. Bounded above by
-// the syringes at 620, which are correct on the column shift alone.
+// The diamond block rides the left column and still lands 2 px right, 4 px high of console. Bounded
+// above by the syringes at 620, which the column shift alone gets right.
 static constexpr int nDiamondZoneMax = 620;
 static constexpr int nDiamondShiftX = -2;
 static constexpr int nDiamondShiftY = 4;
 
-// Same case in the right column: the call icon sits 7 px, or 6.8 units, in from where console puts
-// it. The bound is 650 rather than 692 because the grenade's origin is 663 and a wider bound threw
-// it right along with the icon.
+// Same in the right column: the call icon sits 6.8 units in from console. 650 and not 692, or the
+// grenade at 663 goes with it.
 static constexpr int nCallIconZoneMax = 650;
 static constexpr int nCallIconShiftX = 5;
 static constexpr int nCallIconShiftY = -4;
 
-// The icon is not scaled. Its height read 117 px on console against 112 here, but correlating the
-// whole icon put a 117/112 scale 5.5% large, so the height reads had caught different edges.
 static constexpr int nShiftTop = 62;
 static constexpr int nShiftBottom = -72;
 
-// The bottom corners disagree. With the health bar on console's rows, the ammo block still measured
-// 3 to 4 px low across three glyphs at matching heights, so it is placement and not scale.
+// The corners disagree: with the health bar on console's rows the ammo block still reads 3 px low.
 static constexpr int nShiftBottomRight = -75;
 
 // Canvas width at which each side already sits where console puts it. The shift is half the
 // difference from the real canvas, so originX plus shift is constant at every width, which is what
-// makes it aspect independent.
+// holds the corners on 105 px and 86 px at every aspect.
 //
-//     strip left edge     authored -136.8   console 101    design width 1436
-//     rightmost pixel     authored 1098.8   console 1180   design width 1438
+// Two pairs, because the engine authors the HUD twice and picks by display -- the same 960x720 of
+// content inside either a 1280x800 widescreen canvas or a 1024x768 4:3 one, per the
+// SafeAreaBlackBorderPercent HDX/HDY/SDX/SDY settings. Each layout sits against its own canvas
+// edges, so the extremes the widths are solved for differ:
 //
-// The right was 1437 until the ammo cluster was compared glyph for glyph. "Rightmost HUD pixel" was
-// measuring the phone on one capture and the grenade on the other; the grenade column is 16 px wide
-// in both and reads +5 px, so 4.8 units and a design width of 1447.
+//                     left extreme   right extreme   health bar anchors
+//     widescreen         -136.8         1120.0          -140 .. 42
+//     4:3                 -26.0          990.0           -26 .. 182
 static constexpr int nDesignWidthLeft = 1437;
 static constexpr int nDesignWidthRight = 1447;
+static constexpr int nDesignWidthLeftSD = 1222;
+static constexpr int nDesignWidthRightSD = 1193;
 
-// Column boundaries. Origins land at 82, 100 and 482 for the banner, 459 to 484 for the reticle and
-// 981 upward for the ammo, so left goes anywhere in (42, 82) and right in (482, 981). Left is 60 and
-// not 0 because the health bar is five segment quads with origins from -140 to +42, and a boundary
-// of 0 left the last one behind in the middle of the bar.
+// Column boundaries. Widescreen origins: banner 82, 100 and 482, reticle 459..484, ammo 981 up. Left
+// is 60 and not 0 to keep all five health bar segments, which run -140..42, on one side.
 static constexpr int nLeftZoneMax = 60;
 static constexpr int nRightZoneMin = 700;
+
+// The 4:3 bar runs out to 182, so 60 leaves three segments behind. 300 alone is no good either: the
+// subtitle is anchored at 76 there and reaches across the frame. The wider bound carries the bar's
+// row with it -- segments at y 714, strip at 703, subtitle at 679, nothing else in the band.
+static constexpr int nLeftZoneMaxSD = 300;
+static constexpr int nLeftZoneRowSD = 700;
 
 // Canvas shorts are written and read back as int16.
 static constexpr int nCanvasCeiling = 32767;
 
-// Overlay packages. Not the HUD: the developer console, the save notification and the version line
-// are authored on common.mgb, which is drawn over whatever page is up and is not in the HUD's
-// anchor table, so none of the edge offsets above reach it.
+// Overlay packages. The console, the save notification and the version line are authored on
+// common.mgb, drawn over whatever page is up, and reached by none of the offsets above.
 static constexpr const char* pszOverlayPackages[] =
 {
     "common.mgb",
@@ -146,43 +142,42 @@ static constexpr const char* pszOverlayPackages[] =
 };
 static constexpr int nOverlayPackages = static_cast<int>(sizeof(pszOverlayPackages) / sizeof(pszOverlayPackages[0]));
 
-// Learned from the same lookup as the HUD's, and for the same reason: a package carries no name.
+// Learned from the same lookup as the HUD's: a package carries no name.
 static void* pOverlayPackages[nOverlayPackages] = {};
 
-// The screen those positions were placed against. common.mgb is authored 1280x800 and the PC drew it
-// across a 16:9 frame, so its horizontal was stretched by 16/9 divided by 1280/800, and every offset
-// on it was chosen while looking at that stretch: the console line reads 70 px from the left edge on
-// a 720p capture, not the 63 px its 70 units are worth once the stretch is gone.
+// Where the console page's two ends belong, in pixels on a 720p capture, because that is how they
+// were measured. Pixels and not a stretch factor: the stretch would have to be read off the authored
+// canvas, and that canvas changes with the display.
 //
-// So the placement is kept and the stretch is not.
-static constexpr float fReferenceAspect = 1280.0f / 720.0f;
+// One shift for the left of the page and one for the right, each solved for the element it exists
+// for. Not one per element anchor: the caret carries its own and advances a glyph at a time, so it
+// would walk out from under the text by a ninth of whatever had been typed.
+static constexpr float fOverlayLeftPixels = 70.0f;
+static constexpr float fOverlayRightPixels = 189.0f;
+static constexpr float fReferencePixelHeight = 720.0f;
 
-// One shift for the left of the page and one for the right, each measured off the element it exists
-// for: the console text at -90, the version line at 931. Not one worked out from each element's own
-// anchor, which is right for a line of text and wrong for everything that follows one -- the console
-// caret carries its own anchor and advances a glyph at a time, so an anchor dependent shift walked
-// it out from under the text at about a ninth of whatever had been typed.
 static constexpr float fOverlayLeftReference = -90.0f;
 static constexpr float fOverlayRightReference = 931.0f;
 
-// The version line is the only thing on the strip that belongs to the right edge.
-static constexpr float fOverlayRightZoneMin = 900.0f;
+// And again for the 4:3 layout, which anchors the same elements elsewhere.
+static constexpr float fOverlayLeftReferenceSD = 20.0f;
+static constexpr float fOverlayRightReferenceSD = 821.0f;
 
-// The console strip is a page of its own with nothing else authored on it, so all of it moves. It is
-// named by the strip itself: a quad the full width of the canvas and about half its height, drawn
-// before anything else on the page. Full height is not the strip, it is a dialog's vignette, and
-// that distinction is the point of the window -- the vignette is what put the quit box off centre
-// when the test was width alone.
+// The version line is the only thing on the strip that belongs to the right edge. 900 clears the
+// widescreen text, which runs to 327; 4:3 anchors the line itself at 821 and its text stops at 319.
+static constexpr float fOverlayRightZoneMin = 900.0f;
+static constexpr float fOverlayRightZoneMinSD = 700.0f;
+
+// The console strip is a page of its own with nothing else on it, so all of it moves. Named by the
+// strip: full canvas width, about half its height, drawn first. Full height is a dialog's vignette,
+// and moving that page takes the dialog off centre with it.
 static constexpr float fConsoleStripMinHeight = 0.35f;
 static constexpr float fConsoleStripMaxHeight = 0.65f;
 
-// Every other overlay page moves only its top left corner, which is where the save and load
-// indicator is authored. It is one cluster -- a pill at -92.5..23.5, a spinner at -90.6..-58.2 and
-// its caption -- and the pill and spinner are anchored right of the caption, so an anchor band or an
-// extent test takes the text and leaves the artwork behind. The whole corner moves or none of it.
-//
-// Nothing else on common.mgb is authored up there. The quit dialog is centred, its glyphs carry an
-// anchor each, and it is well outside this box, which is what keeps it whole.
+// Every other overlay page moves only its top left corner, where the save and load indicator is: a
+// pill at -92.5..23.5, a spinner at -90.6..-58.2 and a caption, both sprites anchored right of the
+// caption, so an anchor band or an extent test takes the text and leaves the artwork. Nothing else
+// is authored up there -- the quit dialog is centred, and its glyphs carry an anchor each.
 static constexpr float fCornerMaxX = 200.0f;
 static constexpr float fCornerMaxY = 60.0f;
 
@@ -366,6 +361,14 @@ struct Canvas
     int nOriginY = 0;
 };
 
+// Which of the two authored layouts the engine handed us. The 4:3 one is 1024x768, the widescreen
+// one 1280x800, and only the edge offsets care -- the canvas maths is the same either way.
+static bool IsWidescreenAuthored(const Canvas& authored)
+{
+    return authored.nWidth * 3 > authored.nHeight * 4;
+}
+
+
 // Off the Package, not the context. The context is what the canvas hook writes, so reading it back
 // compounds the correction on a page that reaches BeginScreen twice.
 static Canvas ReadAuthoredCanvas(const uint8_t* pPackage)
@@ -392,11 +395,26 @@ static bool BuildPageCanvas(const Canvas& authored, float fAspect, PageKind kind
         return false;
 
     // Menus keep the authored height, so their vertical is untouched and only the stretch goes.
-    const int nHeight = (kind == PageKind::GameplayHud)
+    //
+    // The HUD's is off the content box and not the authored canvas, which is what makes it the same
+    // 696 at every aspect: the engine swaps the authored canvas between a 1280x800 widescreen one
+    // and a 1024x768 4:3 one, and both carry the same 960x720 of content inside their safe area
+    // borders. Reading the canvas would put the HUD on a different scale per display.
+    int nHeight = (kind == PageKind::GameplayHud)
         ? (nContentHeight * nCanvasHeightNumerator + nCanvasHeightDenominator / 2) / nCanvasHeightDenominator
         : authored.nHeight;
 
-    const int nWidth = static_cast<int>(nHeight * fAspect + 0.5f);
+    int nWidth = static_cast<int>(nHeight * fAspect + 0.5f);
+
+    // Fitting the height alone stops working once the frame is narrower than the content box is
+    // wide: a 1:1 frame leaves 768 units of canvas to lay 960 units of content on and the edges run
+    // off both sides with nothing able to pull them back. Below that, fit the box instead and let
+    // the page scale down, which is uniform and keeps every element on screen.
+    if (nWidth < nContentWidth)
+    {
+        nWidth = nContentWidth;
+        nHeight = static_cast<int>(nWidth / fAspect + 0.5f);
+    }
 
     if (nWidth < 1 || nHeight < 1 || nWidth > nCanvasCeiling || nHeight > nCanvasCeiling)
         return false;
@@ -424,6 +442,7 @@ static bool bConsoleStripPage = false;
 
 static float fOverlayDeltaLeft = 0.0f;
 static float fOverlayDeltaRight = 0.0f;
+static float fOverlayRightZone = fOverlayRightZoneMin;
 
 // The authored sizes double as the backdrop test, so they stay as extents rather than folding into
 // the scales.
@@ -437,6 +456,7 @@ static float fBackdropScaleY = 1.0f;
 static float fContentCentre = 0.0f;
 static float fDeltaLeft = 0.0f;
 static float fDeltaRight = 0.0f;
+static bool bWidescreenLayout = true;
 
 // Widget::GetPackage. Through the vtable because neither caller has a static call site to match.
 static void* GetPagePackage(void* pPage)
@@ -563,21 +583,22 @@ static void ApplyCanvas(SafetyHookContext& regs)
     *reinterpret_cast<int16_t*>(pContext + nContextOriginY) = static_cast<int16_t>(fixed.nOriginY);
 
     fContentCentre = (authored.nWidth - 2 * authored.nOriginX) * 0.5f;
-    fDeltaLeft = -(fixed.nWidth - nDesignWidthLeft) * 0.5f;
-    fDeltaRight = (fixed.nWidth - nDesignWidthRight) * 0.5f;
+    bWidescreenLayout = IsWidescreenAuthored(authored);
+    fDeltaLeft = -(fixed.nWidth - (bWidescreenLayout ? nDesignWidthLeft : nDesignWidthLeftSD)) * 0.5f;
+    fDeltaRight = (fixed.nWidth - (bWidescreenLayout ? nDesignWidthRight : nDesignWidthRightSD)) * 0.5f;
 
-    // Where the reference element sat once the authored canvas had been stretched to 16:9, in units
-    // of the corrected canvas. The right band is measured from the right edge instead, or the
-    // version line would stay where a 16:9 frame put it and drift inward as the frame widens.
-    const float fStretch = (authored.nWidth > 0)
-        ? fReferenceAspect * static_cast<float>(authored.nHeight) / static_cast<float>(authored.nWidth)
-        : 1.0f;
-    const float fAuthoredOriginX = static_cast<float>(authored.nOriginX);
+    // Those pixel counts in units of the corrected canvas, which is fitted to the frame's height, so
+    // one unit is fixed.nHeight / 720 of a pixel whatever shape the canvas is.
+    const float fUnitsPerPixel = static_cast<float>(fixed.nHeight) / fReferencePixelHeight;
     const float fFixedOriginX = static_cast<float>(fixed.nOriginX);
-    const float fRightEdge = static_cast<float>(fixed.nWidth) - static_cast<float>(authored.nWidth) * fStretch;
+    const bool bWidescreenOverlay = IsWidescreenAuthored(authored);
+    const float fLeftReference = bWidescreenOverlay ? fOverlayLeftReference : fOverlayLeftReferenceSD;
+    const float fRightReference = bWidescreenOverlay ? fOverlayRightReference : fOverlayRightReferenceSD;
+    fOverlayRightZone = bWidescreenOverlay ? fOverlayRightZoneMin : fOverlayRightZoneMinSD;
 
-    fOverlayDeltaLeft = (fAuthoredOriginX + fOverlayLeftReference) * fStretch - fFixedOriginX - fOverlayLeftReference;
-    fOverlayDeltaRight = (fAuthoredOriginX + fOverlayRightReference) * fStretch - fFixedOriginX - fOverlayRightReference + fRightEdge;
+    fOverlayDeltaLeft = fOverlayLeftPixels * fUnitsPerPixel - fFixedOriginX - fLeftReference;
+    fOverlayDeltaRight = static_cast<float>(fixed.nWidth) - fOverlayRightPixels * fUnitsPerPixel
+        - fFixedOriginX - fRightReference;
 
     fAuthoredCanvasWidth = static_cast<float>(authored.nWidth);
     fAuthoredCanvasHeight = static_cast<float>(authored.nHeight);
@@ -588,6 +609,7 @@ static void ApplyCanvas(SafetyHookContext& regs)
 
     pCurrentPage = PageAt(reinterpret_cast<uint8_t*>(regs.edi), static_cast<uint32_t>(regs.ebp));
     bAnchorPage = IsAnchorPage(pCurrentPage);
+
 }
 
 static int BandOf(float fPoint, float fLowBoundary, float fHighBoundary)
@@ -623,11 +645,9 @@ static void Remap(uint8_t* pRender, const ptrdiff_t (&nOffsets)[4], float fOffse
 //     x' = (x + authoredOriginX - originX) * canvasWidth  / authoredCanvasWidth
 //     y' = (y + authoredOriginY - originY) * canvasHeight / authoredCanvasHeight
 //
-// Per axis, because they do not arrive together: the developer console spans the width and a third
-// of the height, and a test wanting both left the canvas margins beside it uncovered. Covering, not
-// merely large, because the tutorial pop-up's vignette is authored 1536 x 1024 to over-scan on
-// purpose and has to keep doing so. The widest content on any page is a subtitle line at about 784
-// units against a 1280 canvas, so the threshold is not close to anything.
+// Per axis, because they do not arrive together -- the console strip spans the width and half the
+// height. Covering and not merely large: the tutorial vignette is authored 1536x1024 to over-scan on
+// purpose. The widest ordinary content is a subtitle at about 784 units, well clear of the test.
 static bool IsBackdropAxis(float fExtent, float fAuthoredExtent)
 {
     return fAuthoredExtent > 0.0f && fExtent >= fAuthoredExtent;
@@ -635,10 +655,9 @@ static bool IsBackdropAxis(float fExtent, float fAuthoredExtent)
 
 // 0x105FAD67, between the last vertex write and the divide. ESI is magma::Render.
 //
-// The quad rather than the widget, because magma::Area carries a position and no extent, so a group
-// cannot be measured from its own state, and walking to the leaves classified 44 individual glyphs
-// including the reticle's marks. Every drawable reaches FUN_105FAB60, and every quad of one element
-// shares the Area translation, so classifying on that cannot split a line of text.
+// The quad rather than the widget: magma::Area carries a position and no extent, so a group cannot
+// be measured from its own state. Every quad of one element shares the Area translation, so
+// classifying on that cannot split a line of text.
 static void ShiftQuad(SafetyHookContext& regs)
 {
     if (!bPageCorrected)
@@ -702,7 +721,7 @@ static void ShiftQuad(SafetyHookContext& regs)
         // version line to the right edge and everything else to the left. Any other overlay page,
         // only the top left corner.
         if (bConsoleStripPage)
-            Move(pRender, nRenderVertexX, (fGroupX > fOverlayRightZoneMin) ? fOverlayDeltaRight : fOverlayDeltaLeft);
+            Move(pRender, nRenderVertexX, (fGroupX > fOverlayRightZone) ? fOverlayDeltaRight : fOverlayDeltaLeft);
         else if (fRight <= fCornerMaxX && fBottom <= fCornerMaxY)
             Move(pRender, nRenderVertexX, fOverlayDeltaLeft);
 
@@ -716,7 +735,14 @@ static void ShiftQuad(SafetyHookContext& regs)
     if (IsCentredDetail(fGroupX, fRight - fLeft, fBottom - fTop))
         return;
 
-    const int nBandX = BandOf(fGroupX, static_cast<float>(nLeftZoneMax), static_cast<float>(nRightZoneMin));
+    int nBandX = BandOf(fGroupX, static_cast<float>(nLeftZoneMax), static_cast<float>(nRightZoneMin));
+
+    // The 4:3 layout's health bar, which is anchored past the boundary and only in its own row.
+    if (nBandX == 0 && !bWidescreenLayout
+        && fGroupX < nLeftZoneMaxSD && fGroupY >= nLeftZoneRowSD)
+    {
+        nBandX = -1;
+    }
 
     const int nBottomBoundary = (nBandX < 0) ? nBottomZoneMinLeft
         : (nBandX > 0) ? nBottomZoneMinRight
@@ -757,11 +783,10 @@ static void ShiftQuad(SafetyHookContext& regs)
 //     10ab5b7a   MOV [EBP+0x36],BX        canvas height
 //     10ab5ba8   CALL [vtable+0x24]       BeginScreen, then FUN_10AA21A0 per cursor slot
 //
-// This block is the last thing to write those two each frame, and FUN_104EFAD0 clamps the cursor's
-// accumulated position against them, so without it the cursor was clamped to the authored canvas
-// while everything else drew against the corrected one. It also never reaches the canvas hook, so
-// the page flags were left over from the loop and the cursor quad went through the HUD's band
-// classification, jumping sideways as its origin crossed a boundary.
+// Last write to those two each frame, and FUN_104EFAD0 clamps the cursor against them -- without it
+// the cursor is held to the authored canvas while everything else draws against the corrected one.
+// It never reaches the canvas hook either, so the page flags have to be cleared here or the cursor
+// quad goes through the HUD's band classification.
 static void ApplyCursorCanvas(SafetyHookContext& regs)
 {
     // Not a page of the loop, so nothing here may be shifted.
@@ -798,10 +823,9 @@ static void ApplyCursorCanvas(SafetyHookContext& regs)
 
 // 0x10AA16C0. __thiscall with RET 4, so __fastcall with an unused EDX is the same frame.
 //
-// magma hit tests in content units, and this is where the event is converted. It reads the origin
-// off the Package through vtable +0x44 and +0x48, which is the authored one, while rendering uses
-// the corrected one, so every hit box sat 22 units left and 52 up at 16:9 and further out as the
-// frame widens.
+// magma hit tests in content units and converts the event here, reading the origin off the Package
+// through vtable +0x44 and +0x48 -- the authored one, while rendering uses the corrected one. Every
+// hit box sat 22 units left and 52 up at 16:9, further out as the frame widens.
 static SafetyHookInline PageEventToContentHook{};
 
 // One dword at +0x04, x in the low short and y in the high one.
