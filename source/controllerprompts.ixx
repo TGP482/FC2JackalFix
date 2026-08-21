@@ -1933,52 +1933,25 @@ static void RefreshBazaarGlyphs()
 // --------------------------------------------------------------------------------------------
 
 /*
-  Default, Apply, Create and Edit have a nav bar prompt and a pad glyph and no pad input: the only
-  way to reach them is the pointer. The exit box is the same shape one step further, its Cancel and
-  Accept reachable by pointer or by walking the focus onto them with the arrows, where console just
-  wanted B or A.
+  Default, Apply, Create and Edit have a nav bar prompt and a pad glyph and no pad input. The exit
+  box is the same one step further: its Cancel and Accept want walking the focus onto them first,
+  where console just wanted B or A.
 
-  The pad does reach the UI. FUN_104F1A90 fills a map from action id to a UI key, keyed on the
-  gamepad event type, and the ids are zlib CRC-32 of the action names, the same hash the widget
-  tree uses:
+  FUN_104F1A90 maps action id to a UI key, ids being zlib CRC-32 of the action names:
 
       "a"  -> 0x0D    "x"     -> 0x202    "left_shoulder"  -> 0x206    "left_trigger"  -> 0x204
       "b"  -> 0x1B    "y"     -> 0x203    "right_shoulder" -> 0x207    "right_trigger" -> 0x205
                       "start" -> 0x20B    "back"           -> 0x20A
 
-  So A and B arrive as Enter and Escape and land on whatever holds the focus, and X and Y arrive as
-  0x202 and 0x203, which nothing in Dunia compares against: a search of every decoded instruction
-  finds no CMP against either. The console handling is data, not code, and the PC .mgb does not
-  carry it.
+  So A and B arrive as Enter and Escape and land on the focus, while X and Y arrive as 0x202 and
+  0x203 and nothing in Dunia compares against either: no CMP against them exists in any decoded
+  instruction. The console handling is data, and the PC .mgb does not carry it.
 
-  What the pointer does is reachable. FUN_10AA5930, a page's mouse button handler, does not hit
-  test: the hit test ran on the last move and left the Node it found at page+0x1C, and the press
-  dispatches to it through that Node's vtable+0x8C. FUN_10AA23E0 is that hit test and it walks
-  Nodes, which is what CNavBarPrompt keeps at +0x04. Its +0x08 is the widget the Node draws, and
-  handing that over instead is a crash rather than a miss: a magma::ButtonInstance vftable is 21
-  entries and +0x8C reads twenty past the end.
-
-  Three things have to be right and none of them can be assumed:
-
-      the page      Nothing in a prompt points back at it, and more than one page can reach the
-                    same Node. The stack is walked and the tree of each page searched, top down.
-
-      the position  A press is not done with it: the Node's own handler descends the widget with
-                    it. magma::ButtonInstance keeps a position at State+0x24 where an Image or a
-                    Text keeps a rect, and the label inside it is the one child whose State does
-                    carry a rect, so the middle of the label is the point.
-
-      the transform FUN_10AA16C0 takes a pair off the page's vtable+0x20 object and subtracts it on
-                    the way in. Reading that pair back gives 160,40 while the engine subtracted
-                    231,40 from the very press it was reading them for, so it is measured instead:
-                    a move is sent with a known number and FUN_10AA5EC0, which receives the event
-                    after the transform, is caught with the number the page ended up with.
-
-  With those three the pointer's own hit test still does not pick the prompt up on the menu pages,
-  only on the exit box, so the slot the press reads is written directly when a move does not land.
-  Pages above the one being pressed are emptied for the two calls: FUN_10AB6690 walks top down and
-  stops at the first page that handles the press, and a page with nothing hovered and nothing
-  captured returns 0 from both handlers.
+  What the pointer does is reachable. FUN_10AA5930 does not hit test: the last move left the Node
+  it found at page+0x1C and the press dispatches through that Node's vtable+0x8C. FUN_10AA23E0 is
+  the hit test and it walks Nodes, which is CNavBarPrompt+0x04. Its +0x08 is the widget that Node
+  draws, and passing that instead crashes: a magma::ButtonInstance vftable is 21 entries and +0x8C
+  reads twenty past the end.
 
       manager + 0x04 / + 0x08   page stack, begin and end, 8 bytes a slot, page first
       manager + 0x28 / + 0x29   device and cursor bitmasks, both refused by the handlers when clear
@@ -1986,11 +1959,9 @@ static void RefreshBazaarGlyphs()
       page    + 0x28 / + 0x2C   its own child vector, a Page being an Area
       page    + 100 + d * 0x3C  per device: + 0x1C hovered Node, + 0x20 captured
 
-  A and B are only taken over on a message box. Everywhere else Enter already activates what the
-  player walked to, and a page's "(A) Select" prompt is not always the same action, so pressing its
-  glyph instead of the focused item would be a different game. On a box it is the point: the two
-  prompts are the two buttons. The pad's A and B are cleared out of the driver's XINPUT_STATE for
-  as long as one is open, so the action map cannot also send Enter and close the box twice.
+  A and B are only taken over on a message box. Elsewhere Enter already activates what the player
+  walked to, and a page's "(A) Select" is not always that. The pad's A and B are cleared out of the
+  driver's XINPUT_STATE while a box is open so the action map cannot close it twice.
 */
 
 static constexpr uint32_t nMenuPadDevice = 0;
@@ -2017,8 +1988,6 @@ static constexpr size_t nMouseEventWords = 4;
 static constexpr ptrdiff_t nStateOriginX = 0x24;
 static constexpr ptrdiff_t nStateOriginY = 0x26;
 
-static constexpr ptrdiff_t nMessageBoxVtableRva = 0xE1E3C8;
-
 static constexpr uint16_t nXInputA = 0x1000;
 static constexpr uint16_t nXInputB = 0x2000;
 static constexpr uint16_t nXInputX = 0x4000;
@@ -2031,20 +2000,15 @@ static UiMouseEvent_t UiMouseMove = nullptr;
 static UiMouseEvent_t UiMouseDown = nullptr;
 static UiMouseEvent_t UiMouseUp = nullptr;
 
-// CGameMessageBox's own constructor and destructor, which every box in the family runs. The
-// derived classes overwrite the vftable straight after, so which kind of box this is is a question
-// asked of the live object rather than of the hook.
+// Every box in the CGameMessageBox family counts: the resolution confirmation is not the plain
+// one, and asking the live object for the base vftable left it without pad input. Nothing has to
+// tell the kinds apart, since A and B are only taken over where a nav bar prompt carries them, and
+// outside a menu there are none.
 static std::vector<uint8_t*> sLiveMessageBoxes;
 
-static bool PlainMessageBoxOpen()
+static bool MessageBoxOpen()
 {
-    for (auto* pBox : sLiveMessageBoxes)
-    {
-        if (IsReadable(pBox) && *reinterpret_cast<uintptr_t*>(pBox) == Rva(nMessageBoxVtableRva))
-            return true;
-    }
-
-    return false;
+    return !sLiveMessageBoxes.empty();
 }
 
 // Filled by the hook on FUN_10AA5EC0 while a probe move is in flight.
@@ -2082,10 +2046,10 @@ static bool AreaHoldsNode(uint8_t* pArea, uint8_t* pWanted, int32_t& nOffsetX, i
             return;
         }
 
-        // +0x3C is a child Area on the classes that have one and whatever happens to sit there on
-        // the ones that do not, so both ends go through the page tables rather than through the
-        // shape of a pointer. A walk that took it on trust faulted three levels down reading
-        // 0x22772228, which is 0x28 past a number that was aligned and in range and not mapped.
+        // +0x3C is a child Area on the classes that have one and whatever sits there on the ones
+        // that do not, so both ends go through the page tables and not through the shape of a
+        // pointer: taking it on trust faulted three levels down on an aligned, in range, unmapped
+        // number.
         if (!IsObject(pDrawable))
             return;
 
@@ -2127,9 +2091,8 @@ static uint8_t** HoveredSlot(uint8_t* pScreen)
         pScreen + nScreenDeviceBase + nMenuPadDevice * nScreenDeviceStride + nScreenHovered);
 }
 
-// Backwards, so a modal's prompts win over whatever was attached behind it. The Node and the
-// widget are checked as a pair: a Node whose drawable is not the prompt's widget is not the Node
-// this prompt is drawn through, whatever else it may be.
+// Backwards, so a modal's prompts win over whatever was attached behind it. Node and widget are
+// checked as a pair: a Node whose drawable is not this prompt's widget is not its Node.
 static uint8_t* FindPrompt(int32_t nButton)
 {
     for (auto it = sAttachedPrompts.rbegin(); it != sAttachedPrompts.rend(); ++it)
@@ -2240,48 +2203,33 @@ static bool PressPrompt(uint8_t* pPrompt)
         auto bLanded = *ppHovered == pNode;
         auto pSavedHovered = *ppHovered;
 
-        struct Emptied { uint8_t** ppHovered; uint8_t** ppCaptured; uint8_t* pHovered; uint8_t* pCaptured; };
-        std::array<Emptied, nScreenStackLimit> emptied{};
-        size_t nEmptied = 0;
-
-        // FUN_10AB6690 walks the stack top down and stops at the first page that handles the
-        // press, and a page with nothing hovered and nothing captured returns 0 from both handlers.
-        for (size_t i = 0; i < nScreenStackLimit; ++i)
-        {
-            auto pSlot = pEnd - (i + 1) * nScreenStackStride;
-            if (pSlot < pBegin)
-                break;
-
-            auto pScreen = *reinterpret_cast<uint8_t**>(pSlot);
-            if (pScreen == pPage)
-                break;
-
-            if (!IsObject(pScreen))
-                continue;
-
-            auto ppAbove = HoveredSlot(pScreen);
-            auto ppAboveCaptured = reinterpret_cast<uint8_t**>(
-                pScreen + nScreenDeviceBase + nMenuPadDevice * nScreenDeviceStride + nScreenCaptured);
-
-            emptied[nEmptied++] = { ppAbove, ppAboveCaptured, *ppAbove, *ppAboveCaptured };
-            *ppAbove = nullptr;
-            *ppAboveCaptured = nullptr;
-        }
-
-        /*
-          One press, and the caller is told whether it did anything.
-
-          What the page answers with is whether the press acted: a forced press that did leaves
-          nothing under the pointer, one that was spent hands back the neighbour the move had
-          found, and a press that landed on its own says so through the handler's own return.
-
-          Pressing twice on the spot does not help. Two down and up pairs one after the other in
-          the same frame both come back spent, and a press one frame later does not, so whatever
-          the first one is spent on only moves on when the page next updates. The retry belongs a
-          frame away, which is the caller's business and not this function's.
-        */
+        // A forced press has to clear a path to its page: FUN_10AB6690 walks the stack top down
+        // and stops at the first page that handles the press, and a page with nothing hovered and
+        // nothing captured returns 0 from both handlers. A press that landed needs none of it, the
+        // hit test having already picked this page out, and clearing above it there cost the
+        // Jackal Fix menu its second accept.
         if (!bLanded)
+        {
+            for (size_t i = 0; i < nScreenStackLimit; ++i)
+            {
+                auto pSlot = pEnd - (i + 1) * nScreenStackStride;
+                if (pSlot < pBegin)
+                    break;
+
+                auto pScreen = *reinterpret_cast<uint8_t**>(pSlot);
+                if (pScreen == pPage)
+                    break;
+
+                if (!IsObject(pScreen))
+                    continue;
+
+                *HoveredSlot(pScreen) = nullptr;
+                *reinterpret_cast<uint8_t**>(pScreen + nScreenDeviceBase
+                    + nMenuPadDevice * nScreenDeviceStride + nScreenCaptured) = nullptr;
+            }
+
             *ppHovered = pNode;
+        }
 
         // FUN_10AA5930 skips the press whole if + 0x20 is already taken, while FUN_10AA2F80 takes
         // it as the thing to release.
@@ -2291,17 +2239,18 @@ static bool PressPrompt(uint8_t* pPrompt)
         auto bDown = UiMouseDown(pManager, press) != 0;
         UiMouseUp(pManager, press);
 
+        // Whether it acted: a forced press that did leaves nothing under the pointer, one that was
+        // spent hands back the neighbour, and a press that landed says so through its own return.
         auto bAlive = PageOnStack(pManager, pPage);
         bActed = !bAlive || (bLanded ? bDown : *ppHovered == nullptr);
 
-        if (!bLanded && bAlive)
+        // A press that did nothing changed nothing, so the neighbour is still live and goes back:
+        // leaving the slot empty makes the next press fire an enter on it and only one of those
+        // two runs the action. A press that acted can take the page's children with it, as
+        // accepting a resolution does, and putting the neighbour back there left FUN_10AA3800
+        // firing a leave on a freed one.
+        if (!bLanded && bAlive && !bActed)
             *ppHovered = pSavedHovered;
-
-        for (size_t i = 0; i < nEmptied; ++i)
-        {
-            *emptied[i].ppHovered = emptied[i].pHovered;
-            *emptied[i].ppCaptured = emptied[i].pCaptured;
-        }
     }
 
     *(pManager + nDeviceActiveMask) = nSavedActive;
@@ -2328,17 +2277,13 @@ static constexpr std::array<MenuPadButton, 4> sMenuPadButtons =
     { nXInputY, nPadY, false },
 }};
 
-/*
-  A press that did nothing is tried again on the next draw, up to a few.
-
-  Whatever a forced press is spent on the first time only moves on when the page updates: two
-  down and up pairs in the same frame both come back spent, and one a frame later does not. So the
-  retry is a frame away rather than a call away, which is a handful of milliseconds and invisible.
-
-  ponytail: a retry on a read-back, not on knowing what the widget wants on the way in. A pointer
-  gives it an enter first and never sees any of this; if that enter is ever worth synthesising,
-  this goes.
-*/
+// A press that did nothing is tried again on the next draw, up to a few. Whatever a forced press
+// is spent on only moves on when the page updates: two down and up pairs in the same frame both
+// come back spent, one a frame later does not.
+//
+// ponytail: a retry on a read-back, not on knowing what the widget wants on the way in. A pointer
+// gives it an enter first and never sees any of this; if that enter is worth synthesising, this
+// goes.
 static constexpr int nPressRetries = 4;
 
 static uint8_t* pPendingPrompt = nullptr;
@@ -2362,6 +2307,7 @@ static void UpdateMenuPadButtons()
     {
         pPendingPrompt = nullptr;
 
+
         if (++nPendingTries < nPressRetries && IsLivePrompt(pPending) && !PressPrompt(pPending))
             pPendingPrompt = pPending;
     }
@@ -2369,7 +2315,7 @@ static void UpdateMenuPadButtons()
     auto nButtons = GetPadState().nButtons;
     auto nPressed = static_cast<uint16_t>(nButtons & ~nHeld);
 
-    auto bMessageBox = PlainMessageBoxOpen();
+    auto bMessageBox = MessageBoxOpen();
 
     nHeld = nButtons;
 
@@ -2391,6 +2337,14 @@ static void UpdateMenuPadButtons()
 
         if (nPressed & button.nBit)
         {
+            auto nSame = 0;
+            for (auto* p : sAttachedPrompts)
+            {
+                if (IsLivePrompt(p) && *reinterpret_cast<int32_t*>(p + nPromptButtonId) == button.nPromptButton)
+                    ++nSame;
+            }
+
+
             nPendingTries = 0;
             pPendingPrompt = PressPrompt(pPrompt) ? nullptr : pPrompt;
         }
