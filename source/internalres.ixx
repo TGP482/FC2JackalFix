@@ -10,63 +10,6 @@ module;
 #include <dxgi.h>
 #include <cstring>
 
-// An internal render resolution independent of the window, the display mode and the backbuffer,
-// for supersampling above what the monitor can show or rendering below it and scaling back up.
-//
-// Borderless uses the same path with no setting of its own. Its window covers the display whatever
-// the video options ask for, so any resolution below the desktop has already split the frame from
-// the output, and leaving that to the runtime gives a point-sampled stretch to the whole client
-// area. The engine's own resolution becomes the internal one and the backbuffer becomes the client
-// rect, so the resolve below supplies the fit and the filter.
-//
-// Dunia has exactly one number for "how big is the frame" and it is welded to the swapchain.
-// FUN_10423400 (SetResolution) takes a width and a height, stores them at renderer+0x1C/+0x20,
-// derives the aspect ratio into renderer+0x24, and copies the same pair straight into the global
-// D3DPRESENT_PARAMETERS as BackBufferWidth/BackBufferHeight. Everything downstream follows the
-// stored pair: the viewport is a fraction of it, and every scene render target is allocated from
-// the viewport. The two quantities are written four instructions apart from the same registers,
-// which is why they cannot diverge on their own and why one choke point is enough to split them.
-//
-// The split is:
-//
-//   renderer+0x1C / +0x20   the internal resolution. The engine sizes its viewport, its scene
-//                           targets, its shared depth buffer and its final PostFxBlit from this,
-//                           so the entire render chain moves together and not one viewport
-//                           anywhere needs rescaling.
-//   BackBufferWidth/Height  the real output resolution: the window's client area when windowed or
-//                           borderless, the adapter mode when fullscreen.
-//
-// That leaves the backbuffer the wrong size for what the engine draws into it, so the backbuffer
-// is substituted. The engine never touches an IDirect3DSurface9* for the backbuffer directly. It
-// goes through a 0x20-byte wrapper whose only setter is FUN_1040F190, three instructions long, and
-// which caches no dimensions at all: vtable+0x10 is a live GetSize that calls the surface's
-// GetDesc on every call. Install a different surface and every size query answers consistently,
-// with no shadow fields to keep in sync. So the setter hands the engine an internal-res render
-// target instead, and the frame function resolves that target onto the real backbuffer just before
-// the engine's screenshot block and Present.
-//
-// Not letting D3D9 stretch a mismatched backbuffer at Present instead is deliberate. It does
-// scale, and Microsoft documents that much, but the documentation specifies no filter and in
-// practice it is a point sample, every second pixel discarded going down. Supersampling through it
-// is worse than not supersampling at all. This resolve picks its own filter and halves through
-// scratch targets for ratios above 2:1, so a bilinear tap is always an exact 2x2 box average.
-//
-// All three display modes work. Exclusive fullscreen needs nothing special: the fullscreen branch
-// of SetResolution already leaves renderer+0x90 clear, and the resolution arriving there has
-// already been rounded to a real adapter mode by the boot path, so the backbuffer stays a mode the
-// driver will accept. That matters, because CreateDevice's failure path at 0x104252D9 is an
-// infinite retry loop rather than an error.
-//
-// The scale is uniform on both axes. An internal resolution shaped differently from the output,
-// 4:3 on a 16:9 display say, is fitted and centred with black bars rather than stretched, and the
-// engine is told to compose for a screen the shape of the internal frame, so the geometry it draws
-// is the geometry it would draw running natively at that resolution.
-//
-// Two consequences worth knowing. The HUD and menus are drawn by the engine into the same target
-// as the scene, so they are resampled with it: sharper than native when supersampling, softer
-// when rendering below the output resolution. And the engine's own screenshot key captures after
-// the resolve but sizes its capture from renderer+0x1C/+0x20, so its screenshots come out at the
-// internal resolution with the game's hardcoded point filter; external capture is unaffected.
 
 export module internalres;
 

@@ -1,22 +1,5 @@
 /*
   "Bug fix - Silent big truck engine" from An Almost Complete Guide to Far Cry 2 Modding, in code.
-
-  The guide's version is a data edit to entitylibrarypatchoverride.fcb, needing a repacked
-  patch.dat: the Land.BigTruck* engine sounds point at ids that produce almost nothing, and it
-  repoints the seven in SoundRemaps below across five prototypes (Land.BigTruck,
-  .A2LM09_NitrousTruck, .ScriptedBigTruck, .Tanker and Land.BigTruck_Tanker).
-
-  They are indices 0, 1, 2, 4, 5, 6 and 10 of uint32_t m_SoundIds[21] at +0x2A0 of the vehicle
-  engine and FX component (schema FUN_101AF0C0, constructor FUN_101ACFE0, vtable 0x10E266EC).
-  FUN_100F7420 is their only deserialiser (descriptor vtables 0x10E1C290 and 0x10E26670), sscanfing
-  the archive's literal "0x0045CD73" text into object + desc->offset + desc->index * 4 at entity
-  library load. Different function and vtable from the float serialiser renderconfig.ixx hooks, so
-  the two do not collide.
-
-  Dunia.dll contains no prototype names and the class carries no RTTI, so the truck is identified by
-  the id values themselves: each occurs exactly once per big truck prototype and nowhere else in the
-  shipped vehicle library. The 0x2A0 field offset gate confines the remap to this class; the other
-  three sound-name schemas use 0x268/0x2D8, 0x224 and 0x58-0x6C/0x2C.
 */
 
 module;

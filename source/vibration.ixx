@@ -11,46 +11,6 @@ import inputdevice;
 import settings;
 
 // Controller vibration, restored from the Xbox 360 build.
-//
-// CCameraShakeAndPadRumbleComponent drives both camera shake and pad rumble. Its archetype
-// registers four curves at 0x101411D0: 0 archCamera_roll, 1 archCamera_pitch, 2 archRumble_HF
-// (high frequency, small motor), 3 archRumble_LF (low frequency, large motor). Three concurrent
-// effect instances live at base+0x14, stride 0x48; each carries one 0x10 byte entry per curve
-// (+0x04 elapsed, +0x08 duration, +0x0C curve handle) and a live byte at +0x44. Every shake and
-// rumble in the game is one CCameraShakeAndPadRumbleEvent landing in these slots.
-//
-// Both halves are present. 0x10141480 EvalCurve(this, index) returns the largest magnitude
-// sample across the live instances and works for indices 2 and 3 as it stands. 0x104F07B0
-// SetVibrationAll(this, float lf, float hf) enumerates vibration capable devices and calls
-// vtable+0x20 on each, honouring its mute byte at this+0x85, which the in-game Vibration option
-// and the pause and teardown silencing ride on. That reaches 0x102C8F80 CXInputPad::SetVibration,
-// which scales both 0..1 amplitudes by 65535 into wLeftMotorSpeed/wRightMotorSpeed and calls
-// XInputSetState.
-//
-// Missing is the join. 0x101417E0 is the per frame apply step:
-//
-//     101417E0  FLD   [ESP+4]              ; dt
-//     101417E8  CALL  0x10141590           ; camera roll/pitch += Eval(0)/Eval(1) * dt * pi/4
-//     101417ED  MOV   ECX,[0x11645578]     ; input device container
-//     101417FB  CALL  0x104F3520           ; GetDevice(0)
-//     10141804  FLDZ                       ; <- the amputation
-//     10141809  FST   [ESP+4]              ; hf = 0.0
-//     1014180F  FSTP  [ESP]                ; lf = 0.0
-//     10141812  CALL  0x104FE590           ; rumble manager = *(device+4) + 0xE4
-//     10141817  MOV   ECX,EAX
-//     10141819  CALL  0x104F07B0           ; SetVibrationAll(0.0, 0.0)
-//
-// Curves 2 and 3 are never read anywhere in the binary, and all five callers of SetVibrationAll
-// pass that same FLDZ pair. This substitutes the two rumble curve samples for the zeros one
-// instruction before the dispatcher runs. The curves are authored game data shared with the 360,
-// so nothing here scales magnitude.
-//
-// Departure from the console build: the motors only run while the pad is the active device, since
-// shake events fire from the world rather than from the input and a plugged in pad would otherwise
-// rumble through a mouse and keyboard session. IsPadActiveDevice from inputdevice watches the three
-// raw input drivers rather than the action map, which by this point has forgotten which device
-// produced anything. Narrowing it regresses this feature: while it tracked only the look axes, a
-// pad went on rumbling through a mouse and keyboard firefight until the camera was swung.
 
 static bool bVibration = true;
 

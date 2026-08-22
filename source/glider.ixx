@@ -1,52 +1,7 @@
 /*
   Two hang glider bug fixes from An Almost Complete Guide to Far Cry 2 Modding: gliders falling
   out of the sky when shot, and gliders bouncing on water. The guide edits three floats in every
-  Air.Paraglider* prototype in entitylibrarypatchoverride.fcb:
-
-    ParagliderParams.fMass                     300.0 -> 2420.0   (shot out of the sky)
-    CVehicleParagliderPhysComponent
-        .fDiscardedMass                         75.0 ->  825.0   (bouncing on water)
-    CVehicle.fUnderWaterMaxDepth                -1.0 ->    1.5   (bouncing on water)
-
-  That needs a repacked patch.dat, which collides with every other mod that ships one. All three
-  are engine fields at fixed offsets, so they are written as the engine reaches for them instead.
-
-  fMass, at CVehicleParagliderPhysComponent + 0x1B0. FUN_10492430 registers the ParagliderParams
-  schema on CPhysParagliderVehicleEntityCreateParams with fMass at +0x90, and FUN_10073ED0 embeds
-  that struct in the component at +0x120. Its consumer FUN_104A15B0 (inertia tensor, then
-  hkpRigidBody::setMass) is no use as a hook site: five physics-entity vtables reference it, and
-  +0x90 is a base-class field the shared operator= FUN_10070EE0 copies for other vehicles. The
-  paraglider-only chokepoint is the factory FUN_104931D0, CreateParagliderPhysEntity(params, world)
-  __cdecl, reached only from FUN_1006D6B0 at slot +0x128 of vtable 0x10E13498. Writing params->fMass
-  there beats setMass, the inertia tensor and Init's copy into the entity's own slot at +0x190. The
-  hook sits on MOV ESI,EAX / ADD ESP,8, five bytes exactly, where EBX already holds params and EAX
-  still holds the allocation the MOV wants.
-
-  fDiscardedMass, at CVehicleParagliderPhysComponent + 0x220. Registered by FUN_10073ED0, seeded to
-  75.0 by the component constructor at 0x1006D678. Only reader is FUN_1006A230, slot +0x11C of the
-  component vtable, called by the get-out-vehicle handler FUN_100E5B40 once the player has walked
-  two metres away: FLD [ESI+0x220] into hkpRigidBody::setMass. 75kg is what lets an abandoned canopy
-  skitter across water. The hook covers the six-byte FLD and writes the field first, so the FLD
-  reads 825 from the trampoline.
-
-  fUnderWaterMaxDepth, at CVehicle + 0x114. Registered by FUN_100DEA10, seeded to -1.0 by the
-  CVehicle constructor at 0x100E11BE. Belongs to every vehicle in the game (the big truck ships
-  1.95), so it cannot be rewritten blind. Only reader is FUN_100DA270, CVehicle::IsSubmerged:
-
-    COMISS XMM0, [EBX+0x114]  ; 0.0 vs fUnderWaterMaxDepth
-    JNC    not_submerged      ; <= 0 short-circuits to false
-    FLD    [ESP+0x14]         ; pos.z
-    FADD   [EBX+0x114]
-    FCOMIP                    ; waterZ > z + depth -> submerged
-
-  -1 disables the test rather than always tripping it, so a stock paraglider is never recognised
-  as submerged, never retired, and sits on the surface being pushed around by it. 1.5 arms the
-  check. Callers FUN_100DB6E0, FUN_100DC930 and FUN_100E3450 are the vehicle entry and usability
-  gates, so this runs for a nearby vehicle rather than every vehicle every frame.
-
-  Identified by sName at CVehicle + 0, the vehicle's own name hash: every Air.Paraglider*
-  prototype carries the same one and no other vehicle does. iAnimVehicleType at +4 is 2 for the
-  paraglider but is an animation set rather than an identity (the big truck's is 8).
+  Air.Paraglider* prototype in entitylibrarypatchoverride.fcb
 */
 
 module;

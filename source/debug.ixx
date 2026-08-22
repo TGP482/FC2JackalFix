@@ -35,9 +35,6 @@
                 player's transform after the animation pass that places the arms, leaving the
                 viewmodel a frame behind. Here the camera is left alone and the player moved
                 underneath it, so HUD, aiming, weapons and viewmodel stay stock.
-
-  The clock     A mid hook on CPawnInputListener::Update, past its check that gameplay input is
-                enabled, so menus and cutscenes take the debug keys with them.
 */
 
 module;

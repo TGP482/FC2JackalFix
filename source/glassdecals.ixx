@@ -1,32 +1,5 @@
 /*
   "Windshield bullet holes are now permanent", in code. Credit to Boggalog.
-
-  The data version is a one-attribute edit to databases/generic/decal.xml, which has to ride in
-  patch.dat: entry Base.Glass, the bullet impact decal every windshield hit spawns, fLifeTime 20,
-  fFadeInDuration 0, fFadeOutDuration 3.
-
-  SDecalDescription is a 0x154 byte object (factory FUN_105271D0, constructor FUN_105D56C0, schema
-  FUN_105D4CD0) with crc_hidName at +0x0C and fLifeTime at +0x68. fLifeTime goes through the generic
-  float property descriptor vtable 0x10E98014, whose serialiser renderconfig.ixx already hooks, so
-  the property system is not the way in.
-
-  The choke point is SDecalDescription::OnSerializationEvent (FUN_105D45E0), the post-load callback
-  the schema registers under "SerializationEvent". After it returns the value lives in two places
-  and both matter: CDecalManager::SpawnDecal reads desc+0x68 to stamp each decal's expiry (now +
-  fLifeTime + fFadeOutDuration, at +0x0C of the 0x40 byte record) which CDecalManager::Update
-  destroys against, and OnSerializationEvent has already copied desc+0x68 to material+0x90 (then
-  +0x94 fadeIn, +0x98 1/fadeIn, +0x9C 1/fadeOut) where it drives the shader fade. Patching one
-  leaves an invisible hole holding a pool slot; writing desc+0x68 on entry fixes both.
-
-  The value has to stay finite. The pool is capped (defaultrenderconfig.xml MaxDecalCount, stock
-  200) and CDecalManager::EvictOldest seeds its running minimum from FLT_MAX at 0x10E125CC and its
-  victim pointer from the end of the record array, comparing strictly-less-than: with every live
-  record at or past FLT_MAX, or NaN, the victim stays at the end iterator and the function reads and
-  then writes through it. A million seconds keeps a float spacing of a sixteenth of a second, so
-  glass decals still order correctly among themselves.
-
-  Permanent here means never times out. Eviction is by soonest expiry, so glass is now the last
-  thing evicted and a full 200 slot pool still reclaims it. MaxDecalCount is the separate lever.
 */
 
 module;

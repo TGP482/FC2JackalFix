@@ -10,32 +10,6 @@ import common;
 import dunia;
 import settings;
 
-// engine\settings\DefaultRenderConfig.xml is not parsed attribute by attribute. Every render
-// config class (CRenderShadowConfig, CRenderGeometryConfig, CRenderTerrainConfig,
-// CRenderAmbientConfig) publishes a schema of property descriptors through its vtable: name, name
-// hash, byte offset of the field. The loader calls each descriptor's serialise method, which
-// resolves object + descriptor->offset and hands the address to the visitor, the XML reader.
-//
-// Only two numeric serialisers exist, float and int, shared by every config class. Hooking both
-// after they return covers every numeric attribute of every <quality> block with the descriptor
-// still in hand, so nothing here depends on patch.dat.
-//
-// The four schemas are registered by FUN_103F56E0 (geometry), FUN_103F7240 (terrain),
-// FUN_103F4600 (shadow) and FUN_103F7520 (ambient), each after the shared base FUN_103F42E0,
-// which is why every derived field sits at 0x20 or above. Bools are stored as four byte ints and
-// go through the integer serialiser, so every field below is either a float or an int32.
-//
-// Ultra High is the only geometry, shadow and terrain preset touched, and High the only ambient
-// one, which is where the settings say they apply.
-//
-// The step 3 geometry and shadow numbers are Boggalog's, from Far Cry 2 Patched, where they ship
-// as data edits to DefaultRenderConfig.xml inside patch.dat.
-//
-// One of Boggalog's edits is deliberately not reproduced. His <Geometry> ultrahigh block sets
-// TerrainLodScale="0.1", but CRenderGeometryConfig registers no TerrainLodScale descriptor: the
-// only TerrainLodScale in Dunia is CRenderTerrainConfig+0x2C, and the string at 0x10E5078C is
-// referenced from FUN_103F7240 alone. The attribute is inert where he wrote it. The real one is
-// driven by BeyondUltraTerrain below.
 
 // Property descriptor, as built by the schema registration functions.
 struct RenderProperty

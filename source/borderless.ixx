@@ -11,44 +11,6 @@ import dunia;
 import settings;
 
 // Fullscreen, borderless and windowed, chosen by DisplayMode through the engine's own code paths.
-//
-// The window style comes from an undocumented "-borderless" command-line switch with no entry in
-// the video options. Everything else hangs off one derived flag, computed by InitDuniaEngine at
-// 0x10005367 from the render config's Fullscreen property, registered in FUN_10402210 which writes
-// offset 0x28 for "Fullscreen" and 0x2C for "Maximized". It fans out to:
-//
-//   the window position   saved WindowPos X/Y are only read when neither Fullscreen nor Maximized
-//                         is set, so a fullscreen profile leaves the window at 0,0
-//   the cursor            SetWindowMode's seventh argument; non-zero means SetCursor(NULL)
-//   the resolution path   0x10F92040, GetClientRect or a walk of EnumDisplaySettings for the
-//                         nearest mode <= the request
-//   the device            field +0x08 of the engine-init params at 0x10F92038, whose first 0x2C
-//                         bytes become the renderer's device config, and from which
-//                         D3DPRESENT_PARAMETERS.Windowed, FullScreen_RefreshRateInHz and
-//                         PresentationInterval derive
-//
-// The flag is overwritten where it is produced, twice. Engine init drives the window and the boot
-// resolution. The render manager recomputes the device config's copy from the live device on every
-// video options change, renderer vtable +0x134 being a GetPresentParameters returning
-// Windowed == 0, so the second write goes in before SetResolution's three-branch block reads the
-// byte. Before rather than after: the fullscreen branch takes the config's stored aspect and the
-// windowed branches derive it from the resolution, so clearing it afterwards, as the old borderless
-// option did, gave a windowed device with a fullscreen aspect. No saved video option is written, so
-// the Fullscreen entry still shows what the player saved and no longer decides anything.
-//
-// Two renderers sit behind one interface. FUN_1033C560 picks and stores either in DAT_11609668:
-// D3D10 vtable 0x10E52CA8, D3D9 0x10E53158. The video manager above them is shared, so
-// FUN_1033C7E0 and FUN_1034CA80 serve both through it. Below that nothing is: D3D10's Reset slot
-// +0x54 is a stub returning 1 and it drives everything through DXGI. Each fault below says which
-// renderer it belongs to.
-//
-// The crash on changing resolution from the main menu is a GUI lifetime fault and lives in
-// guiduplicates.
-//
-// FpsCounter rides along further down.
-
-// D3DPRESENT_PARAMETERS. Reached through the only pair of instructions that write
-// BackBufferWidth/Height rather than by address, because ASLR moves it.
 static D3DPRESENT_PARAMETERS* pPresentParams = nullptr;
 
 enum DisplayModeSetting
