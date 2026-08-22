@@ -90,6 +90,19 @@ private:
     // hand-written value alongside its own ladder.
     static inline std::array<PrefValue, static_cast<size_t>(Pref::COUNT)> mFile;
 
+    // Which keys the ini actually carries. A default answers the same as a written 0, and the
+    // debug rows have to tell those apart: the shipped ini has a [Debug] section with nothing in
+    // it, and a row nobody asked for stays greyed. Only the keys that are asked about are recorded.
+    static inline std::array<bool, static_cast<size_t>(Pref::COUNT)> mInFile{};
+
+    // The reader has no exists query, so the key is asked for as a string against a default no ini
+    // would hold: anything else came out of the file.
+    static bool KeyInFile(CIniReader& reader, const char* szSection, const char* szKey)
+    {
+        static constexpr auto szMissing = "\x1";
+        return reader.ReadString(szSection, szKey, szMissing) != szMissing;
+    }
+
 public:
     static inline void ReadIniSettings()
     {
@@ -199,6 +212,17 @@ public:
         mPrefs[PREF_DEBUGNOCLIPKEY] = iniReader.ReadString("Debug", "NoclipKey", "F1");
         mPrefs[PREF_DEBUGFREECAMKEY] = iniReader.ReadString("Debug", "FreecamKey", "F2");
 
+        for (const auto& [pref, szKey] : std::initializer_list<std::pair<Pref, const char*>>{
+                { PREF_DEBUGINVINCIBILITY, "Invincibility" },
+                { PREF_DEBUGINFINITEAMMO, "InfiniteAmmo" },
+                { PREF_DEBUGUNLOCKALLWEAPONS, "UnlockAllWeapons" },
+                { PREF_DEBUGDIAMONDS, "Diamonds" },
+                { PREF_DEBUGNOCLIP, "Noclip" },
+                { PREF_DEBUGFREECAM, "Freecam" } })
+        {
+            mInFile[pref] = KeyInFile(iniReader, "Debug", szKey);
+        }
+
         // Taken before the holds go back on, so this is the file and nothing else.
         mFile = mPrefs;
 
@@ -239,6 +263,9 @@ public:
     void SetInt(Pref name, int32_t value) { mPrefs[name] = value; }
     void SetFloat(Pref name, float value) { mPrefs[name] = value; }
     void SetString(Pref name, std::string value) { mPrefs[name] = value; }
+
+    // Whether the ini carries the key at all, as opposed to the default standing in for it.
+    bool IsInFile(Pref name) { return mInFile[name]; }
 
     // What the ini says, whatever has been applied over it since it was read.
     int32_t GetFileInt(Pref name) { return std::get<int32_t>(mFile[name]); }

@@ -2668,6 +2668,193 @@ static void ShowPage(void* pPage, size_t nPage, bool bKeepOnScreenValues = true,
 // that carries its colour. Until that is read out of the disassembly rather than inferred, a
 // cosmetic tint is not worth another crash.
 
+// ------------------------------------------------------------------------------------------------
+// The fix's mark on the front page.
+//
+// The front page draws one line of text from code, the version, and the mark is a second draw of
+// the widget that draws it: the same object, the same ink and the same font, lent our own string
+// and a box moved to the bottom right for the length of one call and put straight back.
+//
+// Which line that is, is decided by what is drawn rather than by who owns it. CFCXMainPage keeps
+// the version at +198h, but what it keeps there is a magma::GenericObject, a handle the name table
+// resolves rather than the thing that draws, and nothing reachable from it is the magma::Text these
+// hooks are handed. The string is: "V %u.%02u" is built in code, on the front page alone.
+//
+// Both of magma::Text's string routines draw the mark after their own draw, since which of the two
+// a widget goes through depends on state it carries. Neither re-enters: the second draw calls the
+// trampoline, not the hook.
+
+// The engine's std::wstring, as its own draw path reads it: the buffer at +04h is inline until
+// eight characters and a pointer past that, the length at +14h and the capacity at +18h. Nothing on
+// that path writes to it or frees it, so a literal of ours is lent through one with the capacity
+// set past the inline limit, which is what makes +04h a pointer rather than the first characters.
+static constexpr ptrdiff_t nWideBuffer   = 0x04;
+static constexpr ptrdiff_t nWideLength   = 0x14;
+static constexpr ptrdiff_t nWideCapacity = 0x18;
+static constexpr size_t    nWideSize     = 0x1C;
+static constexpr uint32_t  nWideInline   = 8;
+
+struct GameWideString
+{
+    void*          pAllocator;
+    const wchar_t* pText;
+    uint32_t       Unused[3];
+    uint32_t       nLength;
+    uint32_t       nCapacity;
+};
+
+static const wchar_t szWatermarkText[] = L"Jackal Fix V1";
+
+static GameWideString Watermark
+{
+    nullptr,
+    szWatermarkText,
+    {},
+    static_cast<uint32_t>(std::size(szWatermarkText) - 1),
+    0x100,
+};
+
+static const wchar_t* ReadWide(const void* pString, uint32_t& nLength)
+{
+    if (!IsReadable(pString, nWideSize))
+        return nullptr;
+
+    nLength = SafeRead<uint32_t>(pString, nWideLength);
+    if (nLength == 0 || nLength > 512)
+        return nullptr;
+
+    const auto nCapacity = SafeRead<uint32_t>(pString, nWideCapacity);
+    const auto* pText = nCapacity < nWideInline
+        ? reinterpret_cast<const wchar_t*>(static_cast<const uint8_t*>(pString) + nWideBuffer)
+        : SafeRead<const wchar_t*>(pString, nWideBuffer);
+
+    return IsReadable(pText, (nLength + 1) * sizeof(wchar_t)) ? pText : nullptr;
+}
+
+static bool IsVersionLine(const void* pString)
+{
+    uint32_t nLength = 0;
+    const auto* pText = ReadWide(pString, nLength);
+
+    return pText != nullptr && nLength >= 4 && nLength <= 12
+        && pText[0] == L'V' && pText[1] == L' ' && pText[2] >= L'0' && pText[2] <= L'9';
+}
+
+// magma::Text. +34h is the horizontal alignment its string routine reads, where two is flush right
+// and is what keeps the mark on the same edge whatever the string measures. +50h is where the same
+// routine records what it ran out of room for, so it is saved with the rest.
+static constexpr ptrdiff_t nTextAlign      = 0x34;
+static constexpr ptrdiff_t nTextDrawFlags  = 0x50;
+static constexpr int32_t   nTextAlignRight = 2;
+
+// magma::RectState. The widget's draw is translated to +24h and +28h before either string routine
+// is entered, so writing those two moves nothing here: the translate is already on the stack by the
+// time the routine we re-enter is called. What is still readable from inside it is +26h, the far
+// edge the alignment measures against, and +34h, where the plain routine takes its line's y from.
+static constexpr ptrdiff_t nStateRectLeft = 0x24;
+static constexpr ptrdiff_t nStateTextY    = 0x34;
+
+// So the mark is placed by the two levers the routine does read: the width of the box it aligns
+// inside, which carries the right edge, and the line's y. Both constants below were measured off
+// 720p captures rather than worked out, since the x the box is aligned inside is relative to a
+// translate the parent chain pushed and nothing here can read.
+//
+// The version line sits at x 269, y 100 to 114 on a 720p capture. The mark mirrors that into the
+// far corner: its right edge 269 px in from the right, and its bottom 130 px up from the bottom.
+//
+// Right edge, over three captures of the same string:
+//     box 400 units wide                        right edge  627 px
+//     box CanvasRight - 287 - left wide          right edge 1231 px
+//     box CanvasRight - 522 - left wide          right edge 1017 px
+// The middle to the last is 235 units for 214 px, so a unit is 0.911 px across here, and the 6 px
+// still to come off the right is 7 more units.
+//
+// Drop, over the same three:
+//     535 units   bottom 112 px to 594 px
+//     564 units   bottom 619 px
+// 29 units for 25 px, so a unit is about 0.87 px down here. 619 px is 29 px below the 590 px that
+// 130 px up from the bottom asks for, which is 33 units back off the drop.
+static constexpr int nWatermarkFromRight = 529;
+static constexpr int nWatermarkDrop      = 531;
+
+// The canvas right edge. Its height is the engine's own; its width is not stored anywhere the draw
+// path reads, so it comes from the shape of the window the game is drawing into.
+static int CanvasRight(int nBottom)
+{
+    RECT Client{};
+    auto hWnd = JackalFixGameWindow();
+
+    if (hWnd != nullptr && GetClientRect(hWnd, &Client)
+        && Client.right > Client.left && Client.bottom > Client.top)
+    {
+        return nBottom * (Client.right - Client.left) / (Client.bottom - Client.top);
+    }
+
+    return nBottom * 16 / 9;
+}
+
+// The magma render state for this thread, whose +36h is the canvas bottom every text draw measures
+// its lines down from.
+using RenderState_t = void* (__cdecl*)();
+static RenderState_t RenderState = nullptr;
+static constexpr ptrdiff_t nRenderStateBottom = 0x36;
+
+// The canvas bottom, or zero if the engine has not said anything believable.
+static int16_t CanvasBottom()
+{
+    if (RenderState == nullptr)
+        return 0;
+
+    const auto nBottom = SafeRead<int16_t>(RenderState(), nRenderStateBottom);
+    return nBottom > 100 && nBottom < 4096 ? nBottom : 0;
+}
+
+// The box keeps the left edge the layout gave it, since that is where the translate already put the
+// line, and grows to the right until its far edge is where the mark should end. Flush right against
+// that edge is what keeps the mark in place whatever the string measures.
+//
+// The y is the other lever, and each routine takes it from its own place: the laid out one from the
+// argument it was called with, which the caller adjusts, and the plain one from the state, which is
+// adjusted here.
+template<typename Draw>
+static void DrawWatermark(void* pText, Draw&& DrawString)
+{
+    const auto nBottom = CanvasBottom();
+    if (nBottom == 0)
+        return;
+
+    auto pState = SafeRead<uint8_t*>(pText, nWidgetState);
+    if (!IsReadable(pState, nStateTextY + sizeof(int16_t)))
+        return;
+
+    auto pLeft   = reinterpret_cast<int16_t*>(pState + nStateRectLeft);
+    auto pLineY  = reinterpret_cast<int16_t*>(pState + nStateTextY);
+    auto pAlign  = reinterpret_cast<int32_t*>(static_cast<uint8_t*>(pText) + nTextAlign);
+    auto pFlags  = static_cast<uint8_t*>(pText) + nTextDrawFlags;
+
+    const auto nSavedRight = pLeft[1];
+    const auto nSavedLineY = *pLineY;
+    const auto nSavedAlign = *pAlign;
+    const auto nSavedFlags = *pFlags;
+
+    // Measured from the canvas edge rather than from the line, so the mark keeps its distance from
+    // the right of the screen at every aspect.
+    const auto nWidth = CanvasRight(nBottom) - nWatermarkFromRight - pLeft[0];
+    if (nWidth < 16)
+        return;
+
+    pLeft[1] = static_cast<int16_t>(pLeft[0] + nWidth);
+    *pLineY  = static_cast<int16_t>(nSavedLineY - nWatermarkDrop);
+    *pAlign  = nTextAlignRight;
+
+    DrawString(&Watermark);
+
+    pLeft[1] = nSavedRight;
+    *pLineY  = nSavedLineY;
+    *pAlign  = nSavedAlign;
+    *pFlags  = nSavedFlags;
+}
+
 // The four draws the fade runs off. Both of magma::Text's string routines and magma::Image's draw
 // read the row's colour first; which row that is comes from nDrawingLine, which the list's own draw
 // sets and the per-cell draw overrides. Nothing here decides anything.
@@ -2676,6 +2863,13 @@ static void __fastcall JackalFixTextDraw(void* pText, void* pEdx, void* pArg1, v
     const auto faded = FadeForDraw(pText, nTextVtableRva, nTextStateColour, 1);
     TextDrawHook.fastcall(pText, pEdx, pArg1, pArg2);
     RestoreAfterDraw(faded);
+
+    if (IsVersionLine(pArg1))
+    {
+        // The line's y, moved down by the same amount the plain routine's state y is.
+        auto pDropped = reinterpret_cast<void*>(reinterpret_cast<intptr_t>(pArg2) + nWatermarkDrop);
+        DrawWatermark(pText, [&](void* pString) { TextDrawHook.fastcall(pText, pEdx, pString, pDropped); });
+    }
 }
 
 static void __fastcall JackalFixTextDrawPlain(void* pText, void* pEdx, void* pArg)
@@ -2683,6 +2877,9 @@ static void __fastcall JackalFixTextDrawPlain(void* pText, void* pEdx, void* pAr
     const auto faded = FadeForDraw(pText, nTextVtableRva, nTextStateColour, 1);
     TextDrawPlainHook.fastcall(pText, pEdx, pArg);
     RestoreAfterDraw(faded);
+
+    if (IsVersionLine(pArg))
+        DrawWatermark(pText, [&](void* pString) { TextDrawPlainHook.fastcall(pText, pEdx, pString); });
 }
 
 static void __fastcall JackalFixImageDraw(void* pImage, void* pEdx)
@@ -3661,6 +3858,11 @@ public:
 
             if (auto pListDraw = ResolveEngineFunction(0x00A9F590, szListDrawPattern))
                 ListDrawHook = safetyhook::create_inline(pListDraw, JackalFixListDraw);
+
+            // The mark on the front page. Without this the version line still draws; only the mark
+            // after it is skipped.
+            RenderState = reinterpret_cast<RenderState_t>(ResolveEngineFunction(0x004EE7F0,
+                "8B 0D ? ? ? ? 56 8B 35 ? ? ? ? E8 ? ? ? ? 8B 44 B0 0C 5E C3"));
 
             auto pReaderRead = ResolveEngineFunction(0x00AE7BF0,
                 "56 8B F1 83 7E 10 00 57 75 0D 8B 4E 18 8B 01 8B 50 10 FF D2 89 46 10");
