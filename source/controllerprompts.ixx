@@ -1224,6 +1224,68 @@ static void RestoreCursors()
 
 // --------------------------------------------------------------------------------------------
 
+/*
+  FUN_104F0FB0(this, event), the UI input dispatcher: the timing this module wants, since the game
+  re-enables its cursors on screen transitions and this runs per event rather than per device
+  change. The event opens with the device name hash, then the control's, then the type.
+
+  It is also where the right trigger has to be stopped. FUN_102C97D0 gives an analog control the
+  same pressed and released events a button gets, on a 0.6 hysteresis, and FUN_104EFC20 turns a pad
+  event into a UI key. The triggers are the two controls it has no key for: the down arrives as
+  virtual key 0 carrying pad code 9, the up as virtual key 0 carrying pad code 0. The down is then
+  offered to the focused widget as an accept-shaped key and takes the key capture with it, and the
+  up cannot pair with it, FUN_10AA1610 comparing the pad code when the virtual key is zero. So the
+  capture is never released and the widget never sees a key up: the highlight bar goes and the rows
+  stop answering, neither half of it visible anywhere in the widget layer.
+
+  Answered by not dispatching it and saying so, rather than by editing the event on the way past:
+  the event object goes on to the action map, and blanking its device name there took the trigger
+  off the gun.
+*/
+static constexpr uint32_t nPadDeviceName = 0x9D894EE5;
+static constexpr uint32_t nRightTriggerName = 0x7DB6BD7B;
+static constexpr uint32_t nLeftTriggerName = 0x0DB90A3B;
+
+static SafetyHookInline UiInputHook{};
+
+static char __fastcall UiInput(void* pThis, void* pEdx, uint32_t* pEvent)
+{
+    // The dispatcher sees key events, so the press that flips this is the same event that gets it
+    // applied.
+    static auto bToggleWasDown = false;
+    auto bToggleDown = (GetAsyncKeyState(nShopGlyphToggleKey) & 0x8000) != 0;
+
+    if (bToggleDown && !bToggleWasDown)
+    {
+        bShopGlyphsOnPrompts = !bShopGlyphsOnPrompts;
+        RefreshMenuGlyphs();
+    }
+
+    bToggleWasDown = bToggleDown;
+
+    // FUN_10AB75C0 reaches back into the event machinery to fire the leave.
+    if (!bInCursorUpdate)
+    {
+        bInCursorUpdate = true;
+
+        if (PadPromptsWanted())
+            DisableCursors();
+        else
+            RestoreCursors();
+
+        bInCursorUpdate = false;
+    }
+
+    if (IsReadable(pEvent) && pEvent[0] == nPadDeviceName
+        && (pEvent[1] == nRightTriggerName || pEvent[1] == nLeftTriggerName))
+    {
+        // Nothing in the UI handled it, which is the truth and leaves every other sink alone.
+        return 0;
+    }
+
+    return UiInputHook.fastcall<char>(pThis, pEdx, pEvent);
+}
+
 // --------------------------------------------------------------------------------------------
 // The shop computer
 // --------------------------------------------------------------------------------------------
@@ -1992,6 +2054,102 @@ static uint8_t** DeviceSlot(uint8_t* pScreen, ptrdiff_t nSlot)
         pScreen + nScreenDeviceBase + nMenuPadDevice * nScreenDeviceStride + nSlot);
 }
 
+// The page a press has to come from while a modal is up. The stack grows upwards, so the last slot
+// is what the player is looking at.
+static uint8_t* TopScreen()
+{
+    auto pManager = ScreenManager();
+    if (!pManager)
+        return nullptr;
+
+    auto pBegin = *reinterpret_cast<uint8_t**>(pManager + nScreenStackBegin);
+    auto pEnd = *reinterpret_cast<uint8_t**>(pManager + nScreenStackEnd);
+    if (!pBegin || !pEnd || pEnd <= pBegin)
+        return nullptr;
+
+    auto pTop = *reinterpret_cast<uint8_t**>(pEnd - nScreenStackStride);
+
+    return IsObject(pTop) ? pTop : nullptr;
+}
+
+/*
+  A box is not a screen of its own: CGameMessageBox::CGameMessageBox (FUN_1010A900) hangs its page
+  on the top screen's layer, so the page under it is still the page on top and no stack walk tells
+  the two sets of prompts apart. Attach order does not either, since the page behind re-attaches its
+  own while the box is up.
+
+  What does tell them apart is the box's own CNavBarModule, embedded at box+0x104. Its prompt array
+  hangs off +0x0C: pointer at +0x04, count at +0x08, stride 0x54 (FUN_1018A390, FUN_1018A3A0). A
+  prompt inside that array is the box's, and nothing else is.
+*/
+static constexpr ptrdiff_t nBoxNavBarModule = 0x104;
+static constexpr ptrdiff_t nNavBarLayout = 0x0C;
+static constexpr ptrdiff_t nNavBarPromptArray = 0x04;
+static constexpr ptrdiff_t nNavBarPromptCount = 0x08;
+static constexpr size_t nNavBarPromptStride = 0x54;
+
+static bool PromptFromBox(uint8_t* pPrompt)
+{
+    for (auto* pBox : sLiveMessageBoxes)
+    {
+        if (!pPrompt || !IsReadable(pBox) || !IsReadable(pBox + nBoxNavBarModule))
+            continue;
+
+        auto pLayout = *reinterpret_cast<uint8_t**>(pBox + nBoxNavBarModule + nNavBarLayout);
+        if (!IsReadable(pLayout))
+            continue;
+
+        auto pArray = *reinterpret_cast<uint8_t**>(pLayout + nNavBarPromptArray);
+        auto nCount = *reinterpret_cast<uint32_t*>(pLayout + nNavBarPromptCount);
+        if (!IsReadable(pArray) || pPrompt < pArray)
+            continue;
+
+        auto nOffset = static_cast<size_t>(pPrompt - pArray);
+        if (nOffset % nNavBarPromptStride == 0 && nOffset / nNavBarPromptStride < nCount)
+            return true;
+    }
+
+    return false;
+}
+
+/*
+  CNavBarPrompt::Activate, FUN_10189D40, __fastcall on the prompt alone. It checks the prompt's
+  element and its vfunc 0x44, then invokes the delegate at prompt+0x48 and answers whether it fired.
+
+  That delegate is what the owner binds when it builds its prompts: a box's takes the choice
+  straight to the result dispatcher (FUN_10109C60 binds one per prompt, FUN_10109880 records the
+  index, FUN_101098A0 fires it), which needs no pointer position at all. The synthetic press was
+  landing on nothing over a box and coming back spent every time -- the log showed A found and the
+  press answering 0, over and over. Tried first now, with the mouse path left as the fallback for
+  anything whose prompt carries no delegate.
+*/
+using ActivatePrompt_t = int(__fastcall*)(void*);
+static ActivatePrompt_t ActivatePrompt = nullptr;
+
+/*
+  The right trigger putting the highlight bar out, which nothing in this module goes near.
+
+  CInputDriverGamepad::Poll hands the triggers to FUN_102C97D0 as analog control 9, which runs a
+  0.6 hysteresis and emits the same pressed and released events a face button does. FUN_104EFC20
+  then translates a pad event into a UI key, and the trigger is the one control it has no key for:
+  it writes virtual key 0 with 9 in the aux field on the way down, and on the way up the 0.6 guard
+  fails, so the release carries virtual key 0 and aux 0.
+
+  Both halves reach magma::ListBox as ordinary key events. The up half, FUN_10A9D6D0, asks the key
+  mapper whether it is one of the two accept actions and then calls SetHighlight with -1 before it
+  checks anything else -- widget+0xD0 goes to -1, the bar is gone, and FUN_10AA1610 cannot pair a
+  down carrying aux 9 with an up carrying aux 0, so the key capture the down took is never released
+  and further key downs are dropped. That is the bar going out and the rows going dead together.
+
+  A key event with virtual key 0 is a null key: the keyboard path never makes one, a mouse wheel
+  gives 0x26 or 0x28, a stick gives 0x25 to 0x28, and every mapped pad button gets its own code.
+  So the whole event is answered here, with the capture released the way the stock function would
+  have and the highlight left alone.
+
+  Hooking the list box alone was not enough -- the log came back with no interception at all while
+  the bar still went out -- so all three handlers that share this shape are taken, and SetHighlight
+  is watched from the log so a bar that still goes out names the instruction that took it.
+*/
 // Backwards, so a modal's prompts win over whatever was attached behind it. Node and widget are
 // checked as a pair: a Node whose drawable is not this prompt's widget is not its Node.
 static uint8_t* FindPrompt(int32_t nButton)
@@ -2221,11 +2379,14 @@ static void UpdateMenuPadButtons()
 
     for (const auto& button : sMenuPadButtons)
     {
-        if (button.bMessageBoxOnly != bMessageBox)
+        // A and B mean Enter and Escape outside a box, so those two are only taken over while one
+        // is up. X and Y mean nothing to the action map either way, box or no box: gating them on
+        // the box as well left Apply and Default dead on every page a box was open over.
+        if (button.bMessageBoxOnly && !bMessageBox)
             continue;
 
         auto pPrompt = FindPrompt(button.nPromptButton);
-        if (!pPrompt)
+        if (!pPrompt || (bMessageBox && !PromptFromBox(pPrompt)))
             continue;
 
         // Held back for as long as the prompt is there to take it, not just on the frame it is
@@ -2236,7 +2397,9 @@ static void UpdateMenuPadButtons()
         if (nPressed & button.nBit)
         {
             nPendingTries = 0;
-            pPendingPrompt = PressPrompt(pPrompt) ? nullptr : pPrompt;
+
+            auto bFired = ActivatePrompt && ActivatePrompt(pPrompt) != 0;
+            pPendingPrompt = bFired || PressPrompt(pPrompt) ? nullptr : pPrompt;
         }
     }
 
@@ -2322,6 +2485,10 @@ public:
                 });
             }
 
+            // CNavBarPrompt::Activate, FUN_10189D40. See the note above it.
+            if (auto* pActivatePrompt = dunia_find("56 8B F1 8B 4E 04 85 C9 74 4F 8B 01 8B 15 ? ? ? ? 8B 40 08 52 FF D0 85 C0 74 3D 8B 10 8B C8 8B 42 44 FF D0 84 C0 74 30 8B 76 48 85 F6 74 29"))
+                ActivatePrompt = reinterpret_cast<ActivatePrompt_t>(pActivatePrompt);
+
             // FUN_10AB4F50, magma::Text's alignment offset. See the pattern's own note above.
             static constexpr ptrdiff_t nTextAlignOffsetEntry = 0x27;
             auto textAlignPattern = dunia_pattern("8B F9 8B 74 24 54 85 F6 75 03 8B 77 08 8B 47 58 85 C0 75 07 33 C0 E9");
@@ -2349,6 +2516,7 @@ public:
 
                     if (std::find(sAttachedPrompts.begin(), sAttachedPrompts.end(), pPrompt) == sAttachedPrompts.end())
                         sAttachedPrompts.push_back(pPrompt);
+
                     ApplyMenuGlyph(pPrompt);
                 });
 
@@ -2474,41 +2642,11 @@ public:
             if (!setCursorEnabledPattern.empty())
                 SetCursorEnabled = reinterpret_cast<SetCursorEnabled_t>(setCursorEnabledPattern.get_first());
 
-            // FUN_104F0FB0, the UI input dispatcher, for the timing rather than anything it holds.
-            // Per UI event rather than on the device change alone, since the game re-enables its
-            // cursors on screen transitions.
+            // FUN_104F0FB0, the UI input dispatcher. Taken whole rather than at its entry: the
+            // trigger below has to be answered instead of the dispatcher, not alongside it.
             auto uiInputPattern = dunia_pattern("A1 ? ? ? ? 83 EC 24 53 56 33 DB 38 58 69 57 8B F9 74 1D 8B 48 78 3B CB 74 16");
             if (!uiInputPattern.empty() && SetCursorEnabled)
-            {
-                static auto UiInputHook = safetyhook::create_mid(uiInputPattern.get_first(), [](SafetyHookContext&)
-                {
-                    // The dispatcher sees key events, so the press that flips this is the same
-                    // event that gets it applied.
-                    static auto bToggleWasDown = false;
-                    auto bToggleDown = (GetAsyncKeyState(nShopGlyphToggleKey) & 0x8000) != 0;
-
-                    if (bToggleDown && !bToggleWasDown)
-                    {
-                        bShopGlyphsOnPrompts = !bShopGlyphsOnPrompts;
-                        RefreshMenuGlyphs();
-                    }
-
-                    bToggleWasDown = bToggleDown;
-
-                    // FUN_10AB75C0 reaches back into the event machinery to fire the leave.
-                    if (bInCursorUpdate)
-                        return;
-
-                    bInCursorUpdate = true;
-
-                    if (PadPromptsWanted())
-                        DisableCursors();
-                    else
-                        RestoreCursors();
-
-                    bInCursorUpdate = false;
-                });
-            }
+                UiInputHook = safetyhook::create_inline(uiInputPattern.get_first(), UiInput);
 
             // FUN_104F0FB0's own two calls into the screen manager, one after the other, so both
             // handlers come off one anchor and neither needs a prologue of its own.

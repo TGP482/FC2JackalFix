@@ -127,6 +127,7 @@ enum BeautifierKind : uint32_t
     KIND_OTHER = 0,
     KIND_LADDER,
     KIND_CUTSCENE,
+    KIND_POSE,
     KIND_PLAYER,
 };
 
@@ -136,6 +137,12 @@ enum NarrowContext : uint32_t
     NARROW_NONE = 0,
     NARROW_LADDER,
     NARROW_CUTSCENE,
+
+    // Vehicle repairs and machete interrogations. Framed like a cutscene, so they take the same
+    // ceiling and the same near pass rule, but the player's own arms and tool are still the
+    // subject of the shot rather than something the scene has taken away, so the first person
+    // layer stays with them. See InScriptedPose.
+    NARROW_POSE,
 };
 
 // CVehicle. sName and the paraglider hash are the same pair glider.ixx uses; fFOVAngle sits in
@@ -279,10 +286,14 @@ static uint32_t KindOf(uintptr_t nInstance)
     uint32_t nKind = KIND_OTHER;
     if (std::strcmp(szClass, "CPawnBeautifierLadder") == 0)
         nKind = KIND_LADDER;
-    else if (std::strcmp(szClass, "CPawnBeautifierDominoPlayer") == 0
-          || std::strcmp(szClass, "CPawnBeautifierCinematicFirst") == 0
-          || std::strcmp(szClass, "CPawnBeautifierFirstNoControl") == 0)
+    else if (std::strcmp(szClass, "CPawnBeautifierDominoPlayer") == 0)
         nKind = KIND_CUTSCENE;
+    // Measured: entering a repair and entering an interrogation both put the player's context here
+    // one frame after the weapon's first person layer is taken away, and FirstNoControl is the
+    // outro of the same move. Ordinary gameplay is CPawnBeautifierFirst, which is KIND_OTHER.
+    else if (std::strcmp(szClass, "CPawnBeautifierCinematicFirst") == 0
+          || std::strcmp(szClass, "CPawnBeautifierFirstNoControl") == 0)
+        nKind = KIND_POSE;
     else if (std::strcmp(szClass, "CPawnBeautifierPlayer") == 0)
         nKind = KIND_PLAYER;
 
@@ -734,7 +745,25 @@ static bool InScriptedPose()
     if (fVehicleFovWeight.load(std::memory_order_relaxed) > 0.0f)
         return true;
 
-    return !NarrowStateIsStale() && nNarrowContext.load(std::memory_order_relaxed) != NARROW_NONE;
+    if (NarrowStateIsStale())
+        return false;
+
+    auto nContext = nNarrowContext.load(std::memory_order_relaxed);
+
+    // NARROW_POSE is deliberately not here. A repair or an interrogation hides the weapon through
+    // this same call, but the arms and the tool remain the thing the player is meant to be looking
+    // at: released, they draw with the world and the engine bay or the man's shoulder draws over
+    // them. Held, they keep the near pass exactly as they do in gameplay.
+    return nContext == NARROW_LADDER || nContext == NARROW_CUTSCENE;
+}
+
+// A pose lasts as long as the animation, several times fSwingMaxSeconds, so the swing deadline is
+// not allowed to age one out from under the player. Bounded all the same: leaving the pose by any
+// route, a death or a load included, clears the context and lets the deadline run again.
+static bool InHeldPose()
+{
+    return !NarrowStateIsStale()
+        && nNarrowContext.load(std::memory_order_relaxed) == NARROW_POSE;
 }
 
 // The deadline, on the gameplay thread where the delta comes from. A swing is back in about 1.3
@@ -743,6 +772,9 @@ static bool InScriptedPose()
 static void StepWithheldLayer(float fDelta)
 {
     if (nLayerWithheldFrom.load(std::memory_order_acquire) == 0)
+        return;
+
+    if (InHeldPose())
         return;
 
     auto fHeldFor = fLayerWithheldFor.load(std::memory_order_relaxed) + fDelta;
@@ -1205,6 +1237,7 @@ public:
                     {
                     case KIND_LADDER:   nContext = NARROW_LADDER; break;
                     case KIND_CUTSCENE: nContext = NARROW_CUTSCENE; break;
+                    case KIND_POSE:     nContext = NARROW_POSE; break;
                     default: break;
                     }
 
@@ -1308,7 +1341,7 @@ public:
 
                     // Published here so the near pass follows the camera on exactly the frames the
                     // world is clamped and no others.
-                    bNearPassFollowsCamera.store(nContext == NARROW_CUTSCENE, std::memory_order_relaxed);
+                    bNearPassFollowsCamera.store(nContext == NARROW_CUTSCENE || nContext == NARROW_POSE, std::memory_order_relaxed);
 
                     if (!bNarrow && fNarrowBlend <= 0.0f)
                     {

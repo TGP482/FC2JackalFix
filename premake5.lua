@@ -101,7 +101,10 @@ workspace "FC2JackalFix"
       -- No game install found, skip
       "if not exist \"!JFDIR!\\\" goto :JFDONE",
       "if /I \"!JFSRC!\"==\"!JFDST!\" goto :JFDONE",
-      "copy /y \"!JFSRC!\" \"!JFDST!\" >nul",
+      -- Loud on failure. The game holds the asi open while it runs, so the copy silently did
+      -- nothing and the build still reported success, leaving the previous asi in place. That is
+      -- what a fix that works one run and not the next looks like.
+      "copy /y \"!JFSRC!\" \"!JFDST!\" >nul || (echo FC2JackalFix: could not replace \"!JFDST!\", close the game and build again & endlocal & exit /b 1)",
       ":JFDONE",
       "endlocal",
       "exit /b 0" }
