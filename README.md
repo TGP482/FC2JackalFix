@@ -11,9 +11,9 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 
 > [!NOTE]
 > Linux / Steam Deck will need the following command to launch the game:
-```
-WINEDLLOVERRIDES="dinput8=n,b" %command%
-```
+>```
+>WINEDLLOVERRIDES="dinput8=n,b" %command%
+>```
 
 
 
