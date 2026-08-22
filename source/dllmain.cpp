@@ -35,6 +35,7 @@ import largeaddressaware;
 import limitedsaving;
 import saveonmissioncomplete;
 import blinkingitems;
+import coloredsigns;
 import hitindicator;
 import tutorialmessages;
 import glider;
