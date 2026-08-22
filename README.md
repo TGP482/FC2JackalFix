@@ -15,11 +15,11 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 ### Display
 - **Display Type** - Allows you to change between Fullscreen, Borderless and Windowed modes.
 - **FPS Limiter** - Caps the game's frame rate using the built-in engine limiter, either at your monitor's refresh rate automatically or at a value you pick.
-- **Internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling
+- **Internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling.
 - **FPS Counter** - Shows the engine's built-in frame rate counter.
 
 ### Graphics
-- **Improved Utilisation** - Improves GPU and CPU utilisation, increasing performance across the board
+- **Improved Utilisation** - Improves GPU and CPU utilisation, increasing performance across the board.
 <div align="center">
   <table>
     <tr>
@@ -34,13 +34,13 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 </div>
 
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures instead of using the game's inconsistent defaults.
-- **No Rim Lighting** - Removes the rim lighting glow on the edges of characters, mainly visible at night
-- **Saturation** - Adjust the saturation levels from the 0.5 default, rage: 0.0 - 1.0
+- **No Rim Lighting** - Removes the rim lighting glow on the edges of characters, mainly visible at night.
+- **Saturation** - Adjust the saturation levels from the game's 0.5 default, rage: 0.0 - 1.0.
 
 ### Beyond Ultra
-- **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) 6x, (4) max draw distance
-- **Beyond Ultra Shadows** - Increases past the Ultra High shadow values: (0) default, (1) max draw distance
-- **Beyond Ultra Terrain** - Increases past the Ultra High terrain values: (0) default, (1) 2x, (2) 4x, (3) max draw distance
+- **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) 6x, (4) max draw distance.
+- **Beyond Ultra Shadows** - Increases past the Ultra High shadow values: (0) default, (1) max draw distance.
+- **Beyond Ultra Terrain** - Increases past the Ultra High terrain values: (0) default, (1) 2x, (2) 4x, (3) max draw distance.
 
 ### Gameplay
 - **Remove Mouse Speed Cap** - Removes the engine's mouse movement speed limit.
@@ -68,33 +68,45 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 - **Prompts** - Restored Xbox 360 button prompts.
 
 ### Jackal Fixes
-- Fixed an issue where jump height was reduced at high FPS
-- Fixed an issue where NPCs would bounce at high FPS without disabling rigid characters
-- Fixed an issue where sound effects stuttered or went silent at high FPS
-- Fixed an issue where the diamond counter rolled up faster at high FPS
-- Fixed an issue where character's hair, glasses and water rendered over certain smoke, dust and other 2D effects
-- Fixed an issue where road textures would break when increasing the LodScale config
-- Fixed an issue where foliage flickered in and out of existence at higher geometry draw distances, by raising the tree renderer's fixed per frame instance budget (Ultra High)
-- Fixed various HUD and menu UI elements being stretched in widescreen and ultrawide, in addition to restoring console HUD offsets
-- Fixed an issue where the game could crash when changing the resolution at the main menu
-- Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution
-- Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner
-### Community Fixes
-- Fixed an issue with hang gliders falling out of the sky when shot
-- Fixed an issue gliders bouncing on water
-- Fixed an issue with bug truck sounds being silent
-- Fixed an issue with the MAC-10 not being heard by enemies while shooting
-- Fixed an issue with player not walking slower when using ironsights with the M79
-- Fixed an issue where the GPS was misaligned in vehicles
-- Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies
-- Fixed an issue where small scattered objects and vegetation would draw without casting a shadow (Ultra High only)
-- Fixed an issue where road textures broke up at higher geometry LOD scales (Ultra High)
-- Fixed an issue where the DLC ATV and Utility Truck only ever spawned in one colour, while their multiplayer counterparts came in the full range
-- Fixed a case where the player could no longer save their game after completing certain missions
-- Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church
-- Fixed an issue with tape 9 repeating 
-- Fixed an issue where black squares flickered across the screen when using DirectX 10 with Bloom enabled
+- Fixed an issue where jump height was reduced at high FPS.
+- Fixed an issue where NPCs would bounce at high FPS without disabling rigid characters.
+- Fixed an issue where sound effects stuttered or went silent at high FPS.
+- Fixed an issue where the diamond counter rolled up faster at high FPS.
+- Fixed an issue where character's hair, glasses and water rendered over certain smoke, dust and other 2D effects.
+- Fixed an issue where road textures would break when increasing the LodScale config.
+- Fixed an issue where foliage flickered in and out of existence at higher geometry draw distances.
+- Fixed various HUD and menu UI elements being stretched in widescreen and ultrawide, in addition to restoring console HUD offsets.
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/02534c2b-4d37-4821-be98-a760605a6907"></td>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/a4c76b3e-8e56-40ad-8390-f4d5a96ab1e5"></td>
+    </tr>
+    <tr>
+      <td align="center">Before</td>
+      <td align="center">After</td>
+    </tr>
+  </table>
+</div>
 
+- Fixed an issue where the game could crash when changing the resolution at the main menu.
+- Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution.
+- Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner.
+### Community Fixes
+- Fixed an issue with hang gliders falling out of the sky when shot.
+- Fixed an issue gliders bouncing on water.
+- Fixed an issue with bug truck sounds being silent.
+- Fixed an issue with the MAC-10 not being heard by enemies while shooting.
+- Fixed an issue with player not walking slower when using ironsights with the M79.
+- Fixed an issue where the GPS was misaligned in vehicles.
+- Fixed an issue with assassination targets having the same vision as snipers, allowing them to see you further than regular enemies.
+- Fixed an issue where small scattered objects and vegetation would draw without casting a shadow.
+- Fixed an issue where road textures broke up at higher geometry LOD scales.
+- Fixed an issue where the DLC ATV and Utility Truck only ever spawned in one colour, while their multiplayer counterparts came in the full range.
+- Fixed a case where the player could no longer save their game after completing certain missions.
+- Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church.
+- Fixed an issue with tape 9 repeating .
+- 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.
 - **Machetes Unlock** - Unlocks the Primitive and Homemade machete skins, which were originally bonus content available through Ubisoft's servers.
