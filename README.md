@@ -76,6 +76,21 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 - Fixed an issue where road textures would break when increasing the LodScale config
 - Fixed an issue where foliage flickered in and out of existence at higher geometry draw distances, by raising the tree renderer's fixed per frame instance budget (Ultra High)
 - Fixed various HUD and menu UI elements being stretched in widescreen and ultrawide, in addition to restoring console HUD offsets
+
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/assets/55140ca7-f1a6-4c81-b5ce-b27cdefd4d3b"></td>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/a4c76b3e-8e56-40ad-8390-f4d5a96ab1e5"></td>
+    </tr>
+    <tr>
+      <td align="center">Before</td>
+      <td align="center">After</td>
+    </tr>
+  </table>
+</div>
+
+>
 - Fixed an issue where the game could crash when changing the resolution at the main menu
 - Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution
 - Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner
