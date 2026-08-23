@@ -1912,18 +1912,18 @@ public:
             //   10144ABA  JZ   10144B06             ; no pawn, nothing to do
             //   10144ABC  CALL <get aim state>      <- hook. ESI is the listener
             //
-            // Both addresses are chosen to survive lookback.ixx, which inline hooks the entry: the
-            // pattern starts past the six bytes its jump overwrites, and the hook goes past the end
-            // of lookback's own pattern. Neither module can then stop the other matching, in either
-            // install order.
+            // coloredsigns.ixx hooks the pawn fetch at +0x0F of the same pattern, and its five-byte
+            // jump lands inside the bytes the pattern still asks for, so a second scan after it
+            // installs finds nothing. The site is resolved once in dunia.ixx instead, on whichever
+            // module asks first, so install order cannot decide which of the two gets its hook.
             //
             // Landing on a call is also what makes float work safe here, since XMM is caller-saved
             // and nothing is live across it. The address is the frame gate the module wants too: it
             // is only reached with gameplay input enabled and a pawn alive.
-            auto inputPassPattern = dunia_pattern("56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A E8 ? ? ? ? F6 40 04 40 74 11");
-            if (!inputPassPattern.empty())
+            auto* pInputPass = dunia_input_pass();
+            if (pInputPass != nullptr)
             {
-                static auto InputPassHook = safetyhook::create_mid(inputPassPattern.get_first(nInputPassLivePawn), [](SafetyHookContext& regs)
+                static auto InputPassHook = safetyhook::create_mid(static_cast<uint8_t*>(pInputPass) + nInputPassLivePawn, [](SafetyHookContext& regs)
                 {
                     // ESI is the listener, ECX the pawn the relocated instruction just fetched.
                     Tick(static_cast<uintptr_t>(regs.esi), static_cast<uintptr_t>(regs.ecx));

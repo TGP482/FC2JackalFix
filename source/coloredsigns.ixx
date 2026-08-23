@@ -194,13 +194,15 @@ public:
             //   10144ABA  JZ   10144B06
             //   10144ABC  CALL <get aim state>   <- debug.ixx
             //
-            // Three modules share this function. lookback.ixx inline hooks the entry over six
-            // bytes, debug.ixx mid hooks the call at +0x16, and this lands between them on an
-            // exact instruction boundary. Widening any of the three breaks the other two.
-            auto inputPassPattern = dunia_pattern("56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A E8 ? ? ? ? F6 40 04 40 74 11");
-            if (!inputPassPattern.empty())
+            // Shared with debug.ixx, which mid hooks the call at +0x16. This one lands on an exact
+            // instruction boundary ahead of it, but its five-byte jump still overwrites bytes the
+            // pattern asks for, so the site is resolved once in dunia.ixx rather than scanned here:
+            // scanning after the other module installed used to miss and silently drop this hook.
+            // Widening either hook breaks the other.
+            auto* pInputPass = dunia_input_pass();
+            if (pInputPass != nullptr)
             {
-                static auto InputPassHook = safetyhook::create_mid(inputPassPattern.get_first(nInputPassPawnFetch), [](SafetyHookContext&)
+                static auto InputPassHook = safetyhook::create_mid(static_cast<uint8_t*>(pInputPass) + nInputPassPawnFetch, [](SafetyHookContext&)
                 {
                     auto nRevision = nSettingRevision.load(std::memory_order_relaxed);
                     if (nRevision == nPaintedRevision)
