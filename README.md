@@ -23,6 +23,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 - **Display Type** - Allows you to change between Fullscreen, Borderless and Windowed modes.
 - **FPS Limiter** - Caps the game's frame rate using the built-in engine limiter, either at your monitor's refresh rate automatically or at a value you pick.
 - **Internal Resolution** - Added the option to change the internal resolution to a custom value, to allow for supersampling and downscaling.
+- **Scaling Filter** - Sets the internal resolution scaling filter.
 - **FPS Counter** - Shows the engine's built-in frame rate counter.
 
 ### Graphics
@@ -112,8 +113,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 - Fixed an issue where the DLC ATV and Utility Truck only ever spawned in one colour, while their multiplayer counterparts came in the full range.
 - Fixed a case where the player could no longer save their game after completing certain missions.
 - Fixed an issue where buddies were not considered missing if the player helped Father Maliya at the church.
-- Fixed an issue with tape 9 repeating .
-- 
+- Fixed an issue with tape 9 repeating . 
 ### Content Unlocks
 - **Predecessor Tapes Unlock** - Unlocks the seven Predecessor Tape missions, which were originally bonus content available through Ubisoft's servers.
 - **Machetes Unlock** - Unlocks the Primitive and Homemade machete skins, which were originally bonus content available through Ubisoft's servers.

@@ -47,6 +47,7 @@ import fpsfixes;
 import guiduplicates;
 import hudfixes;
 import debug;
+import logging;
 import effectsorting;
 import jackalfixmenu;
 import updatecheck;
