@@ -24,6 +24,7 @@ PATTERNS = [
     ("jackal tapes fix",      "8B 4C 24 0C 8B 15 ? ? ? ? 90 80 7E 74 00 75 0A 3B CA 75 0A 80 7E 75 00 75 16", 16),
     ("predecessor tapes",     "8B 49 0C 85 C9 74 16 8B 44 24 04 50 E8 ? ? ? ? 84 C0 74 08 B8 01 00 00 00 C2 04 00", 5),
     ("machetes unlock",       "75 02 B3 01 8B 54 24 08 52 FF 15 ? ? ? ? 8A C3 5B 83 C4 10 C3", 15),
+    ("buddies mgr binding",   "56 8B 74 24 08 56 E8 ? ? ? ? 83 C4 04 85 C0 75 47 39 05 ? ? ? ? 57 8B 3D ? ? ? ? 75 07 33 C9 E8 ? ? ? ? 6A 01 68 ? ? ? ? 8B CF E8 ? ? ? ?", 0x36, 5),
     ("mesh highlight lookup",  "E8 ? ? ? ? 53 8B CA 68 ? ? ? ? 89 56 6C 51 8B D0 89 46 68", 5),
     ("item highlight gate",    "8B 44 24 40 8B 4C 24 44 8B 54 24 18 89 43 10 89 4B 14 F6 82 9C 00 00 00 04 0F 84", 24),
     ("marker set archetype",   "8B 44 24 04 83 F8 09 56 8B F1 77 38 8B 4C 24 0C 6A FF", 4),
@@ -59,7 +60,7 @@ PATTERNS = [
     ("show fps global",        "D9 5C 24 0C 83 3D ? ? ? ? 00 74 ? 83 3D ? ? ? ? 00 8B 35 ? ? ? ? 75 07 33 C9", 6),
     ("render device global",  "8B 0D ? ? ? ? 8B 01 8B 90 EC 00 00 00 FF D2", 0),
     ("d3d9 present call site", "8B 46 38 8B 08 83 C4 08 53 52 8B 54 24 24 52 8B 54 24 2C 52 50 8B 41 44 FF D0", 0),
-    ("set resolution entry",   "81 EC 48 02 00 00 53 55 56 57 33 ED 55 8D 84 24 B4 00 00 00", 0),.
+    ("set resolution entry",   "81 EC 48 02 00 00 53 55 56 57 33 ED 55 8D 84 24 B4 00 00 00", 0),
     ("present params write",   "8B 56 1C 89 15 ? ? ? ? 8B 46 20 A3 ? ? ? ? 8A 4D 08 F6 D9", 0x11),
     ("rt wrapper surface set", "8B 44 24 04 89 41 1C C2 04 00 CC CC CC CC CC CC 56 57 8B F9 33 F6 39 77", 0),
     ("renderer frame end",     "81 EC 80 00 00 00 53 55 56 8B F1 8B 46 78 8B 48 14 8B 41 1C 8B 10 57 50", 0),

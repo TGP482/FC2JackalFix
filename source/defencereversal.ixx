@@ -43,6 +43,11 @@ static constexpr const char* pszChurchAttackMission = "Missions/StoryMissions/A1
 // CBaseMission::SetState arm 1, read off the jump table and confirmed against the Enable binding.
 static constexpr int32_t MISSIONSTATE_STARTED = 1;
 
+// Five bindings share this function, but their globals are relocated and cannot be in the pattern.
+static constexpr ptrdiff_t nResolveGuardOperand = 0x14;
+static constexpr ptrdiff_t nManagerInEax = 0x36;
+static constexpr uintptr_t nBuddiesGuardRva = 0x164A474;
+
 // 0x10744A00. __fastcall on CBuddiesManager, no stack arguments.
 using SetDefenceRevesalBetrayedBuddies_t = void(__fastcall*)(void*, void*);
 
@@ -159,9 +164,22 @@ public:
 
             // 0x10722A60, the GetBuddiesManager binding. Same singleton resolve shape as above.
             // +0x36 is the instruction after the resolve, where eax is the manager.
-            auto* pGetBuddies = dunia_find(
+            auto buddiesPattern = dunia_pattern(
                 "56 8B 74 24 08 56 E8 ? ? ? ? 83 C4 04 85 C0 75 47 39 05 ? ? ? ? 57 8B 3D ? ? ? ? "
-                "75 07 33 C9 E8 ? ? ? ? 6A 01 68 ? ? ? ? 8B CF E8 ? ? ? ?", 0x36);
+                "75 07 33 C9 E8 ? ? ? ? 6A 01 68 ? ? ? ? 8B CF E8 ? ? ? ?");
+
+            const auto nBuddiesGuard = reinterpret_cast<uintptr_t>(hDunia) + nBuddiesGuardRva;
+
+            void* pGetBuddies = nullptr;
+            for (size_t i = 0; i < buddiesPattern.size(); ++i)
+            {
+                auto* pBinding = buddiesPattern.get(i).get<uint8_t>(0);
+                if (*reinterpret_cast<uintptr_t*>(pBinding + nResolveGuardOperand) != nBuddiesGuard)
+                    continue;
+
+                pGetBuddies = pBinding + nManagerInEax;
+                break;
+            }
 
             if (!pGetMission || !pSetState || !pSetBuddies || !pGetBuddies)
                 return;
