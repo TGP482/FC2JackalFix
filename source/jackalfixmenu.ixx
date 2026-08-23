@@ -529,7 +529,6 @@ static const MenuRow GameplayRows[]
     Boolean(L"Limited Saving",    PREF_LIMITEDSAVING,    "Gameplay", "LimitedSaving"),
     Boolean(L"Console Autosaves", PREF_CONSOLEAUTOSAVES, "Gameplay", "ConsoleAutosaves"),
     Boolean(L"No Blinking Items", PREF_NOBLINKINGITEMS,  "Gameplay", "NoBlinkingItems"),
-    Boolean(L"No Colored Signs",  PREF_NOCOLOREDSIGNS,   "Gameplay", "NoColoredSigns"),
     Boolean(L"No Hit Indicator",  PREF_NOHITINDICATOR,   "Gameplay", "NoHitIndicator"),
 };
 
@@ -750,7 +749,6 @@ static const PrefDefault PrefDefaults[]
     { PREF_LIMITEDSAVING,           0   },
     { PREF_CONSOLEAUTOSAVES,        1   },
     { PREF_NOBLINKINGITEMS,         0   },
-    { PREF_NOCOLOREDSIGNS,          0   },
     { PREF_NOHITINDICATOR,          0   },
 
     { PREF_FIELDOFVIEW,             9131 }, // 91.31
