@@ -74,7 +74,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
-        // UAL calls InitializeASI itself; under any other loader we have to kick it off here.
+        // UAL calls InitializeASI itself; other loaders do not.
         if (!IsUALPresent()) { InitializeASI(); }
     }
     if (reason == DLL_PROCESS_DETACH)

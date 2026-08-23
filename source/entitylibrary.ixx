@@ -1,25 +1,16 @@
 /*
-  Four of the five entity library edits from Boggalog's Far Cry 2 Patched. Credit to him for
-  identifying all five and for the values used here. His versions are data edits to
-  generated/entitylibrarypatchoverride.fcb inside patch.dat:
+  Four of Boggalog's five entity library edits from Far Cry 2 Patched, with his values. His are
+  data edits to generated/entitylibrarypatchoverride.fcb inside patch.dat:
 
-    "Fixed the MAC-10 being silent"
-        WeaponProperties.Secondary.MAC10 and .Mikes_Rusty
-        MuzzleStims -> Stim (selType 1, nLevel 8): fRadius  3.0 -> 75.0
-
-    "Fixed the player not walking slower when using ironsights with the M79"
-        WeaponProperties.Secondary.M79 and .Mikes_Rusty
-        IronSight: fMoveSpeedFactor  1.0 -> 0.5
-
-    "Improved a slight misalignment of the vehicle GPS"
-        gadgets.Equipped.Compass_Vehicle
-        Map: fHeightOffset  0.035 -> 0.039
-
-    "Fixed assassination targets having the same vision as snipers"
-        enemy_archetypes.Missions.Assassination_Target
+    Silent MAC-10: WeaponProperties.Secondary.MAC10 and .Mikes_Rusty,
+        MuzzleStims -> Stim (selType 1, nLevel 8): fRadius 3.0 -> 75.0
+    M79 ironsight walk speed: WeaponProperties.Secondary.M79 and .Mikes_Rusty,
+        IronSight: fMoveSpeedFactor 1.0 -> 0.5
+    Vehicle GPS alignment: gadgets.Equipped.Compass_Vehicle,
+        Map: fHeightOffset 0.035 -> 0.039
+    Assassination target vision: enemy_archetypes.Missions.Assassination_Target,
         FOVMultipliers: fPreCombatMultiplier 4 -> 0.75, fCombatMultiplier 4 -> 1,
-                        fPostCombatMultiplier 4 -> 1.25
-
+        fPostCombatMultiplier 4 -> 1.25
 */
 
 module;
@@ -31,20 +22,20 @@ export module entitylibrary;
 import common;
 import dunia;
 
-// Only the vtable pointer is common to both node classes; every other field differs.
+// Only the vtable pointer is common to both node classes.
 struct FCBNode
 {
     void** ppVTable;
 };
 
-// Vtable slots, as dword indices. Identical in both node classes.
+// Vtable slots as dword indices, identical in both node classes.
 static constexpr size_t nNodeGetChildCount = 0x14 / sizeof(void*);
 static constexpr size_t nNodeGetChild = 0x18 / sizeof(void*);
 static constexpr size_t nNodeGetChildByName = 0x20 / sizeof(void*);
 static constexpr size_t nNodeGetProperty = 0xD8 / sizeof(void*);
 
-// The {name, hash} pair every node accessor takes. FUN_105492E0 builds two of these on its own
-// stack, which is where the Entity and hidName hashes below come from.
+// The {name, hash} pair every node accessor takes. The Entity and hidName hashes come from the
+// two FUN_105492E0 builds on its own stack.
 struct NameKey
 {
     const char* pszName;
@@ -61,13 +52,12 @@ static NameKey KeyPreCombatMultiplier = { "fPreCombatMultiplier", 0 };
 static NameKey KeyCombatMultiplier = { "fCombatMultiplier", 0 };
 static NameKey KeyPostCombatMultiplier = { "fPostCombatMultiplier", 0 };
 
-// NameHash::Set, the engine's own hash, so hashes computed here match the archive by construction.
-// __thiscall with three stack arguments.
+// NameHash::Set, the engine's own hash, so hashes match the archive. __thiscall, three stack args.
 using NameHash_t = void(__fastcall*)(uint32_t* pOut, void* pEdx, const char* pszName, int32_t, int32_t);
 
 static NameHash_t NameHash = nullptr;
 
-// Stock values double as a guard against shifting an already-corrected prototype twice.
+// Stock values guard against shifting an already-corrected prototype twice.
 static constexpr float fStockMuzzleRadius = 3.0f;
 static constexpr float fFixedMuzzleRadius = 75.0f;
 static constexpr float fStockIronsightMoveSpeed = 1.0f;
@@ -88,7 +78,7 @@ enum class Prototype
     AssassinationTarget,  // field of view multipliers
 };
 
-// hidName comes back as a raw pointer with no length, so the compare is bounded.
+// hidName comes back with no length, so the compare is bounded.
 static constexpr size_t nMaxNameLength = 128;
 
 static bool NameIs(const char* pszName, const char* pszExpected)
@@ -115,8 +105,8 @@ static bool NameIs(const char* pszName, const char* pszExpected)
 
 static Prototype ClassifyPrototype(const char* pszHidName)
 {
-    // Singleplayer only, matching Boggalog's edits. The .Multi variants carry the same stock
-    // MAC-10 radius but he left them alone.
+    // Singleplayer only, matching Boggalog: the .Multi variants carry the same stock MAC-10
+    // radius but he left them alone.
     if (NameIs(pszHidName, "WeaponProperties.Secondary.MAC10")
         || NameIs(pszHidName, "WeaponProperties.Secondary.MAC10.Mikes_Rusty"))
         return Prototype::MAC10;
@@ -152,7 +142,7 @@ static FCBNode* GetChildByName(FCBNode* pNode, const NameKey& key)
     return reinterpret_cast<FCBNode*(__fastcall*)(FCBNode*, void*, const NameKey*)>(pNode->ppVTable[nNodeGetChildByName])(pNode, nullptr, &key);
 }
 
-// Pointer into the loaded .fcb buffer, or null if this node does not carry the property.
+// Pointer into the loaded .fcb buffer, or null if the node lacks the property.
 static void* GetProperty(FCBNode* pNode, const NameKey& key)
 {
     void* pValue = nullptr;
@@ -160,7 +150,7 @@ static void* GetProperty(FCBNode* pNode, const NameKey& key)
     return pfnGet(pNode, nullptr, &key, &pValue) != 0 ? pValue : nullptr;
 }
 
-// Rewrites only if the value is still the one the archive shipped, which doubles as a type check.
+// Rewrites only if still at the shipped value, which doubles as a type check.
 static bool SetFloat(FCBNode* pNode, const NameKey& key, float fStock, float fFixed)
 {
     auto* pValue = static_cast<float*>(GetProperty(pNode, key));
@@ -176,13 +166,13 @@ static void ApplyToNode(Prototype ePrototype, FCBNode* pNode)
     switch (ePrototype)
     {
     case Prototype::MAC10:
-        // Only one stim in this prototype sits at radius 3, the muzzle one. The impact stim is 15.
+        // Only the muzzle stim sits at radius 3 here; the impact stim is 15.
         SetFloat(pNode, KeyRadius, fStockMuzzleRadius, fFixedMuzzleRadius);
         break;
 
     case Prototype::M79:
         // fMoveSpeedFactor appears twice at 1.0: IronSight block +0xD8 and weapon root +0xD4.
-        // bCanIronsight only exists on the IronSight block, so it picks the right node.
+        // bCanIronsight exists only on the IronSight block, so it picks the right node.
         if (GetProperty(pNode, KeyCanIronsight) != nullptr)
             SetFloat(pNode, KeyMoveSpeedFactor, fStockIronsightMoveSpeed, fFixedIronsightMoveSpeed);
         break;
@@ -192,7 +182,7 @@ static void ApplyToNode(Prototype ePrototype, FCBNode* pNode)
         break;
 
     case Prototype::AssassinationTarget:
-        // All three land on the same FOVMultipliers node, and an archetype has exactly one.
+        // All three sit on the one FOVMultipliers node an archetype has.
         if (SetFloat(pNode, KeyPreCombatMultiplier, fStockFOVMultiplier, fFixedPreCombatMultiplier))
         {
             SetFloat(pNode, KeyCombatMultiplier, fStockFOVMultiplier, fFixedCombatMultiplier);
@@ -205,7 +195,7 @@ static void ApplyToNode(Prototype ePrototype, FCBNode* pNode)
     }
 }
 
-// Components nest about four levels, so eight is past anything in the library.
+// Components nest about four levels, so 8 is past anything in the library.
 static constexpr int nMaxDepth = 8;
 
 static void ApplyToSubtree(Prototype ePrototype, FCBNode* pNode, int nDepth)
@@ -220,8 +210,8 @@ static void ApplyToSubtree(Prototype ePrototype, FCBNode* pNode, int nDepth)
         ApplyToSubtree(ePrototype, GetChild(pNode, i), nDepth + 1);
 }
 
-// The same two-level walk FUN_105492E0 performs: libraries, then prototypes. pRoot is the wrapper,
-// everything GetChild hands back below it is an inner node.
+// Same two-level walk as FUN_105492E0: libraries, then prototypes. pRoot is the wrapper,
+// everything below it an inner node.
 static void PatchLibrary(FCBNode* pRoot)
 {
     if (pRoot == nullptr || pRoot->ppVTable == nullptr)
@@ -257,10 +247,10 @@ static SafetyHookInline IndexLibraryHook{};
 
 static void __fastcall IndexLibrary(void* pLibrary, void* pEdx, FCBNode** ppRoot)
 {
-    // Original first, so the name index is built before anything moves.
+    // Original first, so the name index exists before anything moves.
     IndexLibraryHook.fastcall(pLibrary, pEdx, ppRoot);
 
-    // Nothing in the walk needs unwinding, so the handler can swallow whatever it catches.
+    // Nothing in the walk needs unwinding, so anything caught can be swallowed.
     __try
     {
         if (ppRoot != nullptr)
@@ -278,12 +268,10 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // NameHash::Set. Entry through the store of the computed hash, with the call
-            // displacement wildcarded.
+            // NameHash::Set, entered at the store of the computed hash, call displacement wildcarded.
             auto* pHash = dunia_find("8B 44 24 04 85 C0 56 8B F1 74 29 80 38 00 74 24 80 7C 24 0C 00 50 74 0E E8 ? ? ? ? 83 C4 04 89 06 5E C2 0C 00");
 
-            // The per-file prototype indexer. Entry through the one-time init guard, with the
-            // four bytes of the guard's address wildcarded.
+            // Per-file prototype indexer, entered at the one-time init guard, guard address wildcarded.
             auto* pIndex = dunia_find("55 8B EC 83 E4 F8 83 EC 3C F6 05 ? ? ? ? 01 53 56 57 89 4C 24 1C 75 1B");
 
             if (!pHash || !pIndex)
@@ -298,15 +286,14 @@ public:
                 NameHash(&pKey->nHash, nullptr, pKey->pszName, 0, 0);
             }
 
-            // hidName is one of the two hashes FUN_105492E0 hardcodes, so rehashing it checks
-            // NameHash against the archive before the others are trusted.
+            // hidName is hardcoded in FUN_105492E0, so rehashing it validates NameHash before the
+            // others are trusted.
             uint32_t nCheck = 0;
             NameHash(&nCheck, nullptr, KeyHidName.pszName, 0, 0);
             if (nCheck != KeyHidName.nHash)
                 return;
 
-            // The entity library is read once during startup, so nothing is registered on the ini
-            // watch.
+            // The library is read once at startup, so nothing goes on the ini watch.
             IndexLibraryHook = safetyhook::create_inline(pIndex, IndexLibrary);
         };
     }

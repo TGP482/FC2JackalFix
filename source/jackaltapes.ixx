@@ -1,7 +1,4 @@
-/*
-  Credit to https://github.com/FoxAhead/Far-Cry-2-Multi-Fixer
-  These fixes were implemented based on the Far Cry 2 Multi Fixer by FoxAhead.
-*/
+/* Based on FoxAhead's Far Cry 2 Multi Fixer: https://github.com/FoxAhead/Far-Cry-2-Multi-Fixer */
 
 module;
 
@@ -20,10 +17,9 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // The tape lookup walks an array of 0x78 byte records. With the first flag byte set it
-            // falls through into a second comparison that accepts a wrong entry, so every tape in
-            // the southern map resolves to the same recording. Retarget the branch at the loop
-            // increment to skip that block.
+            // Lookup walks 0x78-byte records. With the first flag byte set it falls through to a
+            // second comparison that accepts a wrong entry, so every southern-map tape resolves to
+            // the same recording.
             auto* pTapeLookup = dunia_find("8B 4C 24 0C 8B 15 ? ? ? ? 90 80 7E 74 00 75 0A 3B CA 75 0A 80 7E 75 00 75 16", 16);
             if (!pTapeLookup)
                 return;

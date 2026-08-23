@@ -11,28 +11,25 @@ export module jackalfixmenu;
 import common;
 import dunia;
 import settings;
-import borderless;    // the game window, for measuring what a render resolution percentage is of
+import borderless;    // game window, for measuring what a render resolution percentage is of
 import renderconfig;  // which of the game's own quality presets are in force
 import debug;         // whether a network session is up, which locks the debug rows
 
-// The options menu is not data driven. options.mgb carries the page artwork and the navbar prompts;
-// the rows under OPTIONS are built in code. CFCXOptionPage::BuildEntries appends one row per sub
-// page (Game, Display, Sound, Network, Controls) and hands each a delegate holding the target
-// page's class id, which the menu manager's page registry resolves on activation. A new page is a
-// sixth append plus a page object registered under a class id of our own, and the row inherits the
-// engine's highlight, sound and transition behaviour by being an ordinary row.
+// The options menu is not data driven: options.mgb carries page artwork and navbar prompts, the
+// rows are built in code. CFCXOptionPage::BuildEntries appends one row per sub page and hands each
+// a delegate holding the target page's class id, resolved by the menu manager's page registry. A
+// new page is a sixth append plus a page object registered under our own class id.
 //
-// Row count and value count are separate ceilings. The label list is a magma::ListBox with no row
-// limit: items are an unbounded vector and a row's Y is lineAreaTop + index * (lineHeight +
-// spacing). The limit is on values, each binding by name to a widget the layout declares, and
-// MAINMENU_OPTIONGAME_PAGE declares eight. Hence the virtual list here, one window of which is
-// handed to the engine at a time.
+// Rows are unlimited (magma::ListBox items are a vector; row Y = lineAreaTop + index * (lineHeight
+// + spacing)), but values are not: each binds by name to a widget the layout declares and
+// MAINMENU_OPTIONGAME_PAGE declares eight. Hence the virtual list, one window handed to the engine
+// at a time.
 
 // ------------------------------------------------------------------------------------------------
 // Engine object layout.
 
-static constexpr ptrdiff_t nPageList          = 0x0C;  // the row list widget, resolved from the document
-static constexpr ptrdiff_t nPageDocument      = 0x14;  // the page's MAGMA document; widgets are looked up in it
+static constexpr ptrdiff_t nPageList          = 0x0C;  // row list widget, resolved from the document
+static constexpr ptrdiff_t nPageDocument      = 0x14;  // page's MAGMA document; widgets looked up in it
 static constexpr ptrdiff_t nPageReady         = 0x164; // set once the page is fit to be opened
 static constexpr ptrdiff_t nPageTitle         = 0xF4;  // std::wstring drawn as the page heading
 static constexpr ptrdiff_t nPageTitleSize     = 0x104;
@@ -46,19 +43,18 @@ static constexpr ptrdiff_t nRegistryEnd       = 0x10;  // the map's end iterator
 // std::wstring leaves its inline buffer for the heap at eight characters.
 static constexpr uint32_t nWideStringInlineCapacity = 7;
 
-// magma::ListBox, the widget behind the page's row list. Only the fields this file touches.
+// magma::ListBox fields this file touches.
 //
-// nListBoxWrap decides both whether the selection wraps at the ends and whether the edge arrows
-// grey out there. Cleared deliberately: with it clear, pressing down on the last row leaves the
-// selection alone and the nav handler reports the refusal, which is the page-turn signal.
-static constexpr ptrdiff_t nListBoxMaxVisible   = 0x18; // byte; visible line count is min(this, item count)
+// nListBoxWrap controls both selection wrap at the ends and whether the edge arrows grey out.
+// Cleared deliberately: with it clear, down on the last row leaves the selection alone and the nav
+// handler reports the refusal, which is the page-turn signal.
+static constexpr ptrdiff_t nListBoxMaxVisible   = 0x18; // byte; visible lines = min(this, item count)
 static constexpr ptrdiff_t nListBoxFlags        = 0x19; // bit 0 = wrap at the ends
 static constexpr uint8_t   nListBoxWrap         = 0x01;
 static constexpr ptrdiff_t nListBoxFirstVisible = 0xCC;
-// +44h is the disabled flag. SetSelection refuses such a row outright, so setting it is the only
-// thing that keeps the selection off a heading. +38h is the cached visual state, computed from the
-// same flag, so a disabled row also draws in the greyed ink. Separate fields, so the flag is set
-// and the state written back to an ordinary row's.
+// +44h is the disabled flag; SetSelection refuses such a row, which is what keeps the selection off
+// a heading. +38h is the cached visual state computed from the same flag, so a disabled row draws
+// greyed. Separate fields, so set the flag and write back an ordinary row's state.
 static constexpr ptrdiff_t nListBoxItems       = 0x94;
 static constexpr size_t    nItemSize           = 0x54;
 static constexpr ptrdiff_t nItemVisualState    = 0x38;
@@ -67,33 +63,33 @@ static constexpr ptrdiff_t nItemDisabled       = 0x44;
 static constexpr ptrdiff_t nListBoxHighlight    = 0xD0;
 static constexpr ptrdiff_t nListBoxSelected     = 0xD4;
 
-// The nav handler is dispatched from the widget's own table, so this is a per-instance vtable swap
-// rather than a hook. Every list in the game shares the class.
+// Dispatched from the widget's own table, so this is a per-instance vtable swap, not a hook: every
+// list in the game shares the class.
 static constexpr size_t nListBoxNavSlot    = 27; // +6Ch
-static constexpr size_t nListBoxHoverSlot  = 28; // +70h, where the pointer moving over a row lands
-static constexpr size_t nListBoxMouseSlot  = 29; // +74h, where a click lands
+static constexpr size_t nListBoxHoverSlot  = 28; // +70h, pointer moving over a row
+static constexpr size_t nListBoxMouseSlot  = 29; // +74h, click
 static constexpr size_t nListBoxPointerSlot = 30; // +78h, the other pointer entry
 
-// The function that lights a row is called from slots 27, 28, 29 and 30 and nowhere else, so those
-// four are the complete set of ways a row can be lit.
+// The function that lights a row is called from slots 27-30 and nowhere else, so those four are
+// every way a row can be lit.
 static constexpr size_t nListBoxVTableSlots = 45;
 
 // What the nav handler writes into its result when it could not move the selection: a direction
-// code and a flag asking the focus manager to hand the input to whatever is next. Swallowing that
-// flag is what stops a page turn from also moving focus off the list.
+// code and a flag asking the focus manager to pass the input on. Swallowing that flag stops a page
+// turn from also moving focus off the list.
 static constexpr ptrdiff_t nNavResultCode   = 0x10;
 static constexpr ptrdiff_t nNavResultFlags  = 0x16;
 static constexpr uint8_t   nNavFlagUnhandled = 0x04;
 static constexpr int       nNavCodeUp        = 0;
 static constexpr int       nNavCodeDown      = 1;
 
-// Page vtable slots. One and two are the same on every page class here; sixteen is the row-clearing
-// entry the stock builders call before repopulating.
+// Page vtable slots. 1 and 2 are the same on every page class here; 16 is the row-clearing entry
+// the stock builders call before repopulating.
 //
-// Nineteen, twenty and twenty-one must be owned by a clone. Twenty and twenty-one are the option
-// layer's Apply and Revert, reached from the generic action handlers at 0x1087EB10, 0x1087F090 and
-// 0x1087F1F0. Nineteen is value-changed, raised on every arrow press; CFCXOptionGamePage uses it to
-// show or hide the machete row with difficulty.
+// 19, 20 and 21 must be owned by a clone. 20 and 21 are the option layer's Apply and Revert,
+// reached from the generic action handlers at 0x1087EB10, 0x1087F090 and 0x1087F1F0. 19 is
+// value-changed, raised on every arrow press; CFCXOptionGamePage uses it to show or hide the
+// machete row with difficulty.
 //
 // All three read row indices stashed at page+1D8h..1F8h, still -1 on a clone. The lookup is a
 // std::map::operator[], so it inserts a null against key -1 and returns a pointer to it:
@@ -111,7 +107,7 @@ static constexpr size_t nApplySlot        = 20; // +50h
 static constexpr size_t nRevertSlot       = 21; // +54h
 
 // Copied wholesale so the clone keeps every behaviour not deliberately changed. The real table is
-// twenty six entries; the extra slots are never dispatched.
+// 26 entries; the extra slots are never dispatched.
 static constexpr size_t nVTableSlots = 40;
 
 // Byte offsets inside the functions resolved by pattern, each named after what it points at.
@@ -132,9 +128,9 @@ static constexpr ptrdiff_t nOpenResetFieldDisp   = 0x0A; // disp32 of mov [esi+d
 static constexpr ptrdiff_t nOpenBaseTailJump     = 0x15; // jmp <base open>
 
 // The stock row builder opens by registering three handlers against the page's action dispatcher:
-// Apply, Revert and Back, not previous/next/activated value. Replacing the builder wholesale left
-// our page with none, and the input path dispatches into a null object on the first prompt press.
-// Everything needed to register them is read out of the builder's prologue.
+// Apply, Revert and Back. Replacing the builder wholesale left our page with none, and the input
+// path then dispatches into a null object on the first prompt press. Everything needed to register
+// them is read out of the builder's prologue.
 static constexpr ptrdiff_t nBuildHandlerSize     = 0x0E; // push 0Ch, the handler allocation size
 static constexpr ptrdiff_t nBuildHandlerInit     = 0x22; // call <handler base ctor>
 static constexpr ptrdiff_t nBuildDispatcherDisp  = 0x37; // disp32 of lea ebp,[esi+disp32]
@@ -150,10 +146,10 @@ static constexpr ptrdiff_t nBuildHandlerVTables[]{ 0x29, 0x66, 0x9D }; // mov [e
 //     push 1 / push 2 / call <slot>   ; prompt two is DEFAULT
 //     call <set enabled>              ; starts lit
 //
-// The byte at 1B8h is the mechanism. The per-row change handler lights APPLY only while it is
+// The byte at 1B8h is the mechanism: the per-row change handler lights APPLY only while it is
 // clear, the APPLY handler refuses to run while it is clear, and the confirmation box behind
-// DEFAULT clears it again. Rebuilding our rows runs through the same base open, so all three are
-// read out rather than assumed.
+// DEFAULT clears it again. Our rebuild runs through the same base open, so all three are read out
+// rather than assumed.
 static constexpr ptrdiff_t nBaseOpenDirtyOpcode = 0x1B; // mov byte ptr [edi+disp32], 0
 static constexpr ptrdiff_t nBaseOpenDirtyDisp   = 0x1D;
 static constexpr ptrdiff_t nBaseOpenPromptSlot  = 0x22; // call <slot for event id>
@@ -164,8 +160,8 @@ static constexpr int nPromptApply   = 1;
 static constexpr int nPromptDefault = 2;
 
 // ------------------------------------------------------------------------------------------------
-// Engine functions. The __thiscall ones are declared __fastcall with an unused EDX, which is the
-// same calling convention with the hidden argument spelled out.
+// Engine functions. The __thiscall ones are declared __fastcall with an unused EDX: same
+// convention, hidden argument spelled out.
 
 using GameAlloc_t      = void*    (__cdecl*)(size_t nSize, int nUnused);
 using PageConstruct_t  = void*    (__fastcall*)(void* pPage);
@@ -175,17 +171,17 @@ using RegistryInsert_t = void**   (__fastcall*)(void* pRegistry, void* pEdx, con
 using MakeDelegate_t   = void*    (__fastcall*)(void* pDelegate, void* pEdx, void* pOwnerPage, const uint32_t* pClassId, int nUnused, char bSetParent);
 using AddEntry_t       = int      (__fastcall*)(void* pPage, void* pEdx, const wchar_t* pText, int bEnabled, void* pDelegate);
 
-// Appends a row carrying a two-value control, the < Yes / No > arrows the options pages use.
-// AddEntry plus a control stamped from pTemplate into the page's document, registered in a map at
-// page+190h. That map is why this only works on pages derived from the value-page base: a plain
-// CListMenuPage is 190h bytes and has no such member.
+// Appends a row carrying a two-value control (the < Yes / No > arrows): AddEntry plus a control
+// stamped from pTemplate into the page's document, registered in a map at page+190h. That map is
+// why this only works on pages derived from the value-page base: a plain CListMenuPage is 190h
+// bytes and has no such member.
 using AddValueRow_t    = void*    (__fastcall*)(void* pPage, void* pEdx, const wchar_t* pLabel, const char* pTemplate,
                                                 const char* pWidgetName, const wchar_t* pOnText, const wchar_t* pOffText,
                                                 int bEnabled, void* pDelegate);
 
-// A list of arbitrary choices. The count comes before both arrays. Both are copied into the control
-// as it is built, so neither has to outlive the call: labels into the widget's own item list,
-// values into an int array at control+4Ch. Still draws as arrows rather than a popup.
+// A list of arbitrary choices; count comes before both arrays. Both are copied into the control as
+// it is built (labels into the widget's item list, values into an int array at control+4Ch), so
+// neither has to outlive the call. Still draws as arrows, not a popup.
 using AddMultiValueRow_t = void*  (__fastcall*)(void* pPage, void* pEdx, const wchar_t* pLabel, const char* pTemplate,
                                                 const char* pWidgetName, uint32_t nCount,
                                                 const wchar_t* const* pLabels, const int* pValues,
@@ -197,8 +193,8 @@ using GetRowValue_t    = const void* (__fastcall*)(void* pControl, void* pEdx);
 static constexpr size_t nRowSetValueSlot = 13;
 static constexpr size_t nRowGetValueSlot = 14;
 
-// magma::ListBox's input handler, taken over per instance. The result argument is where it records
-// that it could not act on the key.
+// magma::ListBox's input handler, taken over per instance. pResult is where it records that it
+// could not act on the key.
 using ListBoxNav_t = int (__fastcall*)(void* pListBox, void* pEdx, void* pSender, void* pEvent, uint8_t* pResult);
 
 static GameAlloc_t        GameAlloc        = nullptr;
@@ -211,9 +207,9 @@ static AddValueRow_t      AddValueRow      = nullptr;
 static AddMultiValueRow_t AddMultiValueRow = nullptr;
 static PageMethod_t       BasePageOpen     = nullptr;
 
-// The stock call site pushes the handler, then the event id, then calls both in turn, each taking
-// one stack argument: the slot call consumes the event id and leaves the handler for the register
-// call. Reading it as one call with two arguments unbalances the stack by eight bytes.
+// The stock call site pushes handler then event id and calls both in turn, each taking one stack
+// argument: the slot call consumes the event id and leaves the handler for the register call.
+// Reading it as one two-argument call unbalances the stack by eight bytes.
 using HandlerInit_t     = void* (__fastcall*)(void* pHandler, void* pEdx, int nUnused);
 using DispatcherSlot_t  = void* (__fastcall*)(void* pDispatcher, void* pEdx, int nEvent);
 using RegisterHandler_t = void  (__fastcall*)(void* pSlot, void* pEdx, void* pHandler);
@@ -234,8 +230,8 @@ static uint32_t nPageSize        = 0;
 static uint32_t nDelegateSize    = 0;
 static ptrdiff_t nPageResetField = 0;
 
-// Every menu page is produced by the same template function, so any instance resolves the shared
-// registry helpers. The one that builds the page we clone is picked out by the class id it pushes.
+// Every menu page comes from the same template function, so any instance resolves the shared
+// registry helpers. The one building the page we clone is picked out by the class id it pushes.
 static hook::pattern PageCreators{};
 static uint8_t* pBuildEntries = nullptr;
 static uint8_t* pPageCreator = nullptr;
@@ -243,15 +239,14 @@ static uint8_t* pPageCreator = nullptr;
 // ------------------------------------------------------------------------------------------------
 // What we clone, and where its widgets come from.
 //
-// The clone is a CFCXOptionGamePage rather than the plain CFCXOptionPage the OPTIONS list uses: the
-// row APIs need the value-page base to register their controls in.
+// The clone is a CFCXOptionGamePage, not the plain CFCXOptionPage the OPTIONS list uses: the row
+// APIs need the value-page base to register their controls in.
 //
-// CListMenuPage hashes the name of its MAGMA page and resolves the document from that hash, so two
-// page objects naming the same MAGMA page share one document, one list widget and one selected
-// index. So the clone names a page of its own. MAINMENU_OPTIONGAME_PAGE is the console cut of
-// game options: it ships in the PC options.mgb, whose options.mgb.desc carries a navbar block for
-// it, but the PC build only ever names MAINMENU_OPTIONGAME_PAGE_PC and the plain name appears
-// nowhere in Dunia's strings.
+// CListMenuPage resolves its document from a hash of its MAGMA page name, so two page objects
+// naming the same MAGMA page share one document, list widget and selected index. Hence the clone
+// names a page of its own. MAINMENU_OPTIONGAME_PAGE is the console cut of game options: it ships in
+// the PC options.mgb (whose .desc carries a navbar block for it), but the PC build only ever names
+// MAINMENU_OPTIONGAME_PAGE_PC and the plain name appears nowhere in Dunia's strings.
 static const char szStockPageLayout[]     = "MAINMENU_OPTIONGAME_PAGE_PC";
 static const char szJackalFixPageLayout[] = "MAINMENU_OPTIONGAME_PAGE";
 
@@ -260,9 +255,9 @@ static const wchar_t szJackalFixPageTitle[] = L"JACKAL FIX";
 // Widget template each value row is stamped from.
 static const char szRowTemplate[] = "SETTING_LABEL_LIST";
 
-// A value row binds by name to a widget the layout already declares. The bind call looks the name
-// up, stores the result on the control, and silently skips adding the choices when the lookup
-// fails, which draws arrows with nothing between them.
+// A value row binds by name to a widget the layout declares. The bind call looks the name up,
+// stores the result on the control, and on failure silently skips adding the choices, drawing
+// arrows with nothing between them.
 static constexpr ptrdiff_t nControlNamedWidget = 0x44; // the widget a value row found by name
 
 // How far into the constructor to look for the layout name. Generous and bounded.
@@ -271,14 +266,13 @@ static constexpr ptrdiff_t nCtorScanBytes = 0x600;
 // ------------------------------------------------------------------------------------------------
 // The layout's lines.
 //
-// Labels are dynamic rows in the page's nav list. Value widgets are fixed furniture in the MAGMA
-// layout, each drawn on the line the layout assigns it, so row N lines up only with the widget on
-// line N.
+// Labels are dynamic rows in the page's nav list; value widgets are fixed layout furniture, each
+// drawn on the line the layout assigns it, so row N lines up only with the widget on line N.
 //
-// MAINMENU_OPTIONGAME_PAGE's settings map holds ten entries, each binding a SETTING_* name to a
-// path ending in a row container p_setting_1..8, and those containers carry Y coordinates 225, 250,
-// 278, 306, 335, 364, 391 and 420. Sorted by Y they give the order below; each container's child
-// link says whether the line holds arrows (p_list) or a slider.
+// MAINMENU_OPTIONGAME_PAGE's settings map holds ten entries binding a SETTING_* name to a path
+// ending in a row container p_setting_1..8, at Y 225, 250, 278, 306, 335, 364, 391 and 420. Sorted
+// by Y they give the order below; each container's child link says whether the line holds arrows
+// (p_list) or a slider.
 //
 // One slider line per eight, and no row here pairs with a slider, so numeric settings are declared
 // as ranges (ROW_RANGE) and drawn with arrows. The package patch repoints the slider line at the
@@ -290,8 +284,8 @@ struct PageLine
 };
 
 // The eight the layout ships with. SETTING_9 and SETTING_10 are unusable: SETTING_9's link has a
-// component count of zero and SETTING_10 is absent from the map, so either would fail the name
-// lookup, leave the control's widget pointer null and draw a blank row.
+// component count of zero and SETTING_10 is absent from the map, so either fails the name lookup,
+// leaving a null widget pointer and a blank row.
 static const PageLine StockLines[]
 {
     { "SETTING_1",           true  }, // p_setting_1, y 225
@@ -305,10 +299,9 @@ static const PageLine StockLines[]
 };
 
 // ------------------------------------------------------------------------------------------------
-// How far the title and the row block move up, in MAGMA layout units. The package resolves at
-// 1280x800, so a unit is an 800th of the screen height whatever the actual resolution. Measured by
-// eye to put the title where ACTION sits on the controls page: a row's drawn position is its
-// container coordinate plus whatever its parents contribute, so there is nothing to compute.
+// How far the title and row block move up, in MAGMA layout units (the package resolves at 1280x800,
+// so a unit is an 800th of screen height at any resolution). Measured by eye to put the title where
+// ACTION sits on the controls page.
 static constexpr int    nLiftUnits   = 94;
 
 // The stock eight plus the patched-in rows, with headroom.
@@ -318,12 +311,11 @@ static PageLine RowLines[nMaxLines]{};
 static size_t   nRowLines = 0;
 
 // The widget each line draws its value in, and the y it belongs at. A line whose row carries no
-// value has its arrows parked off screen and put back when a value row next lands there.
+// value has its arrows parked off screen, put back when a value row next lands there.
 static void*   LineWidgets[nMaxLines]{};
 static int16_t LineY[nMaxLines]{};
 
-// The widget name each line binds to. Held here because the patched-in row names are built at run
-// time rather than written down.
+// The widget name each line binds to. Held here because patched-in row names are built at run time.
 static char LineNames[nMaxLines][24]{};
 
 // Which line a widget is the value of, or -1 for anything that is not one of this page's values.
@@ -337,20 +329,20 @@ static int ValueWidgetLine(const void* pWidget)
     return -1;
 }
 
-// Off the bottom of the page. Nothing about a widget parked here changes except its position,
-// which is why this is used instead of a visibility flag.
+// Off the bottom of the page. Used instead of a visibility flag: nothing about a parked widget
+// changes except its position.
 static constexpr int16_t nParkedY = 4000;
 
 // A row's value widget is the innermost list in options / p_option_game / p_setting_N / p_list /
-// l_setting, and its own coordinate is zero: the per-row offset lives on the container above, which
-// is not what the name resolves to. So every row reads as y 0.
+// l_setting, whose own coordinate is zero: the per-row offset lives on the container above, which
+// the name does not resolve to. So every row reads as y 0.
 
 // ------------------------------------------------------------------------------------------------
 // The page's contents, declared per ini section and in ini order.
 
 enum RowKind
 {
-    ROW_HEADING, // a label with no control; consumes a line, and that line's widget draws faded
+    ROW_HEADING, // label with no control; consumes a line, whose widget draws faded
     ROW_BOOL,    // two-value arrows reading On / Off
     ROW_ENUM,    // a named list of choices
     ROW_RANGE,   // a numeric range, drawn as a generated list of steps
@@ -373,22 +365,21 @@ struct MenuRow
     ValueKind      nValue;
 
     // ROW_RANGE. The control is integral, so a float setting is carried in fixed point: the row
-    // works in units of the ini value multiplied by fScale and converts at the edges. Minimum,
-    // maximum and step are in those units.
+    // works in units of the ini value times fScale and converts at the edges. Min, max and step are
+    // in those units.
     int   nMinimum;
     int   nMaximum;
     int   nStep;
     float fScale;
     const wchar_t* pFormat; // how a step is written out, e.g. L"%d" or L"%.2f"
 
-    // ROW_ENUM. Both arrays are copied by the engine as the row is built, so static storage is
-    // enough.
+    // ROW_ENUM. Both arrays are copied by the engine as the row is built, so static storage suffices.
     const int*            pValues;
     const wchar_t* const* pValueLabels;
     uint32_t              nValueCount;
 
-    // A second setting moved in step with the first, where one row stands for a pair: an internal
-    // resolution is one choice and two ini keys. Its value is the matching entry of pValues2.
+    // A second setting moved in step with the first, where one row stands for a pair (an internal
+    // resolution is one choice and two ini keys). Its value is the matching entry of pValues2.
     Pref        nPref2;
     const char* pIniKey2;
     const int*  pValues2;
@@ -406,8 +397,7 @@ static constexpr MenuRow Boolean(const wchar_t* pLabel, Pref nPref, const char* 
              0, 1, 1, 1.0f, nullptr, nullptr, nullptr, 0, Pref::COUNT, nullptr, nullptr };
 }
 
-// Boolean over a setting the ini carries as a float, so the two states write 0 and 1 rather than
-// an integer the reader would not recognise.
+// Boolean over a setting the ini carries as a float: the two states write 0 and 1 as floats.
 static constexpr MenuRow BooleanFloat(const wchar_t* pLabel, Pref nPref, const char* pSection, const char* pKey)
 {
     return { ROW_BOOL, pLabel, nPref, pSection, pKey, VALUE_FLOAT,
@@ -439,15 +429,15 @@ static const wchar_t* const DisplayModeLabels[]{ L"Fullscreen", L"Borderless", L
 static const int     ScalingFilterValues[]{ 0, 1 };
 static const wchar_t* const ScalingFilterLabels[]{ L"Point", L"Bilinear" };
 
-// Render Resolution is InternalResolutionX/Y. The row lists percentages of whatever that pair
-// holds, both axes scaled together to keep the aspect, and each choice writes both keys. There is
-// no "off": a hundred per cent is the pair itself, and an unset pair already means the window.
+// Render Resolution is InternalResolutionX/Y. The row lists percentages of that pair, both axes
+// scaled together to keep the aspect, each choice writing both keys. No "off": 100% is the pair
+// itself, and an unset pair already means the window.
 static constexpr int nRenderScaleStep = 10;
 static constexpr int nRenderScaleFloor = 20;
 static constexpr int nRenderScaleCeiling = 200;
 
-// The Xbox 360 cut, offered when the base is 16:9. Not a percentage of anything, so it heads the
-// list as a pair of its own.
+// The Xbox 360 cut, offered when the base is 16:9. Not a percentage, so it heads the list as its
+// own pair.
 static constexpr int nConsoleWidth = 1280;
 static constexpr int nConsoleHeight = 696;
 
@@ -456,8 +446,7 @@ static constexpr int nRenderPixelMinW = 320;
 static constexpr int nRenderPixelMinH = 240;
 static constexpr int nRenderPixelMax = 16384;
 
-// Filled in as the page opens, since the pair the percentages are of is only known then. One entry
-// per step: X pixels, Y pixels, label.
+// Filled in as the page opens, since the base pair is only known then. One entry per step.
 static constexpr size_t nMaxRenderChoices = 32;
 static constexpr size_t nRenderLabelLength = 32;
 
@@ -477,7 +466,7 @@ static const wchar_t* const AnisotropyLabels[]{ L"Game default", L"2x", L"4x", L
 static const int     BeyondUltraValues[]{ 0, 1, 2, 3 };
 static const wchar_t* const BeyondUltraLabels[]{ L"Default", L"2x", L"4x", L"Max draw distance" };
 
-// Geometry carries a 6x step the other two do not, so it cannot share the list above.
+// Geometry has a 6x step the others lack, so it cannot share the list above.
 static const int     BeyondUltraGeometryValues[]{ 0, 1, 2, 3, 4 };
 static const wchar_t* const BeyondUltraGeometryLabels[]{ L"Default", L"2x", L"4x", L"6x", L"Max draw distance" };
 
@@ -487,21 +476,21 @@ static const wchar_t* const BeyondUltraShadowLabels[]{ L"Default", L"Max draw di
 static const int     SkipTutorialsValues[]{ 0, 1, 2 };
 static const wchar_t* const SkipTutorialsLabels[]{ L"Off", L"Pop-ups", L"Pop-ups and hints" };
 
-// Zero means every CPU, so it reads as a word rather than a number.
+// Zero means every CPU, so it gets a word rather than a number.
 static const int     CpuAffinityValues[]{ 0, 1, 2, 4, 6, 8, 12, 16 };
 static const wchar_t* const CpuAffinityLabels[]{ L"All CPUs", L"1", L"2", L"4", L"6", L"8", L"12", L"16" };
 
 // ------------------------------------------------------------------------------------------------
 // The sections, in the order the ini declares them.
 
-// Not const: the render resolution row's ends are settled against the window as the page opens.
+// Not const: the render resolution row's ends are settled against the window at page open.
 static MenuRow DisplayRows[]
 {
     Heading(L"DISPLAY"),
     Enumeration(L"Display Mode", PREF_DISPLAYMODE, "Display", "DisplayMode", DisplayModeValues, DisplayModeLabels),
-    // Built by hand rather than through Enumeration: the choices are filled in as the page opens,
-    // so the count is settled there and a helper's would be the array's capacity. It is also the
-    // one row that carries a second ini key, chosen by the same index.
+    // Built by hand rather than through Enumeration: the choices are filled in at page open, so the
+    // count is settled there (a helper's would be the array capacity). Also the one row carrying a
+    // second ini key, chosen by the same index.
     { ROW_ENUM, L"Render Resolution", PREF_INTERNALRESOLUTIONX, "Display", "InternalResolutionX",
       VALUE_INT, 0, 0, 1, 1.0f, nullptr, RenderChoiceX, RenderChoiceLabels, 0,
       PREF_INTERNALRESOLUTIONY, "InternalResolutionY", RenderChoiceY },
@@ -544,14 +533,13 @@ static const MenuRow GameplayRows[]
     Boolean(L"No Hit Indicator",  PREF_NOHITINDICATOR,   "Gameplay", "NoHitIndicator"),
 };
 
-// Hundredths and "%g", not whole degrees and the default "%d". A float row without a format takes
-// "%d" and hands it a double; the low thirty-two bits of a whole number of degrees as a double are
-// zero, so every step printed 0. Hundredths because the ini is free to hold 91.35. "%g" writes
-// 91.35 as "91.35" and 95 as "95".
+// Hundredths and "%g", not whole degrees and the default "%d": "%d" handed a double prints 0, since
+// the low 32 bits of a whole number of degrees as a double are zero. Hundredths because the ini may
+// hold 91.35; "%g" writes 91.35 as "91.35" and 95 as "95".
 //
-// Steps of five: ninety-five steps between 45 and 140 is not drivable with an arrow key. Both
-// clamps are multiples of five, and the step builder keeps the ini's own value wherever it falls,
-// so 91.35 sits between 90 and 95 and one press lands on the ladder.
+// Steps of five: 95 steps between 45 and 140 is not drivable with an arrow key. Both clamps are
+// multiples of five, and the step builder keeps the ini's own value wherever it falls, so 91.35
+// sits between 90 and 95 and one press lands on the ladder.
 static const MenuRow FieldOfViewRows[]
 {
     Heading(L"FIELD OF VIEW"),
@@ -606,21 +594,19 @@ static const MenuRow DebugRows[]
     Range  (L"Diamonds",            PREF_DEBUGDIAMONDS,         "Debug", "Diamonds", VALUE_INT, 0, 999, 25),
 };
 
-// The base is InternalResolutionX/Y read from the file rather than from what is in force, so a row
-// already moved this session does not become the base for the next percentage. An unset pair means
-// the window, measured rather than assumed: borderless makes the window and the video options
-// disagree.
+// The base is InternalResolutionX/Y read from the file, not from what is in force, so a row already
+// moved this session does not become the base for the next percentage. An unset pair means the
+// window, measured rather than assumed: borderless makes the window and the video options disagree.
 //
-// The list walks outwards from a hundred and stops at the first step outside the pixel limits.
-// Twenty per cent of 640x480 is a frame the engine will not take, and two hundred per cent of
-// 15360x8640 is a render target D3D9 cannot describe. A hundred is always offered.
+// The list walks outwards from 100 and stops at the first step outside the pixel limits (20% of
+// 640x480 is a frame the engine refuses; 200% of 15360x8640 exceeds D3D9). 100 is always offered.
 static void SettleRenderResolutionChoices()
 {
     auto nBaseW = JackalFixSettings.GetFileInt(PREF_INTERNALRESOLUTIONX);
     auto nBaseH = JackalFixSettings.GetFileInt(PREF_INTERNALRESOLUTIONY);
 
-    // A hundred per cent of the window is written back as unset rather than as the pixel count, so
-    // the pair keeps meaning "follow the window".
+    // 100% of the window is written back as unset, not as a pixel count, so the pair keeps meaning
+    // "follow the window".
     const auto bWindowBase = nBaseW <= 0 || nBaseH <= 0;
 
     if (bWindowBase)
@@ -649,7 +635,7 @@ static void SettleRenderResolutionChoices()
 
     nRenderChoices = 0;
 
-    // Even pixels. The engine's own half resolution passes trip over an odd render target.
+    // Even pixels: the engine's half resolution passes trip over an odd render target.
     auto Pixels = [](int nBase, int nPercent) { return (nBase * nPercent + 50) / 100 & ~1; };
 
     auto Fits = [&](int nPercent)
@@ -676,7 +662,7 @@ static void SettleRenderResolutionChoices()
         nHighest = nPercent;
     }
 
-    // Exactly sixteen by nine, whichever of the two the base came from.
+    // Exactly 16:9.
     if (nBaseW * 9 == nBaseH * 16 && nRenderChoices < nMaxRenderChoices)
     {
         RenderChoiceX[nRenderChoices] = nConsoleWidth;
@@ -729,11 +715,9 @@ static const MenuSection MenuSections[]
 };
 
 // ------------------------------------------------------------------------------------------------
-// What the mod ships with, and what DEFAULT restores. These are the values in the ini as
-// distributed, not whatever the file holds now, or the button would mean nothing.
-//
-// In the units the row works in, so a float carried in fixed point is written scaled: a saturation
-// of 0.5 at a scale of a hundred is fifty.
+// What DEFAULT restores: the values in the ini as distributed, not whatever the file holds now.
+// In the units the row works in, so a fixed-point float is written scaled (saturation 0.5 at scale
+// 100 is 50).
 
 struct PrefDefault
 {
@@ -803,12 +787,10 @@ static const PrefDefault PrefDefaults[]
 // ------------------------------------------------------------------------------------------------
 // The slot plan.
 //
-// Every declared row gets a slot, and slot S is drawn on line S modulo the number of lines. Built
-// once: a row takes the next slot whose line can carry it, blanks fill anything skipped, and a
-// heading is pushed to the next page rather than left stranded on the last line of one. Scrolling
-// then picks which run of slots to hand the engine.
-//
-// Bounded by the declarations above rather than by anything at runtime.
+// Every declared row gets a slot; slot S is drawn on line S modulo the line count. Built once: a
+// row takes the next slot whose line can carry it, blanks fill anything skipped, and a heading is
+// pushed to the next page rather than stranded on the last line of one. Scrolling then picks which
+// run of slots to hand the engine. Bounded by the declarations above, not by anything at runtime.
 static constexpr size_t nMaxSlots = 256;
 
 // One entry per slot, null for a blank.
@@ -817,7 +799,7 @@ static size_t   nSlots = 0;
 static size_t   nPages = 0;
 
 // One entry per slot, holding the value chosen but not yet applied. A page turn destroys the
-// controls, so a value living only in a control is lost the moment the next page is drawn.
+// controls, so a value living only in a control would be lost when the next page is drawn.
 static int  PendingValues[nMaxSlots]{};
 static bool bPendingValid = false;
 
@@ -826,7 +808,7 @@ static bool IsUsableLine(size_t nSlot)
     return RowLines[nSlot % nRowLines].bUsable;
 }
 
-// Without one usable line the search below fills the plan with blanks and nPages divides by zero.
+// Without a usable line the search below fills the plan with blanks and nPages divides by zero.
 static bool AnyUsableLine()
 {
     for (size_t i = 0; i < nRowLines; i++)
@@ -848,8 +830,8 @@ static void PlanSlots()
             continue;
 
         // A heading is worth a line only if its first row can follow it on the same page. Only the
-        // first is asked about: a section longer than a page runs over regardless, and requiring
-        // all of it to fit would push the heading down for ever.
+        // first: a section longer than a page runs over anyway, and requiring all of it to fit
+        // would push the heading down forever.
         size_t nHeading = nSlots;
         if (section.nRows > 1)
         {

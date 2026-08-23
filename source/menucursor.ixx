@@ -7,8 +7,8 @@ export module menucursor;
 import common;
 import dunia;
 
-// Mouse cursor movement goes through the gamepad stick path and inherits its per-frame rounding.
-// Keep the remainder so small mouse movements are not lost.
+// Cursor movement inherits the gamepad stick path's per-frame rounding; carry the remainder or
+// small movements are lost.
 
 static float fResidualX = 0.0f;
 static float fResidualY = 0.0f;

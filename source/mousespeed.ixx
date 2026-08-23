@@ -8,8 +8,7 @@ import common;
 import dunia;
 import settings;
 
-// CActionMapCurveFilter caps mouse output at maxOutput. Restoring Dunia's default sentinel removes
-// the cap without affecting the response curve.
+// CActionMapCurveFilter caps mouse output at maxOutput; Dunia's default sentinel lifts the cap.
 static constexpr float fNoCap = 1000000.0f;
 static constexpr uint32_t nMouseFilterId = 0xDE7832DA; // written to filter+0x04 by the ctor at 0x107D8B40
 
@@ -22,8 +21,7 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // Hooked after maxOutput is loaded, so the cap can be raised. The filter is shared
-            // with gamepads, so the input type is checked first.
+            // After maxOutput loads. The filter is shared with gamepads, so check the type.
             auto* pMaxOutput = dunia_find("F3 0F 10 4F 0C F3 0F 5E C2 F3 0F 59 47 10 F3 0F 59 C4 0F 28 F8 0F 54 FD 0F 2F F9 76", 5);
             if (!pMaxOutput)
                 return;

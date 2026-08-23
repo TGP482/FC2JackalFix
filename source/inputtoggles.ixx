@@ -9,24 +9,12 @@ import dunia;
 import settings;
 import inputdevice;
 
-// Aim down sights and sprint are hold-the-button in stock Far Cry 2. The movement controller's
-// action dispatcher gets separate actions for the button going down and coming back up:
+// Aim and sprint are hold-to-use in stock. Separate down/up actions set and clear bits in
+// byte [state+0x04]: ironsight 0x08, sprint 0x40 (sprint up also ends the run). Nothing else
+// touches those bits, so a toggle just swallows the "up" action after a tap.
 //
-//   ironsight down  OR  byte [state+0x04], 0x08
-//   ironsight up    AND byte [state+0x04], 0xF7
-//   sprint down     OR  byte [state+0x04], 0x40
-//   sprint up       AND byte [state+0x04], 0xBF  and end the run
-//
-// Nothing else in the pawn state touches those bits, so a toggle is just swallowing the "up"
-// action when the press was short enough to count as a tap.
-//
-// State block hangs off pawn+0x10:
-//
-//   +0x140  input state    flags byte at +0x04: 0x08 ironsight, 0x40 sprint requested
-//   +0x2D0  current state  flags byte at +0x04: 0x40 actually sprinting
-//
-// The request bit is cleared by the movement update every frame; a run already under way is
-// carried by the current-state bit, which the engine drops whenever the run ends.
+// State block at pawn+0x10: +0x140 input state (0x40 = sprint requested, cleared every frame),
+// +0x2D0 current state (0x40 = actually sprinting, carries a run already under way).
 static constexpr uintptr_t nControllerPawn = 0x20;
 static constexpr uintptr_t nPawnStateBlock = 0x10;
 
@@ -41,11 +29,10 @@ static bool bAimToggle = false;
 static bool bAimToggleController = false;
 static bool bSprintToggle = false;
 
-// A press shorter than this latches the toggle. Longer presses behave as stock.
+// Presses shorter than this latch the toggle.
 static constexpr uint64_t nTapTime = 250;
 
-// Sprint is keyboard only: the pad binds sprint to SprintLock instead of a press/release pair, so
-// it already toggles in the stock game. Aim is toggled on both devices.
+// Sprint is keyboard only: the pad binds SprintLock, which already toggles.
 struct ToggleState
 {
     bool bEngaged;
@@ -57,7 +44,6 @@ struct ToggleState
 static ToggleState AimState;
 static ToggleState SprintState;
 
-// Pawn state block from the movement controller. Every step can be null with no pawn.
 static uintptr_t StateBlock(uintptr_t nController)
 {
     if (nController == 0)
@@ -84,18 +70,17 @@ static void OnPress(ToggleState& state, bool bEnabled)
         return;
     }
 
-    // Unclear from the disassembly whether the action repeats while held, so ignore repeats.
     if (state.bPressActive)
         return;
 
     state.bPressActive = true;
     state.nPressTime = GetTickCount64();
 
-    // A press while latched always drops the toggle, tap or hold, so decide it here.
+    // A press while latched drops the toggle, tap or hold.
     state.bPressedWhileEngaged = state.bEngaged;
 }
 
-// Returns true when the engine's "button came up" handling should be skipped.
+// True to skip the engine's button-up handling.
 static bool OnRelease(ToggleState& state, bool bEnabled, bool bMayLatch)
 {
     if (!bEnabled)
@@ -104,7 +89,7 @@ static bool OnRelease(ToggleState& state, bool bEnabled, bool bMayLatch)
         return false;
     }
 
-    // A release with no press behind it is a repeat. Keep swallowing it while latched.
+    // Release with no press is a repeat; keep swallowing while latched.
     if (!state.bPressActive)
         return state.bEngaged;
 
@@ -132,11 +117,7 @@ public:
             BindBool(bSprintToggle, PREF_SPRINTTOGGLE);
             BindBool(bAimToggleController, PREF_AIMTOGGLECONTROLLER);
 
-            // Button down. ECX already holds the pawn, left there by the dispatcher's own guard.
-            //
-            // 101448A1  CMP   EAX,[0x10F93A94]          ; ironsight down
-            // 101448A9  CALL  0x1007E1B0                <- hook
-            // 101448AE  OR    byte ptr [EAX+0x4],0x8
+            // Ironsight down: 101448A9 CALL 0x1007E1B0, before OR byte [EAX+0x4],0x8.
             if (auto* pAimPress = dunia_find("E8 ? ? ? ? 80 48 04 08 5F 5E 83 C4 10 C2 08 00"))
             {
                 static auto AimPressHook = safetyhook::create_mid(pAimPress, [](SafetyHookContext&)
@@ -145,12 +126,8 @@ public:
                 });
             }
 
-            // Button up. Skipping to the epilogue leaves the ironsight bit set.
-            //
-            // 1014492D  CMP   EAX,[0x10F93A98]          ; ironsight up
-            // 10144935  CALL  0x1007E1B0                <- hook
-            // 1014493A  AND   byte ptr [EAX+0x4],0xF7
-            // 1014493E  POP   EDI                       <- join
+            // Ironsight up: 10144935 CALL 0x1007E1B0. The join at 1014493E skips
+            // AND byte [EAX+0x4],0xF7, leaving the bit set.
             auto aimReleasePattern = dunia_pattern("75 11 E8 ? ? ? ? 80 60 04 F7 5F 5E 83 C4 10 C2 08 00");
             if (!aimReleasePattern.empty())
             {
@@ -165,9 +142,8 @@ public:
                 });
             }
 
-            // 101447B5  CMP   EAX,[0x10F93A74]          ; sprint lock, shares the code below
-            // 101447C1  CALL  0x1007E1B0                <- hook, also reached for [0x10F93A70]
-            // 101447C6  OR    byte ptr [EAX+0x4],0x40
+            // Sprint down: 101447C1 CALL 0x1007E1B0, before OR byte [EAX+0x4],0x40. Reached
+            // for both [0x10F93A70] and the sprint lock action [0x10F93A74].
             if (auto* pSprintPress = dunia_find("E8 ? ? ? ? 80 48 04 40 5F 5E 83 C4 10 C2 08 00"))
             {
                 static auto SprintPressHook = safetyhook::create_mid(pSprintPress, [](SafetyHookContext&)
@@ -176,11 +152,8 @@ public:
                 });
             }
 
-            // 101447D2  CMP   EAX,[0x10F93A78]          ; sprint up
-            // 101447DA  CALL  0x1007E1B0                <- hook
-            // 101447DF  AND   byte ptr [EAX+0x4],0xBF
-            // 101447E5  CALL  0x10143650                ; end the run
-            // 101447EA  POP   EDI                       <- join
+            // Sprint up: 101447DA CALL 0x1007E1B0. The join at 101447EA skips
+            // AND byte [EAX+0x4],0xBF and the end-of-run call 0x10143650.
             auto sprintReleasePattern = dunia_pattern("75 18 E8 ? ? ? ? 80 60 04 BF 8B CE E8 ? ? ? ? 5F 5E 83 C4 10 C2 08 00");
             if (!sprintReleasePattern.empty())
             {
@@ -188,8 +161,7 @@ public:
 
                 static auto SprintReleaseHook = safetyhook::create_mid(sprintReleasePattern.get_first(2), [](SafetyHookContext& regs)
                 {
-                    // Only latch a run that is actually happening. Tapping while standing still
-                    // would arm a sprint that starts on the next step and never ends.
+                    // Tapping while standing still would arm a sprint that never ends.
                     auto nBlock = StateBlock(regs.esi);
                     auto bSprinting = nBlock != 0
                         && (*(uint8_t*)(nBlock + nCurrentState + nStateFlags) & nSprintFlag) != 0;
@@ -201,13 +173,9 @@ public:
                 });
             }
 
-            // Once a frame the controller drops the state for any action no longer in the action
-            // map on the stack, which is how the sights come down on entering a vehicle or menu.
-            // Nothing is suppressed here; it just notices the engine ended the state itself.
-            //
-            // 10143B40  TEST  AL,AL                     <- hook, AL = action is bound in this map
-            // 10143B44  MOV   ECX,[ESI+0x20]
-            // 10143B4C  AND   byte ptr [EAX+0x4],0xF7
+            // Once a frame the controller drops state for actions no longer in the action map,
+            // which is how the sights come down on entering a vehicle or menu. Nothing is
+            // suppressed here. Hook at 10143B40 TEST AL,AL; AL = action bound in this map.
             if (auto* pAimScope = dunia_find("84 C0 75 0C 8B 4E 20 E8 ? ? ? ? 80 60 04 F7"))
             {
                 static auto AimScopeHook = safetyhook::create_mid(pAimScope, [](SafetyHookContext& regs)
@@ -234,7 +202,7 @@ public:
 
                     auto nBlock = StateBlock(regs.esi);
 
-                    // The run ended on its own terms. Sprinting again takes another tap.
+                    // The run ended on its own; sprinting again takes another tap.
                     if ((regs.eax & 0xFF) == 0 || nBlock == 0
                         || (*(uint8_t*)(nBlock + nCurrentState + nStateFlags) & nSprintFlag) == 0)
                     {

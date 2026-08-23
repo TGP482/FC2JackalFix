@@ -6,8 +6,7 @@ export module dunia;
 
 import common;
 
-// FarCry2.exe is a 28KB stub that only calls Dunia.dll's RunGame export, so patterns scan
-// Dunia's image instead of the main module.
+// FarCry2.exe is a stub calling Dunia.dll's RunGame, so patterns scan Dunia's image.
 export HMODULE hDunia = nullptr;
 
 export hook::pattern dunia_pattern(std::string_view bytes)
@@ -15,8 +14,7 @@ export hook::pattern dunia_pattern(std::string_view bytes)
     return hook::module_pattern(hDunia, bytes);
 }
 
-// The whole "match, test for empty, take the first hit at an offset" dance in one call. Null when
-// the pattern does not resolve, so a module reads as `if (auto* p = dunia_find(...))`.
+// Null when the pattern misses.
 export void* dunia_find(std::string_view bytes, ptrdiff_t offset = 0)
 {
     auto pattern = dunia_pattern(bytes);

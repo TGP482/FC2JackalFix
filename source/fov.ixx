@@ -14,8 +14,8 @@ import common;
 import dunia;
 import settings;
 
-// The camera controller stores base FOV at +0x70. Replacing the setter value changes world FOV
-// while leaving weapon aiming FOV untouched.
+// Camera controller stores base FOV at +0x70. Replacing the setter value changes world FOV only,
+// not weapon aiming FOV.
 static constexpr float fPi = 3.14159265f;
 
 static float fFieldOfView = 75.0f;
@@ -23,22 +23,20 @@ static float fViewmodelFieldOfView = 75.0f;
 static float fIronsightFieldOfView = 0.0f;
 static float fVehicleFieldOfView = 0.0f;
 
-// Cutscenes, ladders and hang gliders break above the stock 75: the cinematic camera reframes its
-// shots, and the ladder and glider poses show the edges of the first person body. An Almost
-// Complete Guide to Far Cry 2 Modding drops the paraglider from 90 to 81 for the same seams. 45 is
-// the floor FieldOfView itself clamps to.
+// Cutscenes, ladders and gliders break above the stock 75: the cinematic camera reframes shots,
+// and the ladder and glider poses show the edges of the first person body. 45 is the floor
+// FieldOfView itself clamps to.
 static constexpr float fFieldOfViewFloor = 45.0f;
 
-// Hang gliders. Everything here is measured before the engine's Hor+ stretch, so this renders as
-// 91.31 on a 16:9 display and is vanilla widescreen framing.
+// Hang gliders. Measured before the engine's Hor+ stretch, so this renders as 91.31 on 16:9.
 static constexpr float fGliderFieldOfViewMax = 75.0f;
 
-// Cutscenes and ladders. 59.85 comes back out at 75 after the stretch, which is what a 4:3 player
-// sees in stock, the stretch being identity at 4:3 where 0.75 * aspect is exactly 1.
+// Cutscenes and ladders. 59.85 comes back out at 75 after the stretch (identity at 4:3, where
+// 0.75 * aspect is 1), which is what a 4:3 player sees in stock.
 //
-// Both take the same ceiling. Mounting a ladder takes control away from the player, so the pawn
-// sits in a scene context for the mount animation; on separate ceilings the view pulled in to
-// 59.85 for the mount and opened back out to 75 for the climb. Split them here if that changes.
+// Both share one ceiling: a ladder mount takes control away, so the pawn sits in a scene context
+// for the mount animation, and separate ceilings made the view pull to 59.85 for the mount and
+// open back to 75 for the climb. Split here if that changes.
 static constexpr float fNarrowFieldOfViewMax = 59.85f;
 
 static float fGliderFieldOfView = fGliderFieldOfViewMax;
@@ -49,79 +47,73 @@ static float DegreesToRadians(float fDegrees)
     return fDegrees * (fPi / 180.0f);
 }
 
-// Narrows only, so a value the game or another setting already put below the cap survives.
-// Spelled out rather than std::min, which Windows.h's min macro breaks.
+// Narrows only, so a value already below the cap survives. Spelled out rather than std::min,
+// which Windows.h's min macro breaks.
 static void NarrowFieldOfView(float* pFov, float fCap)
 {
     if (*pFov > fCap)
         *pFov = fCap;
 }
 
-// Partway to the same cap, for a clamp that has to arrive over several frames.
+// Partway to the cap, for a clamp that has to arrive over several frames.
 static void BlendFieldOfView(float* pFov, float fCap, float fWeight)
 {
     if (*pFov > fCap)
         *pFov += (fCap - *pFov) * fWeight;
 }
 
-// CCameraBoneComponent::Update is handed the secondary base pointer, four bytes into the object,
-// so the component's own fFOV (+0x70, radians) is reached at +0x6C and its Cinematic flag
-// (+0x90) at +0x8C.
+// CCameraBoneComponent::Update gets the secondary base, four bytes into the object, so fFOV
+// (+0x70, radians) is reached at +0x6C and the Cinematic flag (+0x90) at +0x8C.
 static constexpr uintptr_t nBoneCameraFieldOfView = 0x6C;
 
-// The live camera state CCameraPawnComponent::Update fills in. +0x28 is the world FOV and +0x30
-// the first person model FOV, both radians, both still untransformed at the hook below.
+// The live camera state CCameraPawnComponent::Update fills in. +0x28 world FOV, +0x30 first
+// person model FOV, both radians, both untransformed at the hook below.
 //
-// FUN_10451ae0 fetches this 0x84 block copy on write: with the dirty bit set it takes a different
-// block off a free list or allocates one. Its address changes between frames, so nothing may be
-// keyed on it.
+// FUN_10451ae0 fetches this 0x84 block copy on write, so its address changes between frames and
+// nothing may be keyed on it.
 static constexpr uintptr_t nCameraStateFieldOfView = 0x28;
 static constexpr uintptr_t nCameraStateViewmodelFieldOfView = 0x30;
 
 // Active, CCameraComponent +0x10, reached from the secondary base the update is handed.
 static constexpr uintptr_t nCameraActive = 0x0C;
 
-// The frame delta is the update's own first argument, which it passes straight through to the
-// base update four instructions past the hook.
+// Frame delta: the update's first argument, passed through to the base update four instructions
+// past the hook.
 static constexpr uintptr_t nCameraDeltaTime = 0x08;
 
-// Roughly the mount animation, so the clamp arrives over it instead of snapping on the frame the
+// Roughly the mount animation length, so the clamp arrives over it instead of snapping when the
 // beautifier context changes.
 static constexpr float fNarrowBlendSeconds = 0.35f;
 
-// A frame delta past this is a load or a hitch. Stepping the blend by one would be the snap the
+// A frame delta past this is a load or a hitch; stepping the blend by one would be the snap the
 // blend exists to avoid.
 static constexpr float fNarrowBlendMaxStep = 0.1f;
 
-// Both only ever touched from the first person camera update, so no atomics.
+// Only touched from the first person camera update, so no atomics.
 //
-// Keyed on the component, never on the camera state. Keyed on the state the owner test passes
-// only on the frames the pool happens to reuse the buffer, so the clamp applies on some frames
-// and not others and the FOV strobes.
+// Keyed on the component, never on the camera state: keyed on the state, the owner test passes
+// only on frames the pool happens to reuse the buffer, so the FOV strobes.
 static float fNarrowBlend = 0.0f;
 static uintptr_t nNarrowBlendCamera = 0;
 
-// Held rather than re-read on the way out, or the context clearing at the end of a scene would
-// swap the cutscene ceiling for the wider one mid blend and pop before the blend ever finished.
+// Held rather than re-read on the way out, or the context clearing at the end of a scene swaps
+// the cutscene ceiling for the wider one mid blend and pops.
 static float fNarrowBlendCap = fNarrowFieldOfViewMax;
 
-// CPawnBeautifierComponent. ContextBeautifier is the instance picked for the pawn's current
-// context.
+// CPawnBeautifierComponent. ContextBeautifier: the instance picked for the pawn's current context.
 static constexpr uintptr_t nContextBeautifier = 0x28;
 
-// TypeBeautifier is the player/AI half of the pair: AI pawns carry CPawnBeautifierAI and the
-// player CPawnBeautifierPlayer. That separates the local player from the dozen other pawns
-// updating on the same frame.
+// TypeBeautifier: the player/AI half. AI pawns carry CPawnBeautifierAI, the player
+// CPawnBeautifierPlayer, which separates the local player from the other pawns updating this frame.
 static constexpr uintptr_t nTypeBeautifier = 0x2C;
 
-// What a beautifier instance means here. The context half names the situation and the type half
+// What a beautifier instance means here: the context half names the situation, the type half
 // names whose pawn it is, so one classifier covers both.
 //
-// The in engine scenes that keep the player in first person leave the ordinary
-// CCameraPawnComponent driving the view, so CCameraBoneComponent::Update is never reached and the
-// cutscene hook below cannot see them. Through those the player's context reads
-// CPawnBeautifierDominoPlayer, including with the script's own cinematic UI bracket up.
-// CinematicFirst and FirstNoControl are the other two non-gameplay first person contexts.
+// In engine scenes that keep the player in first person leave the ordinary CCameraPawnComponent
+// driving the view, so CCameraBoneComponent::Update is never reached and the cutscene hook below
+// cannot see them. There the player's context reads CPawnBeautifierDominoPlayer. CinematicFirst
+// and FirstNoControl are the other two non-gameplay first person contexts.
 enum BeautifierKind : uint32_t
 {
     KIND_OTHER = 0,
@@ -138,43 +130,38 @@ enum NarrowContext : uint32_t
     NARROW_LADDER,
     NARROW_CUTSCENE,
 
-    // Vehicle repairs and machete interrogations. Framed like a cutscene, so they take the same
-    // ceiling and the same near pass rule, but the player's own arms and tool are still the
-    // subject of the shot rather than something the scene has taken away, so the first person
-    // layer stays with them. See InScriptedPose.
+    // Vehicle repairs and machete interrogations. Framed like a cutscene, so same ceiling and
+    // near pass rule, but the player's arms and tool are still the subject of the shot, so the
+    // first person layer stays with them. See InScriptedPose.
     NARROW_POSE,
 };
 
-// CVehicle. sName and the paraglider hash are the same pair glider.ixx uses; fFOVAngle sits in
-// the FOV block registered by FUN_100dea10 (fFOVTransitionTime +0x230, fFOVAngle +0x234,
+// CVehicle. sName and the paraglider hash are the pair glider.ixx uses; fFOVAngle sits in the FOV
+// block registered by FUN_100dea10 (fFOVTransitionTime +0x230, fFOVAngle +0x234,
 // archFOVCurveName +0x238).
 static constexpr uintptr_t nVehicleName = 0x00;
 static constexpr uintptr_t nVehicleFieldOfViewAngle = 0x234;
 static constexpr uint32_t nVehicleNameParaglider = 0x7B2D589C;
 
 // Set only from the pawn whose TypeBeautifier is CPawnBeautifierPlayer, so an AI on a ladder or
-// in a scene of its own cannot narrow the player's view. Matching the camera's target pointer
-// against the beautifier's pawn does not work: they are different objects on different entities
-// and their entity ids differ.
+// in its own scene cannot narrow the player's view. Matching the camera's target pointer against
+// the beautifier's pawn does not work: different objects on different entities, differing ids.
 //
-// Stamped every frame and read with an expiry, rather than latched. Written from the reselect the
-// beautifier update calls, it only updates when the pawn's context changes, and quickloading out
-// of a scene destroys the pawn holding the context with no transition to clear it. The clamp then
-// stays on for the rest of the session with FieldOfView doing nothing. On an expiry, anything
-// that stops the player's beautifier ticking releases it.
+// Stamped every frame and read with an expiry rather than latched: written from the reselect,
+// it only updates when the context changes, and quickloading out of a scene destroys the pawn
+// holding the context with no transition to clear it, leaving the clamp on for the session.
 static std::atomic<uint32_t> nNarrowContext = NARROW_NONE;
 static std::atomic<uint32_t> nNarrowStamp = 0;
 
-// Long enough to ride out a stutter, short enough that a load releases the clamp before the
-// player has a frame to look at.
+// Long enough to ride out a stutter, short enough that a load releases the clamp unseen.
 static constexpr uint32_t nNarrowFreshnessMs = 250;
 
 // Whether the near pass follows the camera outright this frame. Published by the pawn camera hook,
-// which is the only place that knows whether the clamp is being applied; see NearPassFieldOfView.
+// the only place that knows whether the clamp is being applied; see NearPassFieldOfView.
 static std::atomic<bool> bNearPassFollowsCamera = false;
 
-// CPawnFOV+0x34, the vehicle channel weight, sampled once a frame off the blend. Nought on foot,
-// one in a seat, and the engine's own answer to whether a vehicle drives the field of view.
+// CPawnFOV+0x34, the vehicle channel weight, sampled once a frame off the blend. Zero on foot,
+// one in a seat: the engine's own answer to whether a vehicle drives the FOV.
 static std::atomic<float> fVehicleFovWeight = 0.0f;
 
 static bool VehicleOwnsFieldOfView()
@@ -195,11 +182,11 @@ static bool NarrowStateIsStale()
 // (vtable 0x10E70A70 slot 1 -> 0x10050690 -> "CCameraComponent"), CCameraBoneComponent and
 // CCameraPawnComponent.
 //
-// Capturing each vtable from a function only that class reaches needs one exclusive entry point
-// per context, and only CPawnBeautifierLadder::OnActivate has one. CPawnBeautifierCinematicFirst
-// shares its base implementations. So the name is asked for, once per vtable rather than once per
-// frame, with every pointer on the way range and page checked. A class that does not follow the
-// convention gives a wrong answer rather than a fault.
+// Capturing each vtable from a class-exclusive function would need one exclusive entry point per
+// context, and only CPawnBeautifierLadder::OnActivate has one; CPawnBeautifierCinematicFirst
+// shares base implementations. So the name is asked for, once per vtable, with every pointer on
+// the way range and page checked, so a class breaking the convention gives a wrong answer rather
+// than a fault.
 
 static uintptr_t nDuniaBase = 0;
 static uintptr_t nDuniaEnd = 0;
@@ -267,8 +254,8 @@ static uint32_t KindOf(uintptr_t nInstance)
     if (nInstance == 0 || !Readable((const void*)nInstance, sizeof(void*)))
         return KIND_OTHER;
 
-    // A component whose instance has been freed still points at it, so the vtable read can be
-    // garbage. Refusing to cache those keeps a stale pointer from colliding with a real class.
+    // A component pointing at a freed instance can read garbage here. Refusing to cache those
+    // keeps a stale pointer from colliding with a real class.
     auto nVtable = *(uintptr_t*)nInstance;
     if (!InDunia((const void*)nVtable))
         return KIND_OTHER;
@@ -288,9 +275,9 @@ static uint32_t KindOf(uintptr_t nInstance)
         nKind = KIND_LADDER;
     else if (std::strcmp(szClass, "CPawnBeautifierDominoPlayer") == 0)
         nKind = KIND_CUTSCENE;
-    // Measured: entering a repair and entering an interrogation both put the player's context here
-    // one frame after the weapon's first person layer is taken away, and FirstNoControl is the
-    // outro of the same move. Ordinary gameplay is CPawnBeautifierFirst, which is KIND_OTHER.
+    // Measured: repairs and interrogations both put the player's context here one frame after the
+    // weapon's first person layer is taken away; FirstNoControl is the outro of the same move.
+    // Ordinary gameplay is CPawnBeautifierFirst, which is KIND_OTHER.
     else if (std::strcmp(szClass, "CPawnBeautifierCinematicFirst") == 0
           || std::strcmp(szClass, "CPawnBeautifierFirstNoControl") == 0)
         nKind = KIND_POSE;
@@ -325,30 +312,27 @@ static constexpr float fWidescreenStretch = 0.75f;
 
 // The near pass gets the camera's current FOV, which already includes ironsight zoom. Draw the
 // weapon at ViewmodelFieldOfView, and follow the camera once the camera is the narrower of the
-// two, which is aiming, a scope or the binoculars. Following it there keeps the sights lined up
-// with the world, and it arrives at IronsightFieldOfView by arithmetic, so it holds for a scope
-// and for the game's own per weapon values.
+// two (aiming, a scope, binoculars), which keeps the sights lined up with the world and arrives
+// at IronsightFieldOfView by arithmetic, so it holds for scopes and per weapon values too.
 //
-// A fixed widening ratio faded out over the top 15 percent of tangent space does not work. At a
-// wide FieldOfView that window is the first few degrees of the aim sweep: at FieldOfView 140 the
-// weapon went from 91.31 to 144.25 degrees within 7 percent of the transition and swept back
-// down, reading as FieldOfView overwriting ViewmodelFieldOfView. It also left the weapon unscaled
-// in vehicles, whose camera sits below the window whenever VehicleFieldOfView is under
-// FieldOfView.
-// How far the sights are up, sampled once a frame from the blend. Zero on foot with the weapon
-// down, one with the sights fully raised.
+// A fixed widening ratio faded out over the top 15 percent of tangent space does not work: at a
+// wide FieldOfView that window is the first few degrees of the aim sweep. At FieldOfView 140 the
+// weapon went 91.31 -> 144.25 degrees within 7 percent of the transition and swept back down. It
+// also left the weapon unscaled in vehicles, whose camera sits below the window whenever
+// VehicleFieldOfView is under FieldOfView.
+// How far the sights are up, sampled once a frame from the blend. Zero with the weapon down, one
+// with the sights fully raised.
 static std::atomic<float> fIronsightBlend = 0.0f;
 
 // How far the ladder or cutscene clamp has pulled the world in, in tangent space, and the ceiling
-// that clamp is heading for. One is nought when the other is.
+// that clamp is heading for. One is zero when the other is.
 //
-// The near pass FOV is an absolute number, ViewmodelFieldOfView, so on a ladder the weapon kept its
-// gameplay width while the world narrowed around it and the clamp read as never applying. Following
-// the camera instead is no better: it shows the world's FieldOfView rather than the setting, and it
-// cannot tell a ladder from a pair of sights, both leaving the camera under ViewmodelFieldOfView.
-// Scaling by the clamp keeps the weapon and the world at the same tangent ratio on a ladder as in
-// gameplay. The ceiling is the second half, for a ViewmodelFieldOfView wide enough that even the
-// scaled result would sit above the band the clamp exists to hold.
+// The near pass FOV is absolute (ViewmodelFieldOfView), so on a ladder the weapon kept its
+// gameplay width while the world narrowed around it. Following the camera instead is no better:
+// it shows the world's FieldOfView rather than the setting, and cannot tell a ladder from a pair
+// of sights. Scaling by the clamp keeps weapon and world at the same tangent ratio on a ladder as
+// in gameplay. The ceiling covers a ViewmodelFieldOfView wide enough that even the scaled result
+// would sit above the band the clamp holds.
 static std::atomic<float> fNarrowTangentScale = 1.0f;
 static std::atomic<float> fNarrowViewmodelCeiling = 0.0f;
 
@@ -368,8 +352,8 @@ static float ViewmodelScaleFor(float fovRad, float aspect)
                        * fNarrowTangentScale.load(std::memory_order_relaxed)
                        * fWidescreenStretch * aspect;
 
-    // The camera state is clamped before the widescreen stretch, so the ceiling is measured in the
-    // same place and takes the stretch here rather than carrying it.
+    // The camera state is clamped before the widescreen stretch, so the ceiling is measured there
+    // too and takes the stretch here rather than carrying it.
     auto fCeiling = fNarrowViewmodelCeiling.load(std::memory_order_relaxed);
     if (fCeiling > 0.0f)
     {
@@ -383,30 +367,27 @@ static float ViewmodelScaleFor(float fovRad, float aspect)
     if (fScale <= 1.0f)
         return fScale;
 
-    // Wider than the world, which is a setting the player is allowed to ask for. A Viewmodel FOV
-    // above Field of View pushes the gun away, and there is nothing wrong with that. A flat ceiling
-    // of one forbade it outright.
+    // Wider than the world is a setting the player is allowed to ask for: a Viewmodel FOV above
+    // Field of View pushes the gun away. A flat ceiling of one forbade it outright.
     //
-    // Except with the sights up. There the gun belongs where the sights put it, and the world FOV
-    // has already been pulled in to the ironsight FOV, so widening the near pass back out is
-    // exactly the thing that would hold the gun away from the eye. That case is what the ceiling
-    // was really for; it is kept, and only for as long as the sights are actually raised.
+    // Except with the sights up, where the gun belongs where the sights put it and the world FOV
+    // has already been pulled in to the ironsight FOV, so widening the near pass back out holds
+    // the gun away from the eye. The ceiling is kept only while the sights are raised.
     return fIronsightBlend.load(std::memory_order_relaxed) > 0.0f ? 1.0f : fScale;
 }
 
 // Only rewrite unmagnified sights, magnified optics use the same property.
 static constexpr float fMagnifiedOpticCutoff = 40.0f;
 
-// The weapon property object the ironsight FOV lives in, at the one place the game reads it.
+// The weapon property object's ironsight FOV, at the one place the game reads it.
 //
-// Radians, unlike the vehicle's, which is stored in degrees and converted by the seat on the way
-// out. Nothing converts on this path, the weapon setup copying the field straight into the pawn's
-// ironsight channel, so both ends of it are radians and the magnified-optic cutoff has to be
-// compared in degrees against the converted value rather than against the raw one.
+// Radians, unlike the vehicle's (degrees, converted by the seat). Nothing converts on this path,
+// the weapon setup copying the field straight into the pawn's ironsight channel, so the
+// magnified-optic cutoff must be compared in degrees against the converted value.
 static constexpr uintptr_t nWeaponIronsightFieldOfView = 0xE4;
 
 // Past the FLD and the FSTP that copy it into the channel, six bytes and three, so the hook lands
-// where the copy has happened and both registers are still the ones it used.
+// after the copy with both registers still the ones it used.
 static constexpr size_t nIronsightFovCopied = 9;
 
 static float RadiansToDegrees(float fRadians)
@@ -416,30 +397,28 @@ static float RadiansToDegrees(float fRadians)
 
 // The first person camera's own FOV, on the primary base.
 //
-// Not 6Ch. The bone camera's update is handed the secondary base, so its fFOV is reached at 6Ch and
-// the constant above says so. But CCameraPawnComponent::Update is handed the primary base, and
-// there 6Ch is a different field entirely: the first person model's FOV. Its else branch is the
-// proof, storing 104h into the world half of the camera state and 6Ch into the model half:
+// Not 6Ch: the bone camera's update gets the secondary base, so its fFOV is at 6Ch (constant
+// above), but CCameraPawnComponent::Update gets the primary base, where 6Ch is the first person
+// model's FOV. Its else branch stores 104h into the world half of the camera state and 6Ch into
+// the model half:
 //
 //     10694334  D9 87 04 01..   FLD  [EDI+0x104]    ; world
 //     1069433a  D9 5E 28        FSTP [ESI+0x28]
 //     1069433d  D9 47 6C        FLD  [EDI+0x6C]     ; first person model
 //     10694344  D9 5E 30        FSTP [ESI+0x30]
 //
-// Writing 6Ch there is writing the world FOV into the model's, which is what stopped Field of View
-// and Viewmodel FOV being independent of each other. 70h is the one the setter writes and the one
-// the blend below starts from.
+// Writing 6Ch there writes the world FOV into the model's, which is what stopped Field of View
+// and Viewmodel FOV being independent. 70h is what the setter writes and what the blend below
+// starts from.
 static constexpr uintptr_t nPawnCameraFieldOfView = 0x70;
 
 // ---------------------------------------------------------------------------------------------
 // The pawn's FOV channels.
 //
-// Ironsight FOV and Vehicle FOV are not read where they are set. Both are pushed into a CPawnFOV
-// struct, the weapon pushing its ironsight FOV when the weapon is set up and the seat pushing the
-// vehicle's when somebody gets in, and the engine blends from there. Overriding either push only
-// reaches the next weapon setup or the next time a seat is taken, which is what left
-// the ironsight setting doing nothing at all in a session and the vehicle setting waiting for the
-// player to get out and back in.
+// Ironsight FOV and Vehicle FOV are not read where they are set: both are pushed into a CPawnFOV
+// struct (the weapon at setup, the seat when somebody gets in) and the engine blends from there.
+// Overriding either push only reaches the next weapon setup or the next seat, which left the
+// ironsight setting doing nothing in a session and the vehicle setting waiting for a remount.
 //
 // The struct is two channel records of 0x1C bytes each, laid out
 //
@@ -452,31 +431,30 @@ static constexpr uintptr_t nPawnCameraFieldOfView = 0x70;
 //     +0x18  the transition curve
 //
 // with record A at 0x08 (ironsight, target at 0x1C, degrees) and record B at 0x24 (base, target at
-// 0x38, radians). Both boundaries are the constructor's own: it writes the same pointer to 0x08 and
+// 0x38, radians). Both boundaries are the constructor's: it writes the same pointer to 0x08 and
 // 0x24 and the same curve global to 0x20 and 0x3C, exactly 0x1C apart.
 //
-// So the values can be re-pushed from outside, which is what happens below: the same two writes
-// the seat makes, with a new number and at the moment the player asks for it.
+// So the values can be re-pushed from outside, which is what happens below: the seat's own two
+// writes, with a new number, when the player asks for it.
 static constexpr uintptr_t nPawnFovIronsightValue = 0x1C;   // radians
 
-// Record A's blend weight, the third field the blend reads: how far this channel has taken over,
-// nought to one. Read and never written, since it is the engine's own running state.
+// Record A's blend weight: how far this channel has taken over, zero to one. Read never written,
+// being the engine's own running state.
 static constexpr uintptr_t nPawnFovIronsightWeight = 0x18;
 static constexpr uintptr_t nPawnFovBaseValue      = 0x38;   // radians
 static constexpr uintptr_t nPawnFovBaseWeight     = 0x34;
 static constexpr uintptr_t nPawnFovBaseArmed      = 0x29;
 static constexpr size_t    nPawnFovSize           = 0x60;
 
-// Taken from the two places the engine hands the struct over. There is no path to it from a global,
-// so it is remembered rather than looked up, and checked against its own vtable before it is used
-// again, because the pawn that owns it does not survive a load.
+// Taken from the two places the engine hands the struct over. No path to it from a global, so it
+// is remembered rather than looked up, and checked against its vtable before reuse, since the
+// owning pawn does not survive a load.
 static std::atomic<uintptr_t> nPawnFieldOfView = 0;
 static std::atomic<uintptr_t> nPawnFieldOfViewVTable = 0;
 
 static void RememberPawnFieldOfView(uintptr_t nStruct)
 {
-    // Called once a frame from the blend, so the same pointer arriving again costs a compare rather
-    // than a page query.
+    // Called once a frame from the blend, so a repeat pointer costs a compare, not a page query.
     if (nStruct == 0 || nStruct == nPawnFieldOfView.load(std::memory_order_relaxed))
         return;
 
@@ -485,14 +463,14 @@ static void RememberPawnFieldOfView(uintptr_t nStruct)
 
     nPawnFieldOfView.store(nStruct, std::memory_order_relaxed);
 
-    // Learned from the first struct the engine hands over, which is one by construction, so no
-    // pattern has to be spent finding the class's vtable to recognise a later one.
+    // Learned from the first struct the engine hands over, so no pattern is spent finding the
+    // class's vtable to recognise a later one.
     if (nPawnFieldOfViewVTable.load(std::memory_order_relaxed) == 0)
         nPawnFieldOfViewVTable.store(*(uintptr_t*)nStruct, std::memory_order_relaxed);
 }
 
-// The struct as it stands, or nothing if the pawn that owned it has gone. A freed one either fails
-// the page test or no longer carries CPawnFOV's vtable.
+// The struct, or nothing if the owning pawn has gone: a freed one fails the page test or no
+// longer carries CPawnFOV's vtable.
 static uintptr_t LivePawnFieldOfView()
 {
     auto nStruct = nPawnFieldOfView.load(std::memory_order_relaxed);
@@ -504,37 +482,30 @@ static uintptr_t LivePawnFieldOfView()
     return *(uintptr_t*)nStruct == nVTable ? nStruct : 0;
 }
 
-// Re-pushes both channels with what the settings now say. The armed flags are what the seat sets
-// after it writes its value, so they are set the same way here, and only where they are already
-// set, so a player on foot is never handed a vehicle's FOV and the ironsight channel is only
-// restarted if something is already using it. The targets themselves are written either way, so the
-// next aim or the next seat reads the new number even when nothing is running now.
+// Re-pushes both channels from the settings. The armed flags are set the way the seat sets them,
+// and only where already set, so a player on foot is never handed a vehicle's FOV and the
+// ironsight channel is only restarted if something is using it. The targets are written either
+// way, so the next aim or seat reads the new number even when nothing is running now.
 /*
   Whether the weapon in the player's own hands is a magnified optic.
 
-  The cutoff was only ever applied on the weapon setup path, and there are two paths. The other one
-  is here: a change to the setting pushes straight into the pawn's channel so it takes hold without
-  waiting for the next weapon, and that push had no cutoff on it at all, so changing Ironsight FOV
-  while holding a scoped rifle wrote the ironsight number over the scope's own, which is exactly the
-  scope moving with the ironsight setting.
+  There are two paths and the cutoff was only applied on the weapon setup one. The other is the
+  push below, which writes straight into the pawn's channel with no cutoff, so changing Ironsight
+  FOV while holding a scoped rifle wrote the ironsight number over the scope's own.
 
-  The push cannot make the judgement itself: all it has is the channel, and the channel is the
-  thing being written, so a value already pushed would read back as a scope. The setup hook can,
-  because it is handed the weapon's own field and never touches it. So the answer is worked out
-  there, where it is a fact, and remembered for the push to use.
+  The push cannot judge it itself: all it has is the channel it is writing, so an already pushed
+  value reads back as a scope. The setup hook can, being handed the weapon's own field and never
+  touching it, so the answer is worked out there and remembered for the push.
 
-  The word "player's" is the rest of it. CWeapon's setup is not the player's alone: every pawn in
-  the level runs it, and a village full of AI runs it constantly. Answering the question from
-  whichever pawn happened to arm itself last means the flag reads "assault rifle" a second after
-  the player raised a scope, and the next push then writes the ironsight setting over the scope's
-  own FOV. That is the scope following the setting. It reads the other way round too: an AI drawing
-  a scoped rifle sets the flag and the player's ironsight setting stops applying until something
-  else moves it.
+  "Player's" matters: every pawn in the level runs CWeapon's setup, AI constantly. Answering from
+  whichever pawn armed itself last means the flag reads "assault rifle" a second after the player
+  raised a scope and the next push writes the ironsight setting over the scope's FOV; and an AI
+  drawing a scoped rifle sets the flag, stopping the player's ironsight setting from applying.
 */
 static std::atomic<bool> bIronsightIsMagnifiedOptic = false;
 
-// Which seat is in hand, for the push below. ApplySeatFieldOfView runs once when a seat is taken
-// and is the only place the paraglider is identified, so the answer is kept rather than re-derived.
+// Which seat is in hand, for the push below. ApplySeatFieldOfView runs once per seat taken and is
+// the only place the paraglider is identified, so the answer is kept.
 static std::atomic<bool> bSeatIsParaglider = false;
 
 static void PushPawnFieldOfView()
@@ -545,12 +516,11 @@ static void PushPawnFieldOfView()
 
     if (fIronsightFieldOfView > 0.0f && !bIronsightIsMagnifiedOptic.load(std::memory_order_relaxed))
     {
-        // Radians. This channel is a straight copy of the weapon's own field, which is radians, so
-        // writing degrees here is writing an FOV of about three and a half thousand degrees, which
-        // is what stopped the viewmodel matching the sights.
+        // Radians: this channel is a straight copy of the weapon's own radian field, so writing
+        // degrees means an FOV of about 3500 degrees, which stopped the viewmodel matching sights.
         //
-        // The armed flag is left as the engine has it: setting one that is already set is a no-op,
-        // and setting one that is clear would start a channel nothing asked for.
+        // The armed flag is left as the engine has it, since setting a clear one would start a
+        // channel nothing asked for.
         *(float*)(nStruct + nPawnFovIronsightValue) = DegreesToRadians(fIronsightFieldOfView);
     }
 
@@ -558,13 +528,12 @@ static void PushPawnFieldOfView()
         return;
 
     // The paraglider takes the glider ceiling, never VehicleFieldOfView. ApplySeatFieldOfView
-    // clamps the vehicle's own fFOVAngle at mount, which was the whole clamp until this push
-    // existed; the push writes the pawn channel the seat feeds and lands after it, so a live
-    // VehicleFieldOfView overwrote the clamped value and the glider ceiling stopped applying.
+    // clamps the vehicle's fFOVAngle at mount, but this push writes the pawn channel the seat
+    // feeds and lands after it, so a live VehicleFieldOfView overwrote the clamped value.
     //
-    // Written outright, not narrowed. fGliderFieldOfView is already clamp(FieldOfView, 45, 75), and
-    // narrowing only ever lowers the channel: once it sat at the ceiling, raising FieldOfView in
-    // the menu could not move it back up, since nothing rewrites the target mid flight.
+    // Written outright, not narrowed: fGliderFieldOfView is already clamp(FieldOfView, 45, 75),
+    // and narrowing only lowers the channel, so once at the ceiling, raising FieldOfView in the
+    // menu could not move it back up.
     if (bSeatIsParaglider.load(std::memory_order_relaxed) &&
         fVehicleFovWeight.load(std::memory_order_relaxed) > 0.0f)
     {
@@ -583,23 +552,22 @@ static void PushPawnFieldOfView()
 // ---------------------------------------------------------------------------------------------
 // Muzzle particles.
 //
-// The first person weapon draws with the near pass projection and ViewmodelFieldOfView. Its muzzle
-// flash and smoke draw with the world one. In stock the two FOVs are the same number so nothing
-// showed; setting them apart takes the weapon off the effects, by more the wider the gap.
+// The first person weapon draws with the near pass projection and ViewmodelFieldOfView; its muzzle
+// flash and smoke draw with the world one. In stock the two FOVs match, so setting them apart
+// takes the weapon off its effects, by more the wider the gap.
 //
-// The renderer already has the machinery. A particle takes a near bucket when the emitter's layer
+// The renderer already has the machinery: a particle takes a near bucket when the emitter's layer
 // mask intersects the render context's, tested in CSceneParticleEmitterRenderer::Render at
 // 0x103cbcfb and 0x103cbe55. The emitter's copy is refreshed every frame from the instance's
-// +0x1A4, which nothing writes but CParticlesSystemInstance::SetFirstPersonLayerMask, and only five
-// call sites reach that. The weapon's spawners are not among them, so a muzzle emitter keeps the
-// constructor's zero for the life of the process and buckets 4 and 0x24 are unreachable. Measured
-// in game: context mask 1, emitter mask 0, on every emitter in a session.
+// +0x1A4, which only CParticlesSystemInstance::SetFirstPersonLayerMask writes, from five call
+// sites. The weapon's spawners are not among them, so a muzzle emitter keeps the constructor's
+// zero for the life of the process. Measured in game: context mask 1, emitter mask 0, on every
+// emitter in a session.
 //
-// The spawners were found by census rather than by reading. Hooking Start and counting return
-// addresses named FUN_10111e40 and FUN_10111f80, which fire in equal bursts with the trigger.
-// CMuzzleFlashManager's own blocks were hooked first and measured never to run at all, and
-// FUN_1015b970 is a third block of the same shape whose bytes differ enough to miss a shared
-// pattern, so naming them one at a time was the wrong approach.
+// The spawners were found by census: hooking Start and counting return addresses named
+// FUN_10111e40 and FUN_10111f80, which fire in equal bursts with the trigger. CMuzzleFlashManager's
+// own blocks were measured never to run, and FUN_1015b970 is a third block of the same shape whose
+// bytes differ enough to miss a shared pattern.
 //
 // The anim notify spawner FUN_1013a800 has the sequence the weapon spawners are missing the middle
 // of:
@@ -610,10 +578,9 @@ static void PushPawnFieldOfView()
 //     1013aad2  E8 ? ? ? ?      CALL 0x1032f410        ; resolve the system handle
 //     1013aad9  E8 ? ? ? ?      CALL 0x1032ead0        ; SetFirstPersonLayerMask
 //
-// Reading the mask from the owner rather than deciding one here is what keeps this off everything
-// else. CGraphicComponent carries 1 on the first person weapon and 0 on every AI, so an AI's flash
-// is handed back the zero it already had. Nothing in the module identifies an emitter's owner at
-// render time, so overriding at the bucket test instead would have needed a rule of our own.
+// Reading the mask from the owner rather than deciding one here keeps this off everything else:
+// CGraphicComponent carries 1 on the first person weapon and 0 on every AI. Nothing identifies an
+// emitter's owner at render time, so overriding at the bucket test would need a rule of our own.
 static constexpr uintptr_t nGraphicFirstPersonMask = 0x12C;
 
 using tSetFirstPersonLayerMask = void (__thiscall*)(void*, uint32_t);
@@ -622,7 +589,7 @@ static tSetFirstPersonLayerMask SetFirstPersonLayerMask = nullptr;
 
 // EAX is the resolved CParticlesSystemInstance, one instruction before the Start that consumes it.
 // EBX is the owner's CGraphicComponent, which both spawners fetched for GetBoneMatrix and do not
-// touch again, so the mask is one read away and no walk from the entity is needed.
+// touch again, so the mask is one read away.
 static void MuzzleFirstPersonMask(SafetyHookContext& regs)
 {
     if (regs.eax == 0)
@@ -634,8 +601,7 @@ static void MuzzleFirstPersonMask(SafetyHookContext& regs)
 
     auto nMask = *(uint32_t*)((uintptr_t)pGraphic + nGraphicFirstPersonMask);
 
-    // Writing a zero would be writing back what the emitters already carry, so the third person
-    // and AI cases are left alone rather than walked.
+    // A zero is what the emitters already carry, so third person and AI are left alone.
     if (nMask == 0)
         return;
 
@@ -647,13 +613,13 @@ static void MuzzleFirstPersonMask(SafetyHookContext& regs)
 //
 // The engine takes the first person layer off the melee weapon for the length of a swing and gives
 // it back after, one off/on pair per swing, while the blade goes on being submitted half a unit
-// from the eye. In stock both passes share a field of view so the move costs nothing. Once
-// ViewmodelFieldOfView differs, the blade is detached and unscaled against the hand.
+// from the eye. In stock both passes share an FOV; once ViewmodelFieldOfView differs, the blade is
+// detached and unscaled against the hand.
 //
 // Both halves are the same instruction, the vtable +0x98 call at 0x10156D03 inside FUN_10156c20,
 // reached from one weapon state's vtable at 0x10E21E08: 0x10154DD0 hides and passes 0,
-// FUN_10154440 shows and passes 1. Neither the call site nor the frames above it separate a swing
-// from a swap. Timing does. Measured with a tick on every toggle:
+// FUN_10154440 shows and passes 1. Neither the call site nor the frames above separate a swing
+// from a swap; timing does. Measured with a tick on every toggle:
 //
 //     hide 78E84C40 -> show 78E84C40      swing, 1328 ms, nothing else shown between
 //     hide 78DE2670 -> show 78DE2670      weapon swap, 4563 ms
@@ -663,21 +629,20 @@ static void MuzzleFirstPersonMask(SafetyHookContext& regs)
 // scripted pose entered, fSwingMaxSeconds of gameplay elapsed. Withholding zeroes the mask
 // argument, leaving +0x130's bookkeeping to the engine.
 //
-// The owner came from a node to owner map built at FUN_10336b10, which every node passes whatever
-// mask it is given. FUN_1051cc90 is the wrong hook for that and the reason the owner read as
-// unrecoverable: the blade's component never reaches it.
+// The owner came from a node to owner map built at FUN_10336b10. FUN_1051cc90 is the wrong hook
+// for that, and why the owner read as unrecoverable: the blade's component never reaches it.
 //
 // Dead ends. Promoting nodes at the four layer tests, see the block above. Matching the weapon by
 // component pointer or entity id: the setup's holder and the graphic component sit on different
 // entities, B541842A80350200 against B5310F2300054100 in one equip. Pairing the setup with the
-// show: the machete's setup has no show near it and the next show is the end of a swing.
-// Withholding every hide: car, boat, glider and turret mounts hide the weapon through this same
-// call, and holding the layer through them drew the arms and the mounted weapon over the vehicle.
+// show: the machete's setup has no show near it and the next show ends a swing. Withholding every
+// hide: car, boat, glider and turret mounts hide the weapon through this same call, and holding
+// the layer through them drew the arms and the mounted weapon over the vehicle.
 static constexpr float fSwingMaxSeconds = 1.6f;
 
-// selWeaponClass, property record registered at 0x100F5149 with field offset 0x40. Class 0 is every
-// HandToHand archetype. Not sufficient on its own, since mounting with the machete in hand runs no
-// setup and the class still reads melee, but it keeps every hide made with a gun in hand out.
+// selWeaponClass, property record registered at 0x100F5149, field offset 0x40. Class 0 is every
+// HandToHand archetype. Not sufficient alone, since mounting with the machete in hand runs no
+// setup and the class still reads melee, but it keeps out every hide made with a gun in hand.
 static constexpr uintptr_t nWeaponClass = 0x40;
 static constexpr uint32_t nWeaponClassMelee = 0;
 

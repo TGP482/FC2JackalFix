@@ -1,40 +1,40 @@
 /*
-  Debug and testing aids. Offsets, patterns and the reasons a given approach was rejected live
-  inline with each hook; this is the map.
+  Debug and testing aids. Offsets, patterns and rejected-approach reasons live inline with each hook.
 
-  GameProfile   Four dwords on the settings object, registered from defaultgameconfig.xml, each
-                tested by its consumer with nothing in front of it. No build flag, no master gate.
-                GodMode +0x94, UnlimitedAmmo +0x98, UnlimitedReliability +0x9C, AllWeaponsUnlock
-                +0xA0. Writing them is what -GameProfile_GodMode 1 does.
+  GameProfile   Four dwords on the settings object from defaultgameconfig.xml, each tested with no
+                gate: GodMode +0x94, UnlimitedAmmo +0x98, UnlimitedReliability +0x9C,
+                AllWeaponsUnlock +0xA0.
 
-  Syringes      The item decrementer is shared by ammo, throwables and syringes, and returns early
-                on UnlimitedAmmo, so Infinite Ammo took healing with it. The flag is cleared for the
-                duration of a call from one of the three syringe sites, leaving the rest infinite.
+  Syringes      The item decrementer is shared by ammo/throwables/syringes and returns early on
+                UnlimitedAmmo, so Infinite Ammo took healing with it. The flag is cleared for the
+                duration of a syringe-site call, leaving the rest infinite.
 
   Health floor  GodMode blocks negative health deltas and skips the health-failure branch but
-                restores nothing, so a player already below the failure threshold when it goes on
-                has no bleed-out, no death and no regen. The module lifts them back out. Read
-                out of the health tick's two invulnerability gates, not reproduced in game.
+                restores nothing, so a player below the failure threshold when it goes on has no
+                bleed-out, death or regen. Read from the health tick's two invulnerability gates.
 
   Vehicles      No vehicle damage path reads GodMode, so the player's vehicle takes two hooks on
                 CVehiclePhysComponent. Drowning, scripted destruction and the damage-state override
                 at +0x107/+0x108 bypass the damage model and are not covered.
 
   Weapons       AllWeaponsUnlock only bypasses the per-weapon unlock list. The other map's weapons
-                are hidden by the two act gates ahead of it in CWeaponBazaar::IsWeaponUnlocked,
-                which are patched out separately.
+                are hidden by two act gates ahead of it in CWeaponBazaar::IsWeaponUnlocked, patched
+                out separately.
 
-  Diamonds      One int32 at CEconomyComponent+0x10, serialised through the generic int32 property
-                visitor. Real progress is always live - nGranted, and the save hook subtracts the
-                grant for the duration of the visitor call, so a grant never reaches the disc.
+  Diamonds      One int32 at CEconomyComponent+0x10 via the generic int32 property visitor. The save
+                hook subtracts the grant for the visitor call so a grant never reaches the disc;
+                real progress stays live in nGranted.
 
-  Freecam       cameras.Camera.Free, a self contained fly camera in the retail entity library,
-                gated on nothing.
+  Freecam       cameras.Camera.Free, a self-contained fly camera in the retail entity library, gated
+                on nothing.
 
   Noclip        Built on the gameplay camera, not cameras.Camera.Ghost: the ghost drives the
-                player's transform after the animation pass that places the arms, leaving the
-                viewmodel a frame behind. Here the camera is left alone and the player moved
-                underneath it, so HUD, aiming, weapons and viewmodel stay stock.
+                transform after the arms animation pass, leaving the viewmodel a frame behind. Here
+                the camera is left alone and the player moved under it, so HUD/aim/weapons/viewmodel
+                stay stock.
+
+  The clock     Mid hook on CPawnInputListener::Update, past its gameplay-input-enabled check, so
+                menus and cutscenes take the debug keys too.
 */
 
 module;
@@ -56,18 +56,18 @@ import settings;
 import inputdevice;
 
 // ------------------------------------------------------------------------------------------------
-// GameProfile object, at the offsets the settings registry publishes for each name.
+// GameProfile object, at the offsets the settings registry publishes per name.
 
 static constexpr ptrdiff_t nProfileGodMode = 0x94;
 static constexpr ptrdiff_t nProfileUnlimitedAmmo = 0x98;
 static constexpr ptrdiff_t nProfileAllWeaponsUnlock = 0xA0;
 
-// Several consumers compare the field unsigned, so a negative value would read as false.
+// Consumers compare unsigned, so a negative value reads as false.
 static constexpr int32_t nCheatOn = 1;
 static constexpr int32_t nCheatOff = 0;
 
 // ------------------------------------------------------------------------------------------------
-// CEconomyComponent, and the property descriptors that serialise the diamond count.
+// CEconomyComponent and the property descriptors that serialise the diamond count.
 
 static constexpr ptrdiff_t nEconomyDiamondCount = 0x10;
 
@@ -75,7 +75,7 @@ static constexpr ptrdiff_t nEconomyDiamondCount = 0x10;
 static constexpr ptrdiff_t nPropertyHash = 0x08;
 static constexpr ptrdiff_t nPropertyOffset = 0x0C;
 
-// CRC-32 of the property name, standard everything.
+// CRC-32 of the property name.
 static constexpr uint32_t nHashDiamondCount = 0x333DBF78;     // "DiamondCount"
 static constexpr uint32_t nHashLastDiamondCount = 0x3A8909F7; // "LastDiamondCount"
 
@@ -83,12 +83,12 @@ static constexpr uint32_t nHashLastDiamondCount = 0x3A8909F7; // "LastDiamondCou
 static constexpr ptrdiff_t nInputPassLivePawn = 0x16;
 static constexpr ptrdiff_t nEconomyCtorVTableSet = 0x1A;
 
-// CPawnInputListener's look accumulators. Y is horizontal, X vertical.
+// CPawnInputListener's look accumulators. Y horizontal, X vertical.
 static constexpr ptrdiff_t nListenerLookX = 0x10;
 static constexpr ptrdiff_t nListenerLookY = 0x14;
 
-// The HUD's own mirrors of the count: same name and descriptor type, different object, which is why
-// the offset is part of the test and not just the hash.
+// HUD's own mirrors of the count: same name and descriptor type, different object, so the offset is
+// part of the test, not just the hash.
 static constexpr int32_t nHudDiamondCount = 0x2BC;
 static constexpr int32_t nHudLastDiamondCount = 0x2C8;
 
@@ -101,10 +101,10 @@ static constexpr ptrdiff_t nManagerFocusLow = 0x08;
 static constexpr ptrdiff_t nManagerFocusHigh = 0x0C;
 static constexpr ptrdiff_t nManagerLocked = 0x14;
 
-// The vtable slot the manager hands a camera its focus through.
+// Vtable slot the manager hands a camera its focus through.
 static constexpr size_t nCameraSetFocusSlot = 0x78 / sizeof(void*);
 
-// An entity ref holder: refcount, then the entity it stands for.
+// An entity ref holder: refcount, then the entity.
 static constexpr ptrdiff_t nEntityRefCount = 0x08;
 static constexpr ptrdiff_t nEntityRefEntity = 0x0C;
 
@@ -113,7 +113,7 @@ static constexpr ptrdiff_t nRefWorldGlobal = 0x0F;
 static constexpr ptrdiff_t nEntityRefFromIdCall = 0x13;
 
 // CCameraFreeComponent, which CCameraGhostComponent derives from without adding fields. Move axes
-// are in the camera's local frame; look values are rates, scaled by 180 degrees a second per unit.
+// are local frame; look values are rates, 180 deg/sec per unit.
 static constexpr ptrdiff_t nCameraMoveForward = 0xB4;
 static constexpr ptrdiff_t nCameraMoveStrafe = 0xB8;
 static constexpr ptrdiff_t nCameraMoveVertical = 0xBC;
@@ -122,17 +122,17 @@ static constexpr ptrdiff_t nCameraLookPitch = 0xC4;
 static constexpr ptrdiff_t nCameraSpeed = 0xC8;
 static constexpr ptrdiff_t nCameraSpeedAdjust = 0xCC;
 
-// Metres a second on the baseline step. Written onto the camera's speed field rather than folded
-// into the axes, which on a pad belong to the engine's mapping.
+// m/s on the baseline step. Written to the camera's speed field, not folded into the axes (those
+// belong to the engine's pad mapping).
 static constexpr float fFreecamBaseSpeed = 12.0f;
 
 static constexpr const char* pCameraGameplay = "Cameras.Camera.First";
 static constexpr const char* pCameraFree = "Cameras.Camera.Free";
 
-// 4x4 row-major: rows 0 to 2 the basis, row 3 the translation.
+// 4x4 row-major: rows 0-2 basis, row 3 translation.
 static constexpr ptrdiff_t nEntityMatrix = 0x30;
 
-// The enable slot the ghost camera's activate handler zeroes.
+// Enable slot the ghost camera's activate handler zeroes.
 static constexpr size_t nPhysicsEnabledSlot = 0xB4 / sizeof(void*);
 
 // Into the pattern spanning the ghost camera's tag registration and component fetch.
@@ -141,8 +141,8 @@ static constexpr ptrdiff_t nPhysicsTagRegisterCall = 0x0B;
 static constexpr ptrdiff_t nPhysicsTagValue = 0x11;
 static constexpr ptrdiff_t nGetComponentCall = 0x17;
 
-// Two halves of the block off pawn+0x10, named as inputtoggles.ixx names them: what the player has
-// asked for, and what they have got. Both carry a flags byte with the sprint bit in it.
+// Two halves of the block off pawn+0x10 (names from inputtoggles.ixx): requested vs current state.
+// Both carry a flags byte with the sprint bit.
 static constexpr ptrdiff_t nPawnStateBlock = 0x10;
 static constexpr ptrdiff_t nPawnRequestedState = 0x140;
 static constexpr ptrdiff_t nPawnCurrentState = 0x2D0;
@@ -150,8 +150,8 @@ static constexpr ptrdiff_t nPawnCurrentState = 0x2D0;
 static constexpr ptrdiff_t nStateFlags = 0x04;
 static constexpr uint8_t nSprintFlag = 0x40;
 
-// Falling, in the same block. The flag is what every other system asks about, through the one line
-// accessor over it. The counter is how many frames the fall has run for.
+// Falling, same block. Flag is what other systems query (via the accessor over it); counter is
+// frames the fall has run.
 static constexpr ptrdiff_t nPawnFalling = 0x49B;
 static constexpr ptrdiff_t nPawnFallFrames = 0x4A0;
 
@@ -160,31 +160,31 @@ static constexpr ptrdiff_t nFallUpdateTail = 0x303;
 
 // ------------------------------------------------------------------------------------------------
 // CFCXCountersComponentPlayerSP, the campaign player's vitals. bIsInForcedFailure is a registered
-// property; the rest are read out of the health tick and the buddy-rescue handler.
+// property; the rest are read from the health tick and the buddy-rescue handler.
 
 static constexpr ptrdiff_t nCountersHealth = 0x44;   // the CCounter the health lives on
 static constexpr ptrdiff_t nCountersForcedFailure = 0x88;
 static constexpr ptrdiff_t nCountersRescueState = 0xE8;
 static constexpr ptrdiff_t nCountersReviveInvulnerable = 0x140;
 
-// Health-failure threshold, 80.0 out of the constructor. FUN_106A2C30 adds to it, so it is re-read
-// every frame rather than cached.
+// Health-failure threshold, 80.0 from the constructor. FUN_106A2C30 adds to it, so re-read every
+// frame rather than cached.
 static constexpr ptrdiff_t nCountersFailureThreshold = 0x6C;
 
 // Into the constructor's pattern: both vtables written, ESI still the object.
 static constexpr ptrdiff_t nCountersCtorVTableSet = 0x15;
 
-// Into the pattern the three syringe consume sites share, which ends on the CALL's opcode:
-//
-//   106A01F2  CMP  EAX, ECX          <- pattern starts here
+// Into the pattern the three syringe consume sites share, ending on the CALL opcode. Return address
+// the decrementer sees sits at +0x11:
+//   106A01F2  CMP  EAX, ECX          <- pattern start
 //   106A01FC  PUSH 1
 //   106A01FE  CALL <item consume>
-//   106A0203                         <- the return address the decrementer sees, at +0x11
+//   106A0203                         <- return address, +0x11
 static constexpr ptrdiff_t nSyringeConsumeReturn = 0x11;
 static constexpr size_t nSyringeConsumeSites = 3;
 
-// CCounter. SetToMax goes through SetValue, which clamps and drives the HUD and event chain that a
-// write straight to the value would skip.
+// CCounter. SetToMax goes through SetValue, which clamps and drives the HUD/event chain a direct
+// value write would skip.
 static constexpr ptrdiff_t nCounterValue = 0x10;
 static constexpr size_t nCounterSetToMaxSlot = 0x20 / sizeof(void*);
 
@@ -197,15 +197,12 @@ static constexpr ptrdiff_t nVehicleRefBlock = 0x08;
 // Angle triples here are (pitch, roll, yaw).
 static constexpr size_t nAnglePitch = 0;
 
-// The engine integrates look as angle += delta * frameTime * 180 degrees, negated for yaw. This is
-// that constant.
+// The engine integrates look as angle += delta * frameTime * 180 deg, negated for yaw.
 static constexpr float fLookRadiansPerUnit = 3.14159265f;
 
-// XINPUT_GAMEPAD_LEFT_THUMB and RIGHT_THUMB, the speed steps up and down. Pad state comes off
-// inputdevice.ixx, which already mid-hooks the engine's own poll. Movement and the speed step only:
-// look arrives on the pawn's accumulator whichever device is in use. Left thumb is also the sprint
-// button, free to reuse because noclip clears the sprint request and both are read only while a
-// mode is up.
+// XINPUT_GAMEPAD_LEFT_THUMB / RIGHT_THUMB, speed step up/down. Pad state from inputdevice.ixx.
+// Movement and speed step only; look reaches the pawn accumulator on any device. Left thumb is also
+// sprint, free to reuse: noclip clears the sprint request and both are read only while a mode is up.
 static constexpr uint16_t nPadSpeedCycle = 0x0040;
 static constexpr uint16_t nPadSlowCycle = 0x0080;
 
@@ -217,7 +214,7 @@ static constexpr uint32_t nSignalQuickLoad = 0x9F8F5553; // "quickload"
 // The euler triple the renderer reads off the render camera.
 static constexpr ptrdiff_t nRenderCameraEuler = 0x6C;
 
-// Metres a second at the baseline step. The engine's free camera starts at 5, which crawls.
+// m/s at the baseline step. The engine's free camera starts at 5, which crawls.
 static constexpr float fNoclipBaseSpeed = 12.0f;
 
 // Fixed bindings. Only the two mode keys are configurable.
@@ -234,35 +231,35 @@ static constexpr int nKeyLookRight = VK_RIGHT;
 static constexpr int nKeyLookUp = VK_UP;
 static constexpr int nKeyLookDown = VK_DOWN;
 
-// A whole unit of the camera's look rate is a half turn a second, far too fast for a key.
+// A whole unit of look rate is a half turn/sec, too fast for a key.
 static constexpr float fLookRate = 0.35f;
 
-// Stepped through rather than held: Shift walks up the array, Alt walks down, and either wraps back
-// to the baseline off its own end, so one key alone always gets back to normal speed.
+// Stepped, not held: Shift walks up the array, Alt down, each wrapping past its own end, so one key
+// alone always returns to normal speed.
 static constexpr float fSpeedSteps[]{ 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
 static constexpr size_t nBaseSpeedStep = 3;
 
-// Noclip's ceiling. The two steps above it are the free camera's, which has no body to drag along.
+// Noclip's ceiling. The two steps above are the free camera's, which drags no body.
 static constexpr size_t nNoclipTopStep = 7;
 
 // ------------------------------------------------------------------------------------------------
 // Engine functions.
 
-// Null outside of a session.
+// Null outside a session.
 using GetLocalPlayer_t = void* (__cdecl*)();
 
-// __thiscall on the manager. Plain string, not a std::string, matched case insensitively.
+// __thiscall on the manager. Plain string, not std::string, matched case-insensitively.
 using SetActiveCameraByName_t = void(__fastcall*)(void* pManager, void* pEdx, const char* pName, int32_t bNotify);
 
-// __thiscall on the manager. Null when it has no active camera.
+// __thiscall on the manager. Null when no active camera.
 using GetActiveCamera_t = void* (__fastcall*)(void* pManager);
 
-// __thiscall on the ref world, callee cleans twelve bytes. The caller owns one reference on the
-// holder it writes out.
+// __thiscall on the ref world, callee cleans 12 bytes. Caller owns one reference on the holder it
+// writes out.
 using EntityRefFromId_t = void* (__fastcall*)(void* pRefWorld, void* pEdx, void** ppOut, uint32_t nIdLow, uint32_t nIdHigh);
 
-// Through the vtable. The holder goes by value: the caller adds a reference and the callee drops
-// it, so the two cancel.
+// Through the vtable. Holder passed by value: caller adds a reference, callee drops it, so they
+// cancel.
 using SetFocus_t = void(__fastcall*)(void* pCamera, void* pEdx, void* pEntityRef);
 
 // Destroying a holder at zero is these two calls, in this order.
@@ -282,8 +279,8 @@ using RegisterPhysicsTag_t = void(__fastcall*)(void* pUnused);
 // __thiscall on an entity. Returns the component or null.
 using GetComponentByTag_t = void* (__fastcall*)(void* pEntity, void* pEdx, void* pTag);
 
-// __thiscall on an entity, three floats by value, callee cleans twelve bytes. SetEuler sits directly
-// behind SetPosition in the image and takes the same shape.
+// __thiscall on an entity, three floats by value, callee cleans 12 bytes. SetEuler sits directly
+// behind SetPosition in the image, same shape.
 using SetEntityPosition_t = void(__fastcall*)(void* pEntity, void* pEdx, float fX, float fY, float fZ);
 using SetEntityEuler_t = void(__fastcall*)(void* pEntity, void* pEdx, float fPitch, float fRoll, float fYaw);
 
@@ -293,20 +290,19 @@ using GetRenderCamera_t = void* (__fastcall*)(void* pCamera);
 // Vtable slot 0xB4 on the physics component.
 using SetPhysicsEnabled_t = void(__fastcall*)(void* pPhysics, void* pEdx, int32_t bEnabled);
 
-// __cdecl, one argument, caller cleans. Reads the pawn's "current vehicle" fact and returns the
-// CVehicle component the id in it resolves to, or null on foot. It releases the ref holder it takes
-// out on every path, so the caller owns nothing. It also waits on the entity's pending async job,
-// which is what makes it main-thread only.
+// __cdecl, one arg, caller cleans. Reads the pawn's "current vehicle" fact and returns the CVehicle
+// component its id resolves to, or null on foot. Releases the ref holder on every path (caller owns
+// nothing) and waits on the entity's pending async job, which makes it main-thread only.
 using GetCurrentVehicle_t = void* (__cdecl*)(void* pPawn);
 
-// __thiscall on an entity. Blocks until that entity's outstanding async job is done, so it must not
-// be called from inside one.
+// __thiscall on an entity. Blocks until that entity's async job is done, so must not be called from
+// inside one.
 using FlushEntityJob_t = void(__fastcall*)(void* pEntity);
 
 // __thiscall on an entity. Registers its own component type on first use, unlike the tag fetch.
 using GetVehiclePhysics_t = void* (__fastcall*)(void* pEntity);
 
-// __thiscall on a CCounter, no arguments. Vtable slot 0x20.
+// __thiscall on a CCounter, no args. Vtable slot 0x20.
 using CounterSetToMax_t = void(__fastcall*)(void* pCounter);
 
 static RegisterPhysicsTag_t RegisterPhysicsTag = nullptr;
@@ -318,7 +314,7 @@ static SetEntityPosition_t SetEntityPosition = nullptr;
 static SetEntityEuler_t SetEntityEuler = nullptr;
 static GetRenderCamera_t GetRenderCamera = nullptr;
 
-// Read out of the instruction that loads it, so it moves with the image.
+// Read from the instruction that loads it, so it moves with the image.
 static void** ppRefWorld = nullptr;
 
 // The physics component's class tag, and whether it has been registered yet.
@@ -344,30 +340,30 @@ static CameraMode eCameraMode = CameraMode::None;
 // activated for its own reasons is never fed our input.
 static void* pDebugCamera = nullptr;
 
-// The manager the switch went through and the Locked byte it had before, so the way back is the
-// exact reverse of the way in.
+// The manager the switch went through and its prior Locked byte, so the way back is the exact
+// reverse of the way in.
 static void* pDebugCameraManager = nullptr;
 static uint8_t nSavedLocked = 0;
 
-// Noclip holds a reference on the player's entity while engaged, which is what keeps the pointer
-// good for as long as it is being moved.
+// Noclip holds a reference on the player's entity while engaged, keeping the pointer good while it
+// is being moved.
 static void* pNoclipEntityRef = nullptr;
 static void* pNoclipPhysics = nullptr;
 
-// The pawn state block noclip is holding, so the fall update can tell the player's from anyone
-// else's. Zero whenever noclip is not engaged.
+// The pawn state block noclip holds, so the fall update can tell the player's from anyone else's.
+// Zero when noclip is not engaged.
 static uintptr_t nNoclipStateBlock = 0;
 
-// The view angles noclip keeps on the player's behalf. See ApplyNoclip for why it has to.
+// View angles noclip keeps on the player's behalf. See ApplyNoclip for why.
 static float fNoclipYaw = 0.0f;
 static float fNoclipPitch = 0.0f;
 
-// Set while the camera's axes hold values this module put there, so they come back down exactly
-// once when the last key is released. Latched apart so keyboard movement does not zero the stick.
+// Set while the camera's axes hold values this module put there, so they come down exactly once when
+// the last key is released. Latched apart so keyboard movement does not zero the stick.
 static bool bFedCameraMove = false;
 static bool bFedCameraLook = false;
 
-// Kept across activations, the same way the camera's own speed field is.
+// Kept across activations, like the camera's own speed field.
 static size_t nSpeedStep = nBaseSpeedStep;
 
 // The highest step the mode currently up allows.
@@ -376,37 +372,37 @@ static size_t TopSpeedStep()
     return (eCameraMode == CameraMode::Noclip) ? nNoclipTopStep : std::size(fSpeedSteps) - 1;
 }
 
-// Look input since the camera last consumed it, in the units its look fields want. Sampled from the
-// pawn's accumulators once a frame, only while a debug camera is up.
+// Look input since the camera last consumed it, in its look fields' units. Sampled from the pawn's
+// accumulators once a frame, only while a debug camera is up.
 static float fMouseLookX = 0.0f;
 static float fMouseLookY = 0.0f;
 
-// The player's economy component, from whichever of the four paths below sees it first, and the
-// vtable that sighting carried. The object dies with the player while this module's clock keeps
-// ticking, so it is never written to unless there is a local player and the vtable still matches.
+// The player's economy component (from whichever of the four paths below sees it first) and the
+// vtable that sighting carried. It dies with the player while this module's clock keeps ticking, so
+// never written unless there is a local player and the vtable still matches.
 static void* pEconomy = nullptr;
 static void* pEconomyVTable = nullptr;
 
-// Granted diamonds still in the wallet. Real progress is always the live count minus this.
+// Granted diamonds still in the wallet. Real progress is the live count minus this.
 static int32_t nGranted = 0;
 
-// Return addresses of the sites that spend a syringe. The decrementer they call is shared with
-// every other consumable, so this is what tells one apart from a magazine.
+// Return addresses of the sites that spend a syringe. The decrementer they call is shared with all
+// consumables, so this tells one from a magazine.
 static uintptr_t pSyringeConsumeSite[nSyringeConsumeSites]{};
 static size_t nSyringeConsumeSiteCount = 0;
 
 // The campaign player's vitals component and the vtable its constructor carried, on the same terms
-// as the economy component above: it dies with the player while this module's clock keeps ticking.
+// as pEconomy: dies with the player while the clock keeps ticking.
 static void* pCounters = nullptr;
 static void* pCountersVTable = nullptr;
 
 // The vehicle the player is in, re-derived every frame and cleared first, so exiting, a level load
-// and the option going off all end the protection on the next tick.
+// and the option going off all end protection on the next tick.
 //
-// All three are checked in the damage hooks: the allocator can hand the component's address back
-// for something else, and reading the entity out of the ref block is the engine's own liveness
-// test. Written last to first and cleared first to last, because the hooks run on physics jobs and
-// a torn read that fails the component test lets the damage through.
+// All three are checked in the damage hooks: the allocator can hand the component's address back for
+// something else, and reading the entity out of the ref block is the engine's own liveness test.
+// Written last-to-first and cleared first-to-last, since the hooks run on physics jobs and a torn
+// read that fails the component test lets damage through.
 static void* pVehiclePhysics = nullptr;
 static void* pVehicleRefBlock = nullptr;
 static void* pVehicleEntity = nullptr;
@@ -417,19 +413,16 @@ static int nFreecamKey = 0;
 /*
   The multiplayer gate. Every setting here is a cheat, so none may be live in a match.
 
-  Session type, an int at +18h on the session object. The status line at 101F3450 names the values:
-
-      0 Invalid   1 Offline   2 Online   3 Lan   4 Split   5 Single
-
+  Session type: int at +18h on the session object. Values (status line 101F3450):
+      0 Invalid  1 Offline  2 Online  3 Lan  4 Split  5 Single
   A match is 2 or 3; FUN_107BDD00 agrees, handing out a network session object for those two only.
 
-  Do not use the 8 byte singleton's flag at +4, which reads like "this session is networked" and is
-  not: it is this same type as "not Offline", derived at 107A3D9A, so it stands at 1 in
-  singleplayer and on the main menu.
+  Do not use the 8-byte singleton's flag at +4: it reads like "this session is networked" but is the
+  "not Offline" type derived at 107A3D9A, so it stands at 1 in singleplayer and on the main menu.
 
-  The pattern is the MOV in the handler the engine runs on every session change. The type is read
-  there and kept rather than the slot address being kept and read later, because the object does not
-  outlive the session and +18h through a dead one is whatever the allocator left behind.
+  The pattern is the MOV in the handler run on every session change. The type is read there and kept
+  (rather than keeping the slot address to read later) because the object does not outlive the
+  session and +18h through a dead one is allocator garbage.
 */
 static const char* const szSessionSlotPattern =
     "8B 8E E4 00 00 00 E8 ? ? ? ? 83 F8 01 0F 95 C1 88 4C 24 50";
@@ -439,7 +432,7 @@ static constexpr uintptr_t nSessionType = 0x18;
 static constexpr int32_t nSessionOnline = 2;
 static constexpr int32_t nSessionLan = 3;
 
-// Written from the engine's thread inside the handler, read from the menu's and from physics jobs.
+// Written from the engine thread inside the handler, read from the menu thread and physics jobs.
 static std::atomic<int32_t> nLiveSessionType = 0;
 
 export bool JackalFixInMultiplayer()
@@ -449,8 +442,8 @@ export bool JackalFixInMultiplayer()
     return nType == nSessionOnline || nType == nSessionLan;
 }
 
-// The ini's own answers, and the gate over them. Asked per read rather than mirrored, since a match
-// starts and ends without the file moving. Every path that owns a setting handles it going off
+// The ini's answers and the gate over them. Asked per read rather than mirrored, since a match
+// starts and ends without the file moving. Every owning path handles its setting going off
 // underneath: a camera mode puts the player back, a target of zero retires the diamond grant.
 static bool bIniInvincibility = false;
 static bool bIniInfiniteAmmo = false;
@@ -559,9 +552,9 @@ static bool PadPressed(uint16_t nButton, bool& bLatch)
     return bEdge;
 }
 
-// Fixed bindings, unit axes. The left stick is added rather than replacing the keys, and only where
-// the engine's own mapping is not already feeding the same fields. Height stays on the keyboard:
-// the triggers are aim and fire, and these modes leave the weapons working.
+// Fixed bindings, unit axes. Left stick is added to the keys, not replacing them, and only where the
+// engine's mapping is not already feeding the same fields. Height stays on the keyboard: the
+// triggers are aim/fire, and these modes leave weapons working.
 struct MoveAxes
 {
     float fStrafe;
@@ -592,8 +585,8 @@ static MoveAxes ReadMoveAxes(bool bWithPad)
 // ------------------------------------------------------------------------------------------------
 // GameProfile fields.
 
-// Re-applied every frame: the multiplayer spectator path clears GodMode outright, and a profile
-// reload on a map transition writes the file's value back over ours.
+// Re-applied every frame: the MP spectator path clears GodMode, and a profile reload on a map
+// transition writes the file's value back over ours.
 static void ApplyProfileFlags()
 {
     if (ppGameProfile == nullptr)

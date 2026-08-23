@@ -7,8 +7,8 @@ export module affinity;
 import common;
 import settings;
 
-// Apply before Dunia initializes: the engine sizes thread pools from the process affinity mask.
-// Later thread affinity requests are constrained by this mask.
+// Apply before Dunia init: it sizes thread pools from the process affinity mask, which also
+// constrains later per-thread requests.
 
 static bool bMaskApplied = false;
 static DWORD_PTR nOriginalMask = 0;
@@ -28,7 +28,7 @@ static void ApplyAffinity()
 
     if (nProcessors <= 0)
     {
-        // Restore the original mask so clearing the ini key mid-run gives the processors back.
+        // Clearing the ini key mid-run restores the processors.
         if (bMaskApplied)
         {
             SetProcessAffinityMask(GetCurrentProcess(), nOriginalMask);
@@ -37,7 +37,7 @@ static void ApplyAffinity()
         return;
     }
 
-    // Select from the system mask, processor numbers may be sparse
+    // From the system mask; processor numbers may be sparse
     DWORD_PTR mask = 0;
     int32_t taken = 0;
 
@@ -64,7 +64,7 @@ public:
     {
         JackalFix::onInitEvent() += []()
         {
-            // Affinity is live. Thread counts require a restart.
+            // Affinity is live; thread counts need a restart.
             ApplyAndWatch(ApplyAffinity);
         };
 

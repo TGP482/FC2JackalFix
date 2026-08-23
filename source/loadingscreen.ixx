@@ -8,7 +8,7 @@ export module loadingscreen;
 import common;
 import settings;
 
-// Restore loading screen frame pacing by increasing timer resolution.
+// Timer resolution restores loading screen frame pacing.
 static bool bTimerRaised = false;
 
 class LoadingScreen

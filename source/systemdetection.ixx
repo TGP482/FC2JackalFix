@@ -1,21 +1,21 @@
 module;
 
 #include <common.hxx>
-#include <objbase.h> // common.hxx defines WIN32_LEAN_AND_MEAN, so the COM types are not in scope
+#include <objbase.h> // WIN32_LEAN_AND_MEAN, set by common.hxx, hides the COM types
 
 export module systemdetection;
 
 import common;
 import settings;
 
-// DxDiag is required during startup, so cache its results rather than fail it. WMI queries can be
-// skipped; their consumers handle missing data.
+// DxDiag is needed at startup, so cache its results rather than fail it. WMI can be skipped since
+// its consumers handle missing data.
 
 static constexpr GUID guidDxDiagProvider = { 0xA65B8071, 0x3BFE, 0x4213, { 0x9A, 0x5B, 0x49, 0x1D, 0xA4, 0x46, 0x1C, 0xA7 } };
 static constexpr GUID guidIDxDiagProvider = { 0x9C6B4CB0, 0x23F8, 0x49CC, { 0xA3, 0xED, 0x45, 0xA5, 0x50, 0x00, 0xA6, 0xD2 } };
 static constexpr GUID guidWbemLocator = { 0x4590F811, 0x1D3A, 0x11D0, { 0x89, 0x1F, 0x00, 0xAA, 0x00, 0x4B, 0x2E, 0x24 } };
 
-// Minimal IDxDiagProvider declaration to avoid depending on dxdiag.h.
+// Minimal IDxDiagProvider declaration, avoiding dxdiag.h.
 struct DxDiagProvider;
 struct DxDiagProviderVtbl
 {
@@ -55,7 +55,7 @@ static ULONG __stdcall ProxyAddRef(DxDiagProvider*)
     return (ULONG)InterlockedIncrement(&nProxyRefs);
 }
 
-// Keep the real provider alive so later callers reuse the initialized instance.
+// Never released, so later callers reuse the initialized instance.
 static ULONG __stdcall ProxyRelease(DxDiagProvider*)
 {
     auto n = InterlockedDecrement(&nProxyRefs);
@@ -84,7 +84,7 @@ static HRESULT __stdcall ProxyGetRootContainer(DxDiagProvider*, void** ppInstanc
             return hr;
     }
 
-    // Handed out with a reference of its own, so each caller's Release stays balanced.
+    // Its own reference, so each caller's Release stays balanced.
     pCachedRoot->AddRef();
     *ppInstance = pCachedRoot;
     return S_OK;
@@ -127,7 +127,7 @@ static HRESULT __stdcall CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnkOut
     return pfnCoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, ppv);
 }
 
-// Redirects an imported function in one module's IAT, so only that module's calls are affected.
+// Patches one module's IAT, so only that module's calls are affected.
 static bool HookImport(HMODULE hModule, const char* szModule, const char* szFunction, void* pDetour, void** ppOriginal)
 {
     if (!hModule)
@@ -151,7 +151,7 @@ static bool HookImport(HMODULE hModule, const char* szModule, const char* szFunc
         if (lstrcmpiA((const char*)(pBase + pImport->Name), szModule) != 0)
             continue;
 
-        // OriginalFirstThunk contains import names. Use FirstThunk when it is missing.
+        // Names come from OriginalFirstThunk, or FirstThunk when it is missing.
         auto pThunk = (IMAGE_THUNK_DATA*)(pBase + pImport->FirstThunk);
         auto pNames = (IMAGE_THUNK_DATA*)(pBase + (pImport->OriginalFirstThunk ? pImport->OriginalFirstThunk : pImport->FirstThunk));
 
@@ -185,10 +185,10 @@ class SystemDetection
 public:
     SystemDetection()
     {
-        // Hooked on load; Dunia does not load this DLL until InitDuniaEngine is already running.
+        // Dunia loads this DLL only once InitDuniaEngine is already running.
         CallbackHandler::RegisterCallback(L"systemdetection.dll", []()
         {
-            // Detection only runs during startup, so a live ini change takes effect next launch.
+            // Startup-only, so an ini change takes effect next launch.
             BindBool(bSkipSystemDetection, PREF_SKIPSYSTEMDETECTION);
 
             auto hModule = GetModuleHandleW(L"systemdetection.dll");

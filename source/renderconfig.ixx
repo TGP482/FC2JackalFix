@@ -10,14 +10,35 @@ import common;
 import dunia;
 import settings;
 
+// Each render config class (CRenderShadowConfig, CRenderGeometryConfig, CRenderTerrainConfig,
+// CRenderAmbientConfig) publishes a schema of property descriptors (name, hash, field offset)
+// through its vtable; the loader calls each descriptor's serialise method, which resolves
+// object + descriptor->offset and hands the address to the XML reader.
+//
+// Only two numeric serialisers exist, float and int, shared by every config class. Hooking both
+// on return covers every numeric attribute of every <quality> block with the descriptor still in
+// hand, so nothing here depends on patch.dat.
+//
+// Schemas are registered by FUN_103F56E0 (geometry), FUN_103F7240 (terrain), FUN_103F4600
+// (shadow) and FUN_103F7520 (ambient), each after the shared base FUN_103F42E0, which is why
+// every derived field sits at 0x20 or above. Bools are four byte ints, so every field below is a
+// float or an int32.
+//
+// Only the Ultra High geometry, shadow and terrain presets are touched, and Ambient High.
+// The step 3 geometry and shadow numbers are Boggalog's, from Far Cry 2 Patched.
+//
+// One Boggalog edit is deliberately not reproduced: his <Geometry> ultrahigh TerrainLodScale="0.1"
+// is inert, since CRenderGeometryConfig registers no such descriptor (the only TerrainLodScale is
+// CRenderTerrainConfig+0x2C, string 0x10E5078C referenced from FUN_103F7240 alone). The real one
+// is driven by BeyondUltraTerrain below.
 
-// Property descriptor, as built by the schema registration functions.
+// Property descriptor built by the schema registration functions.
 struct RenderProperty
 {
     void* pVTable;              // 0x00  one vtable per field type
-    const char* pszName;        // 0x04  the XML attribute name
+    const char* pszName;        // 0x04  XML attribute name
     uint32_t nNameHash;         // 0x08
-    uint32_t nFieldOffset;      // 0x0C  byte offset of the field inside the config object
+    uint32_t nFieldOffset;      // 0x0C  field offset inside the config object
     void* pMetadata;            // 0x10  description, editor range, console visibility
 };
 
@@ -61,57 +82,45 @@ static constexpr uint32_t nTerrainAffectedByMuzzleFlash = 0x38;
 static constexpr uint32_t nAmbientMaxHemiMapDistance = 0x30;
 static constexpr uint32_t nAmbientSectorCountX = 0x3C;
 
-// The quality id is the key of the map the parsed blocks are stored in rather than a field on the
-// block, so the serialiser cannot see it. Each section is recognised instead by one property whose
-// stock value is unique to the preset the Ultra High profile selects: "ultrahigh" for
-// ShadowQuality, GeometryQuality and TerrainQuality, "high" for AmbientQuality. Lower presets
-// never carry these values and are left alone.
+// The quality id is the map key, not a field on the block, so the serialiser cannot see it. Each
+// section is instead recognised by one property whose stock value is unique to the wanted preset
+// ("ultrahigh" for shadow/geometry/terrain, "high" for ambient). Lower presets never carry these
+// values and are left alone.
 static constexpr int32_t nUltraShadowMapSize = 2048;      // 16, 341, 680, 1364, 1364, 2048, 720, 720
 static constexpr float fUltraMinZoomFactor = 0.10f;       // 0.70, 0.60, 0.45, 0.35, 0.225, 0.10
 static constexpr int32_t nUltraAffectedByMuzzleFlash = 1; // only the ultrahigh terrain block sets it
 static constexpr int32_t nHighSectorCountX = 12;          // 4, 8, 8, 12, 8
 
 // Stock KillLodScale of the ultrahigh geometry block, used to confirm the block alongside
-// MinZoomFactor. The schema serialises KillLodScale first of the two, so it is already in place
-// when the pair is tested.
+// MinZoomFactor. The schema serialises KillLodScale first, so it is in place when the pair is
+// tested.
 static constexpr float fStockKillLodScale = 1.0f;
 
-// BeyondUltraGeometry. Four steps over the Ultra High geometry block, indexed by the setting:
+// BeyondUltraGeometry. Steps over the Ultra High geometry block: 0 stock, 1/2/3 twice, four and
+// six times the vanilla draw distance, 4 the most the block will take (Boggalog's set).
 //
-//     0  the values the game ships
-//     1  twice the vanilla draw distance
-//     2  four times the vanilla draw distance
-//     3  six times the vanilla draw distance
-//     4  the most the block will take, which is Boggalog's set
+// LOD scales and MinSize thresholds run backwards (lower survives further, 0 is the maximum), so
+// doubling a distance halves them. Only RealTreeCapsMaxDistance and the two decal counts double.
 //
-// Two conventions run in opposite directions. LOD scales run backwards: the lower the value the
-// further the detail survives, and 0 is the maximum, so doubling a distance halves the scale. The
-// MinSize thresholds are the size below which an object is culled outright and halve the same way.
-// Only RealTreeCapsMaxDistance and the two decal counts are plain quantities that double.
+// LodScale halves with the rest only because of the polarity patch further down: the spline pass
+// reads it the opposite way round, so lowering it used to break road surfaces up.
 //
-// LodScale halves with the rest. It could not before: lowering it broke road surfaces up, because
-// the spline pass reads it the opposite way round from every other LOD path. That is the polarity
-// patch further down, and steps 1 and 2 only carry a LodScale at all because it is in.
+// KillLodScale was pinned at 0.7 because scenery popped in on map 2 below that; the pop was the
+// tree renderer running out of instances, raised by PatchRealTreeInstanceBudget below.
 //
-// KillLodScale halves with the rest as well. It was pinned at 0.7 because scenery popped in on map
-// 2 below that; the pop was the tree renderer running out of instances, raised by
-// PatchRealTreeInstanceBudget below, and the column runs to 0 with the others now.
-//
-// No projected-size threshold reaches 0. Each is an on/off switch before it is a threshold, and 0
-// turns the test off rather than making it permissive:
+// No projected-size threshold reaches 0, because 0 turns the test off rather than making it
+// permissive:
 //
 //     Dunia+3995F0  this+0x9F0/0x9F1/0x9F2 = 0.0 < node/leaf/hleaf MinSize (config+0x7C/0x74/0x78),
-//                   and the job at Dunia+48B760 runs the size reject only for parts whose switch is
-//                   set
+//                   and the job at Dunia+48B760 size-rejects only parts whose switch is set
 //     Dunia+39B3D0  ANDs the three, so one zero drops the cull for trunks, leaves and hybrid leaves
-//                   together
-//     Dunia+3BB6B0  0.0 < ClusterObjectMinSize (config+0x84), and clear submits every cluster
-//                   instance in the frustum at full detail
+//     Dunia+3BB6B0  0.0 < ClusterObjectMinSize (config+0x84), clear submits every cluster instance
+//                   in the frustum at full detail
 //
 // Off, the culls no longer hold the tree renderer inside its instance budget and it drops nodes
-// silently, which is the map 2 foliage flicker. RealTreeNodeMinSize is pinned at the stock 0.002
-// rather than taken to 0; leaf, hybrid leaf, cluster and scene halve without reaching it. The
-// budget is raised as well, below, and both are needed.
+// silently: the map 2 foliage flicker. So RealTreeNodeMinSize stays at the stock 0.002; leaf,
+// hybrid leaf, cluster and scene halve without reaching it. Raising the budget below is also
+// needed.
 struct GeometryStep
 {
     float fRealTreeCapsMaxDistance;
@@ -140,10 +149,10 @@ static constexpr GeometryStep GeometrySteps[] =
 
 static constexpr int32_t nMaxGeometryStep = static_cast<int32_t>(sizeof(GeometrySteps) / sizeof(GeometrySteps[0])) - 1;
 
-// BeyondUltraShadows. Boggalog's Ultra High shadow set, less the two map sizes, which are not
-// touched at all: a shadow map is sized when the device builds it, so a setting for it could only
-// ever be read at startup, and the one that was here never took effect. SunShadowFadeRange and
-// SunShadowRange1 already carry his values in the stock ultrahigh block, so only three fields move.
+// BeyondUltraShadows. Boggalog's Ultra High shadow set, less the two map sizes: a shadow map is
+// sized when the device builds it, so a setting for it could only be read at startup and never
+// took effect. SunShadowFadeRange and SunShadowRange1 already carry his values, so three fields
+// move.
 static constexpr float fBeyondUltraSunShadowRange0 = 8.0f;   // stock 4
 static constexpr float fBeyondUltraSunShadowRange2 = 135.0f; // stock 140, which flickers
 static constexpr float fBeyondUltraLeavesShadowRatio = 1.0f; // stock 0.5
@@ -151,17 +160,15 @@ static constexpr float fBeyondUltraLeavesShadowRatio = 1.0f; // stock 0.5
 // Static ambient shadow distance, the Ambient High half of the same claim.
 static constexpr float fBeyondUltraMaxHemiMapDistance = 512.0f; // stock 160
 
-// The same four as the blocks ship them, kept because a setting that can be turned off while the
-// game is running has to have somewhere to go back to, and the XML is long gone by then.
+// Stock values, kept because a setting can be turned off at runtime, long after the XML is gone.
 static constexpr float fStockSunShadowRange0 = 4.0f;
 static constexpr float fStockSunShadowRange2 = 140.0f;
 static constexpr float fStockLeavesShadowRatio = 0.5f;
 static constexpr float fStockMaxHemiMapDistance = 160.0f;
 
-// BeyondUltraTerrain. The same four steps over the Ultra High terrain block. TerrainLodScale runs
-// backwards like the geometry scales and bottoms out at 0; the two detail distances are plain
-// quantities that double. Step 3 goes well past Boggalog, who only moves
-// TerrainDetailBlendViewDistance from 64 to 128.
+// BeyondUltraTerrain. The same steps over the Ultra High terrain block. TerrainLodScale runs
+// backwards like the geometry scales and bottoms out at 0; the two detail distances double. Step 3
+// goes well past Boggalog, who only moves TerrainDetailBlendViewDistance from 64 to 128.
 struct TerrainStep
 {
     float fLodScale;
@@ -180,18 +187,15 @@ static constexpr TerrainStep TerrainSteps[] =
 
 static constexpr int32_t nMaxTerrainStep = static_cast<int32_t>(sizeof(TerrainSteps) / sizeof(TerrainSteps[0])) - 1;
 
-// Small object and vegetation shadows, credited to miru. Unconditional: it is a fix rather than a
-// setting, and Boggalog leaves the ultrahigh block's 1.25s alone.
+// Small object and vegetation shadows, credited to miru. Unconditional: a fix, not a setting.
 static constexpr float fFixedMinSizeShadowScale = 1.0f; // stock 1.25, bar RealTree which is 1.0
 
 static int32_t nGeometryStep = 0;
 static int32_t nTerrainStep = 0;
 static bool bBeyondUltraShadows = false;
 
-// The four blocks, kept for the rest of the run rather than for the parse alone. They were
-// thread_local and only remembered when a setting asked for them, which is right for catching the
-// fields the schema reads after a block is recognised (one call to the loader, one thread) and
-// wrong for a setting that moves while the game is running.
+// The four blocks, kept for the rest of the run, not just the parse: a setting can move while the
+// game is running. (They were thread_local and only remembered when a setting asked for them.)
 static const void* pUltraShadow = nullptr;
 static const void* pUltraGeometry = nullptr;
 static const void* pUltraTerrain = nullptr;
@@ -242,8 +246,8 @@ static constexpr bool IsTerrainField(uint32_t nOffset)
         || nOffset == nTerrainDetailBlendViewDistance;
 }
 
-// Both directions, always. Writing the stock numbers back is what lets the setting be turned off
-// without a restart, and while it has never been on this writes what is already there.
+// Both directions, always: writing the stock numbers back lets the setting be turned off without a
+// restart.
 static void ApplyShadow(uint8_t* pObject)
 {
     SetFloat(pObject, nShadowSunShadowRange0,
@@ -291,9 +295,9 @@ static void ApplyAmbient(uint8_t* pObject)
         bBeyondUltraShadows ? fBeyondUltraMaxHemiMapDistance : fStockMaxHemiMapDistance);
 }
 
-// Called once per numeric attribute, after the loader has written the parsed value into the field.
-// Name and offset are both checked: ShadowMapSize exists in the Shadow section and again in the
-// Ambient section, where it sizes the sector ambient map.
+// Called once per numeric attribute, after the loader wrote the parsed value into the field. Name
+// and offset are both checked: ShadowMapSize exists in the Shadow section and again in Ambient,
+// where it sizes the sector ambient map.
 static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObject)
 {
     if (pProperty == nullptr || pObject == nullptr || pProperty->pszName == nullptr)
@@ -314,8 +318,8 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
         break;
 
     case nGeometryMinZoomFactor:
-        // MinZoomFactor is the only geometry attribute the xenon and ps3 blocks leave out, so it
-        // is paired with KillLodScale, which the schema reads first.
+        // MinZoomFactor is the only geometry attribute the xenon and ps3 blocks leave out, so pair
+        // it with KillLodScale, which the schema reads first.
         if (name == "MinZoomFactor"
             && *(float*)(pObject + nOffset) == fUltraMinZoomFactor
             && *(float*)(pObject + nGeometryKillLodScale) == fStockKillLodScale)
@@ -348,9 +352,9 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
         break;
     }
 
-    // Fields the schema reads after the block was recognised, which the loader has just put back
-    // to the value in the XML. Only offsets this module owns are acted on, so a stale block
-    // pointer cannot write into an unrelated object.
+    // Fields the schema reads after the block was recognised, which the loader just put back to
+    // the XML value. Only offsets this module owns are acted on, so a stale block pointer cannot
+    // write into an unrelated object.
     if (pObject == pUltraShadow && IsShadowField(nOffset))
         ApplyShadow(pObject);
     else if (pObject == pUltraGeometry && IsGeometryField(nOffset))
@@ -363,8 +367,7 @@ static void OnPropertySerialised(const RenderProperty* pProperty, uint8_t* pObje
 
 static void TakeSettings()
 {
-    // Already bounded when the ini is read; bounded again so each table lookup is safe on its own
-    // terms.
+    // Already bounded when the ini is read; bounded again so each table lookup is safe on its own.
     const auto nGeometry = JackalFixSettings.GetInt(PREF_BEYONDULTRAGEOMETRY);
     nGeometryStep = nGeometry < 0 ? 0 : (nGeometry > nMaxGeometryStep ? nMaxGeometryStep : nGeometry);
 
@@ -375,30 +378,26 @@ static void TakeSettings()
 }
 
 /*
-  Which of the game's own quality levels are in force, and getting the engine to look again.
-
-  Everything above only ever touches the ultrahigh geometry, shadow and terrain blocks and the high
-  ambient one, so a Beyond Ultra setting does nothing unless the game is running the preset it
-  edits.
+  Which quality levels are in force, and getting the engine to look again. A Beyond Ultra setting
+  does nothing unless the game is running the preset it edits.
 
   A quality on CRenderProfile is a string, not an int. The schema at Dunia+3F7F00 registers
   TerrainQuality at 114h, GeometryQuality at 130h, AmbientQuality at 14Ch and ShadowQuality at 168h,
-  twelve of them 1Ch apart, which is the size of a string rather than of an int, and the property's
-  own Serialise hands object+offset to the visitor's 0DCh slot rather than the 114h int slot the
-  plain ints use. So the field holds "ultrahigh", "veryhigh", "high", "medium" or "low", and the
+  1Ch apart (string sized), and Serialise hands object+offset to the visitor's 0DCh slot rather than
+  the 114h int slot. So the field holds "ultrahigh", "veryhigh", "high", "medium" or "low", and the
   answer is a string compare.
 
   Making a change take hold is a second byte on the render manager. Dunia+354B30 sets +31h when it
-  copies the profile in, and Dunia+33E540, the ordinary per-frame path on the engine's own thread,
-  tests that byte, clears it and runs the functor at +13Ch, which re-reads the profile and picks the
-  blocks up again. +30h is the mode change and is deliberately left alone here.
+  copies the profile in, and Dunia+33E540, the per-frame path on the engine's thread, tests that
+  byte, clears it and runs the functor at +13Ch, which re-reads the profile and picks the blocks up
+  again. +30h is the mode change and is deliberately left alone.
 */
 static constexpr uint32_t nProfileTerrainQuality = 0x114;
 static constexpr uint32_t nProfileGeometryQuality = 0x130;
 static constexpr uint32_t nProfileShadowQuality = 0x168;
 
-// The engine's string: four bytes of header, then sixteen of buffer, the length, and the capacity
-// that says whether the buffer is the text or a pointer to it.
+// The engine's string: four bytes of header, sixteen of buffer, the length, then the capacity that
+// says whether the buffer is the text or a pointer to it.
 static constexpr ptrdiff_t nStringBuffer = 0x04;
 static constexpr ptrdiff_t nStringCapacity = 0x18;
 static constexpr uint32_t nStringLocalCapacity = 16;
@@ -406,14 +405,12 @@ static constexpr uint32_t nStringLocalCapacity = 16;
 static const char* const szUltraHigh = "ultrahigh";
 
 /*
-  Which CRenderProfile is the one the game is actually running.
+  Which CRenderProfile the game is actually running. There are a dozen of them, and applying a
+  level in the display options does not modify the profile in force, it makes a DIFFERENT profile
+  the one in force out of the preset store, so remembering whatever a hook last handed back names
+  the boot-time profile for the whole session.
 
-  There are a dozen of them: low, medium, high, veryhigh, ultrahigh, optimal, custom, the d3d10
-  variants of several, and the console ones. Applying a level in the display options does not modify
-  the profile in force, it makes a DIFFERENT profile the one in force, out of the preset store, so
-  remembering whatever a hook last handed back names the boot-time profile for the whole session.
-
-  Dunia+402150 is the setter, and it is four instructions long:
+  Dunia+402150 is the setter, four instructions long:
 
     MOV ESI,ECX
     LEA ECX,[ESI+04h]        ; the name of the profile in force
@@ -421,9 +418,9 @@ static const char* const szUltraHigh = "ultrahigh";
     ...
     CALL <the render settings broadcast>
 
-  So the name lives at +04h on the global profile, as a plain std::string, and it is written every
-  time the level changes. That is read directly, and the profile it names is taken from a small
-  table of everything the find has handed out.
+  So the name lives at +04h as a plain std::string, written every time the level changes. That is
+  read directly, and the profile it names is taken from a small table of everything the find has
+  handed out.
 */
 static constexpr ptrdiff_t nProfileCurrentName = 0x04;
 
@@ -433,16 +430,15 @@ static const char* const szProfileFindPattern =
 
 static SafetyHookInline ProfileFindHook{};
 
-// The slot Dunia keeps the global CRenderProfile in, which is both the manager the lookups are made
-// against and the object the render settings broadcast is raised on. Resolved with the broadcast
-// further down; declared here because the lookup hook is the first thing to want it.
+// The slot Dunia keeps the global CRenderProfile in: both the manager lookups are made against and
+// the object the render settings broadcast is raised on. Resolved with the broadcast further down;
+// declared here because the lookup hook wants it first.
 static void** ppGlobalRenderProfile = nullptr;
 
 // Declared here and defined with the rest of the guarded reads further down.
 static bool IsReadable(const void* pAddress, size_t nLength);
 
-// The engine's string, wherever one is: four bytes of header, then the buffer, and a capacity that
-// says whether the buffer is the text or a pointer to it.
+// Text of an engine string: the buffer is the text unless the capacity says it is a pointer to it.
 static const char* StringText(const void* pString)
 {
     if (!IsReadable(pString, nStringCapacity + sizeof(uint32_t)))
@@ -458,9 +454,8 @@ static const char* StringText(const void* pString)
     return IsReadable(pText, 1) ? pText : nullptr;
 }
 
-// Everything the find has ever handed out, by the name it was asked for. Small and fixed: there
-// are a dozen profiles and the same handful of names is asked for over and over, so an entry is
-// replaced rather than appended once its name is already here.
+// Everything the find has handed out, by the name it was asked for. Fixed size: a dozen profiles
+// and the same names asked for repeatedly, so a known name replaces its entry rather than append.
 struct NamedProfile
 {
     char  szName[24]{};
@@ -524,9 +519,8 @@ static const char* CurrentProfileName()
     return pGlobal != nullptr ? StringText(pGlobal + nProfileCurrentName) : nullptr;
 }
 
-// The profile in force: the one carrying the name the engine says is in force. The d3d10 variant
-// is tried as well, because the display apply appends that suffix on a d3d10 device and the engine
-// then asks for both spellings.
+// The profile carrying the name the engine says is in force. The d3d10 variant is tried too: the
+// display apply appends that suffix on a d3d10 device and the engine asks for both spellings.
 static void* QualityProfile()
 {
     const auto* pName = CurrentProfileName();
@@ -563,21 +557,18 @@ static void** ppRenderManager = nullptr;
   Getting the renderer to look at the blocks again, which is the whole of "it only applies once you
   drop the display quality and put it back".
 
-  Writing the block is not enough on its own and never was: the renderer takes what it needs out of
-  the block when it is told the render settings have moved, and nothing was telling it. The one
-  thing the display page does that this did not is raise the render settings broadcast, Dunia+3F8AB0
-  on the global CRenderProfile, which walks five observer lists. Every observer that reacts to a
-  quality change is on one of them, including the one that sets the render manager's mode byte, so
-  raising it is exactly the round trip the settings were needing, less the round trip.
+  Writing the block is not enough: the renderer only takes what it needs out of the block when told
+  the render settings moved. The display page raises the render settings broadcast, Dunia+3F8AB0 on
+  the global CRenderProfile, which walks five observer lists carrying every observer that reacts to
+  a quality change, including the one that sets the render manager's mode byte.
 
   Both are read out of the tail of Dunia+774530, the brightness apply, which ends
   MOV ECX,[<the profile>] / ADD ESP,0Ch / JMP <the broadcast>, so one pattern gives up the global
   profile's slot and the broadcast's address together.
 
-  It is not raised where the setting changes. That can be the file watcher's thread, and the
-  observers are the engine's; the request is left as a flag and spent at the head of the render
-  manager's per-frame device tick, Dunia+34CA80, which is the engine's own thread at the point it
-  is about to look at all of this anyway.
+  It is not raised where the setting changes: that can be the file watcher's thread and the
+  observers are the engine's. The request is left as a flag and spent at the head of the render
+  manager's per-frame device tick, Dunia+34CA80, on the engine's own thread.
 */
 static const char* const szRenderSettingsChangedPattern =
     "8B C8 E8 ? ? ? ? 8B 0D ? ? ? ? 83 C4 0C E9 ? ? ? ?";
@@ -603,21 +594,17 @@ static uint8_t* pProfileAmbient = nullptr;
 
 static SafetyHookInline DeviceTickHook{};
 
-// Defined below with the rest of the block writes; wanted here because the tick is what keeps them
-// in place.
+// Defined below with the rest of the block writes; wanted here because the tick keeps them in
+// place.
 static void WriteBeyondUltraBlocks();
 
 /*
-  Written every frame rather than once when the setting moves.
+  Written every frame rather than once when the setting moves: the engine is free to put its own
+  numbers back into a block (the broadcast makes it do so), so writing once is a race. Twenty five
+  floats and three ints into four cached objects costs nothing per tick.
 
-  A block is the engine's own object and it is free to put its own numbers back into it, the
-  broadcast being precisely the thing that makes it do so, so writing once is a race. The whole
-  write is about twenty five floats and three ints into four objects already in cache, so it costs
-  nothing to do it every tick and be certain.
-
-  The broadcast is still raised when something moves, because that is what makes the renderer look
-  at the blocks again. It is raised BEFORE the write, so the write is the last thing to touch the
-  block on that tick.
+  The broadcast is still raised when something moves, BEFORE the write, so the write is the last
+  thing to touch the block on that tick.
 */
 static void __fastcall DeviceTick(void* pManager, void* pEdx, void* pArg)
 {
@@ -663,9 +650,9 @@ static void FindRenderProfile()
         DeviceTickHook = safetyhook::create_inline(tick.get_first(), DeviceTick);
 }
 
-// VirtualQuery rather than a guess, and every read below goes through it. This crashed once already
-// on MOVSX ECX,[EAX] with EAX holding 1: a string whose capacity said "the text is somewhere else"
-// and whose pointer was not an address, because the object it was read out of was not a profile.
+// VirtualQuery rather than a guess; every read below goes through it. This crashed once on
+// MOVSX ECX,[EAX] with EAX holding 1: a string whose capacity said the text was elsewhere and
+// whose pointer was not an address, because the object was not a profile.
 static bool IsReadable(const void* pAddress, size_t nLength)
 {
     if (pAddress == nullptr)
@@ -682,15 +669,13 @@ static bool IsReadable(const void* pAddress, size_t nLength)
     return reinterpret_cast<uintptr_t>(pAddress) + nLength <= nEnd;
 }
 
-// One of the five names, or nothing. Anything that is not one of them is not a quality, which means
-// what was read is not the field intended, and that is a reason to stop answering rather than to
-// grey a row out on the strength of it.
+// One of the known names, or nothing: anything else means the field read was not a quality, so
+// stop answering rather than grey a row out on the strength of it.
 static const char* KnownQuality(const char* pName)
 {
-    // All nine rather than the five the display page offers. Shadow can also read "off", which is
-    // a level like any other and was reading as "not a quality at all", so the row it belongs was
-    // left alone instead of greyed. The last three are the console and legacy entries, listed
-    // because the table Dunia+3F2D30 walks has them and a name from it is a name that was meant.
+    // All nine, not the five the display page offers. Shadow can read "off", a level like any
+    // other that used to read as "not a quality" and left its row ungreyed. The last three are the
+    // console and legacy entries, in the table Dunia+3F2D30 walks.
     static const char* const szNames[]
     {
         "ultrahigh", "veryhigh", "high", "medium", "low", "off", "ps3", "xenon", "legacy"
@@ -733,15 +718,12 @@ export bool JackalFixGeometryIsUltra() { return SectionIsUltra(nProfileGeometryQ
 export bool JackalFixShadowsAreUltra() { return SectionIsUltra(nProfileShadowQuality); }
 export bool JackalFixTerrainIsUltra() { return SectionIsUltra(nProfileTerrainQuality); }
 
-// Writes the current settings over the blocks the loader built, then asks the renderer to pick them
-// up. Every field written is one the renderer reads out of the active block, and the byte below is
-// what makes it read the block again rather than whatever it took from it last time.
 // A CRenderProfile is about 884h bytes, so the whole of it is walked.
 static constexpr size_t nProfileScanBytes = 0x900;
 
-// The vtable Dunia+350FE5 writes into a geometry config (MOV dword ptr [ESI],10E460AC) and the RVA
-// of the broadcast, which is a known address in the same module and is what the base is worked out
-// from. Geometry turning up at 660h is the proof that the object being scanned is the right one.
+// The vtable Dunia+350FE5 writes into a geometry config (MOV dword ptr [ESI],10E460AC), and the
+// broadcast's RVA, a known address in the same module that the base is worked out from. Geometry
+// turning up at 660h proves the object being scanned is the right one.
 static constexpr ptrdiff_t nGeometryConfigVTableRva = 0xE460AC;
 static constexpr ptrdiff_t nRenderSettingsChangedRva = 0x3F8AB0;
 static constexpr ptrdiff_t nExpectedGeometryOffset = 0x660;
@@ -786,9 +768,8 @@ static void FindEmbeddedBlocks()
     pProfileShadow = FindEmbedded(pProfile, VTableOf(pUltraShadow));
     pProfileAmbient = FindEmbedded(pProfile, VTableOf(pHighAmbient));
 
-    // The parsed block's vtable is the same class, so the scan above should find all four. If the
-    // geometry one does not turn up, the constant out of its copy constructor is tried instead,
-    // the module base coming from the broadcast, which is a resolved address in the same image.
+    // The parsed block's vtable is the same class, so the scan should find all four. Failing that,
+    // fall back to the constant from the copy constructor, based off the broadcast's address.
     if (pProfileGeometry == nullptr && RaiseRenderSettingsChanged != nullptr)
     {
         const auto nBase = reinterpret_cast<uintptr_t>(RaiseRenderSettingsChanged) - nRenderSettingsChangedRva;
@@ -802,10 +783,9 @@ static void WriteBeyondUltraBlocks()
 
     /*
       Two objects per section and no more: the parsed block, so a quality applied later is copied
-      with these values already in it, and the one embedded in the global profile, which is what the
-      renderer reads. Both are owned for the life of the process. Following every copy the engine
-      makes writes to temporaries it has already destroyed, which walks the heap until something
-      falls over.
+      with these values in it, and the one embedded in the global profile, which the renderer
+      reads. Both live for the process. Following every copy the engine makes would write to
+      destroyed temporaries and walk the heap.
     */
     if (pUltraGeometry != nullptr)
         ApplyGeometry(static_cast<uint8_t*>(const_cast<void*>(pUltraGeometry)));
@@ -820,17 +800,14 @@ static void WriteBeyondUltraBlocks()
         ApplyAmbient(static_cast<uint8_t*>(const_cast<void*>(pHighAmbient)));
 
     /*
-      The profile's own blocks are gated on its qualities; the parsed ones above are not.
+      The profile's own blocks are gated on its qualities; the parsed ones above are not. Those are
+      templates, only read through the copy made when a level is applied, so writing them at any
+      quality costs nothing and readies them for when the player raises the level. The embedded
+      blocks hold whichever preset the profile names, so below ultrahigh writing Beyond Ultra into
+      them applied a row the menu had greyed out.
 
-      Those are the ultrahigh and high templates, read only through the copy the engine makes when a
-      level is applied, so writing them at any quality costs nothing and leaves the values ready for
-      the moment the player raises the level. The blocks embedded in the profile in force are what
-      the renderer reads and they hold whichever preset the profile names, so below ultrahigh they
-      are a lower preset's numbers and writing Beyond Ultra into them applied a row the menu had
-      already greyed out.
-
-      The gate is the same SectionIsUltra the menu greys from, so the row and the write cannot
-      disagree, including where the profile cannot be reached and both fall open.
+      The gate is the same SectionIsUltra the menu greys from, so row and write cannot disagree,
+      including where the profile cannot be reached and both fall open.
     */
     if (pProfileGeometry != nullptr && SectionIsUltra(nProfileGeometryQuality))
         ApplyGeometry(pProfileGeometry);
@@ -851,8 +828,8 @@ static void ReapplyBeyondUltra()
 {
     WriteBeyondUltraBlocks();
 
-    // The blocks are only half of it. The other half is telling the renderer they moved, which is
-    // the broadcast the display page raises, and which is spent on the engine's own thread.
+    // Telling the renderer they moved: the broadcast the display page raises, spent on the
+    // engine's own thread.
     bRenderSettingsMoved = true;
 
     if (ppRenderManager == nullptr || !IsReadable(ppRenderManager, sizeof(void*)))
@@ -862,25 +839,25 @@ static void ReapplyBeyondUltra()
     if (!IsReadable(pManager, nRenderManagerProfileMoved + 1))
         return;
 
-    // Written from the file watcher's thread and read from the engine's, which is one byte either
-    // way and the same shape the engine uses on itself.
+    // Written from the file watcher's thread, read from the engine's: one byte either way, the
+    // same shape the engine uses on itself.
     *(pManager + nRenderManagerProfileMoved) = 1;
 }
 
 /*
   RealTree instance budget, the other half of the map 2 foliage flicker.
 
-  CRealTreeRenderer cuts the visible set into four jobs and gives each a fixed instance array.
-  Dunia+397420 writes cap 624h into every job descriptor; the array behind it is allocated once in
-  the constructor at Dunia+399F70, 1890h entries of 8 bytes. Dunia+48B5D0 refuses a batch when
-  either count has reached its cap and returns -1, and Dunia+48B760 then drops the node with no
-  assert and no growth. Which nodes arrive past the cap follows the walk order, which moves with the
-  camera, so the loss reads as blinking rather than as a distance limit.
+  CRealTreeRenderer cuts the visible set into four jobs, each with a fixed instance array.
+  Dunia+397420 writes cap 624h into every job descriptor; the array is allocated once in the
+  constructor at Dunia+399F70, 1890h entries of 8 bytes. Dunia+48B5D0 refuses a batch when either
+  count reaches its cap and returns -1, and Dunia+48B760 drops the node with no assert and no
+  growth. Which nodes arrive past the cap follows the walk order, which moves with the camera, so
+  the loss reads as blinking rather than a distance limit.
 
   Measured on map 2 at BeyondUltraGeometry 3: instances saturated at 1572 of 1572 with 230 nodes a
-  frame refused, batches peaked at 190 of 1024, and the same view off the setting peaked at 800 and
-  lost nothing. RealTreesLodScale is what fills it, holding trees at their near LODs ten times
-  further out, but clamping that back is giving up the setting to work around a fixed array.
+  frame refused, batches peaked at 190 of 1024; the same view off the setting peaked at 800 and lost
+  nothing. RealTreesLodScale fills it, holding trees at near LODs ten times further out, but
+  clamping that back gives up the setting to work around a fixed array.
 
   Nine imm32 sites describe the one buffer:
 
