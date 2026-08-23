@@ -311,11 +311,19 @@ static uint8_t* FindNamedNode(uint8_t* pArea, uint32_t nWanted)
       Factory::CreateKeyframe(ti)        0xABEE80
       Element::AddKeyframe(kf)           0xAB1C10
       Area::AddElement(e)                vtable +0x48
-      Area::SetTime(0,0,0)               0xA973E0  forces one evaluation
+      Area::SetTime(t,0,0)               0xA973E0  forces one evaluation
 
   The Area destructor frees the Element, so one allocated from our own CRT would hand a foreign
   pointer to magma's pool free. The keyframe is not optional: an empty vector gets index 0xFFF and
   the draw gate refuses it. Its contents do not matter, the components are pinned afterwards.
+
+  SetTime is seek, not refresh, and it recurses: it stores the time on the Area, evaluates every
+  visible child's keyframes at it, and each AreaInstance forwards the seek into its own child Area.
+  Seeking to zero is therefore not free. CHudPrompt::Update is nothing but four seeks on the
+  prompt's Area, at 0 to show and at frame*5 to hide, and the HUD's inventory icons share one
+  timeline where the segment is which icon is up: watch first, then the wrench. It seeks on state
+  changes only, so a stray seek to zero mid-prompt left the repair prompt showing the watch until
+  the prompt next hid itself. Seek back to where the area already was instead.
 */
 static constexpr ptrdiff_t nFactoryGlobalRva = 0x1664768;
 static constexpr ptrdiff_t nImageTypeInfoRva = 0x1663F0C;
@@ -323,6 +331,9 @@ static constexpr ptrdiff_t nCreateElementRva = 0xABF0E0;
 static constexpr ptrdiff_t nCreateKeyframeRva = 0xABEE80;
 static constexpr ptrdiff_t nAddKeyframeRva = 0xAB1C10;
 static constexpr ptrdiff_t nAreaSetTimeRva = 0xA973E0;
+
+// Where SetTime records the time it was given, so it can be handed back.
+static constexpr ptrdiff_t nAreaTime = 0x4C;
 
 static constexpr ptrdiff_t nElementName = 0x08;
 static constexpr ptrdiff_t nElementDrawable = 0x14;
@@ -369,8 +380,10 @@ static uint8_t* BuildImageChild(uint8_t* pArea, uint32_t nName)
     if (!ppVtable)
         return nullptr;
 
+    auto nTime = *reinterpret_cast<int32_t*>(pArea + nAreaTime);
+
     reinterpret_cast<AreaAddElement_t>(ppVtable[nAreaAddElementSlot / sizeof(void*)])(pArea, pElement);
-    reinterpret_cast<AreaSetTime_t>(Rva(nAreaSetTimeRva))(pArea, 0, 0, 0);
+    reinterpret_cast<AreaSetTime_t>(Rva(nAreaSetTimeRva))(pArea, nTime, 0, 0);
 
     return pDrawable;
 }

@@ -326,11 +326,13 @@ public:
 
     void Write()
     {
+        std::lock_guard g(mtx);
         WriteMemoryRaw(ptr, new_code.data(), new_code.size(), true);
     }
 
     void Restore()
     {
+        std::lock_guard g(mtx);
         WriteMemoryRaw(ptr, old_code.data(), old_code.size(), true);
     }
 
@@ -345,6 +347,14 @@ public:
     }
 
 private:
+    // injector's scoped_unprotect has no synchronisation: two threads unprotecting the same page
+    // race, and whichever finishes first reprotects it under the other's memcpy. The menu applies
+    // a patch on the engine thread while the ini watcher applies the same one on its own thread,
+    // so this is reachable from any settings change.
+    //
+    // ponytail: one lock for every patch. Per-page locks only if patch writes ever get hot.
+    static inline std::mutex mtx;
+
     injector::memory_pointer ptr;
     std::vector<uint8_t> old_code;
     std::vector<uint8_t> new_code;
