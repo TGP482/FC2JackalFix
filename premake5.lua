@@ -38,6 +38,10 @@ workspace "FC2JackalFix"
       revision = math.min(tonumber(t[4]), 65535)
    end
 
+   -- -- Local builds show DEV, CI releases use the actual version
+   local nRelease = 1
+   local szVersion = _OPTIONS["with-version"] and ("V" .. major) or ("V" .. nRelease .. " DEV")
+
    local githash = ""
    local f = io.popen("git rev-parse --short HEAD")
    if f then
@@ -58,6 +62,8 @@ workspace "FC2JackalFix"
    defines { "rsc_ProductVersion=\"" .. productVersion .. "\"" }
    defines { "rsc_GitSHA1=\"" .. githash .. "\"" }
    defines { "rsc_GitSHA1W=L\"" .. githash .. "\"" }
+   defines { "rsc_Version=\"" .. szVersion .. "\"" }
+   defines { "rsc_VersionW=L\"" .. szVersion .. "\"" }
 
    defines { "_CRT_SECURE_NO_WARNINGS" }
 

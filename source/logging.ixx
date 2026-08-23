@@ -239,7 +239,7 @@ static void LogSystemInfo()
 {
     SYSTEMTIME now{};
     GetLocalTime(&now);
-    LogInfo("Starting FC2JackalFix v{} at {:04}-{:02}-{:02} {:02}:{:02}:{:02}", rsc_FileVersion,
+    LogInfo("Starting FC2JackalFix {} ({}) at {:04}-{:02}-{:02} {:02}:{:02}:{:02}", rsc_Version, rsc_FileVersion,
         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
 
     const auto asiPath = SelfPath();
