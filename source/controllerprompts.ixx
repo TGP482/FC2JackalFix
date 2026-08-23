@@ -907,13 +907,34 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
   the pad up would keep its old glyphs until they navigated. Prompts attached since the last page
   change are kept and walked again on the device change.
 
-  The pointers go stale: a teardown frees the vector and PromptSet::FindOrCreate grows it, moving
-  every prompt without detaching anything. CNavBarPrompt opens with a vftable, which tells a live
-  object from a freed block, and OnDetach clears the attached flag at +0x51.
+  Prompt addresses cannot be cached. The set holds its prompts by value, 0x54 apart, and growing it
+  moves every one of them without detaching anything, so a cached address is left on a freed block
+  the moment a page asks for one prompt more than the last did. Nothing re-attaches the prompts that
+  moved, so nothing puts a fresh address back either: the pad's Apply and Default simply stopped
+  finding a prompt until the next page change attached everything again.
+
+  So what is kept is the set, and its array is read out fresh on every walk:
+
+      CNavBarModule::AttachPrompts   0x101D1FE0
+
+          MOV  ECX,[ESI+0x4]      ; the array, re-read per element
+          ADD  ECX,EBX            ; stride 0x54
+          CALL CNavBarPrompt::OnAttach
+          CMP  EDI,[ESI+0x8]      ; the count
+
+  The set outlives its prompts moving, and a set that does not outlive the module is answered by the
+  same checks a prompt already gets: CNavBarPrompt opens with a vftable, which tells a live object
+  from a freed block, and OnDetach clears the attached flag at +0x51.
 */
+static constexpr ptrdiff_t nPromptSetArray = 0x04;
+static constexpr ptrdiff_t nPromptSetCount = 0x08;
+
+// The nav bars carry four or five. A freed set reading a wild count is rejected rather than walked.
+static constexpr uint32_t nPromptSetMax = 16;
+
 // A vector rather than a set: the pad buttons below want the most recently attached prompt for a
 // button id, and attach order is the only thing separating a modal's prompts from the page's.
-static std::vector<uint8_t*> sAttachedPrompts;
+static std::vector<uint8_t*> sPromptSets;
 
 // VirtualQuery rather than an SEH frame: same cost either way, and the walk stays an ordinary
 // function.
@@ -958,19 +979,49 @@ static bool IsLivePrompt(uint8_t* pPrompt)
     return *(pPrompt + nPromptAttached) != 0;
 }
 
+// Newest set first and, within it, the prompt the set attached last, so a modal's prompts answer
+// ahead of the page's. Returning true from the callback stops the walk.
+template <typename Fn>
+static void ForEachLivePrompt(Fn&& fn)
+{
+    for (auto it = sPromptSets.rbegin(); it != sPromptSets.rend(); ++it)
+    {
+        auto pSet = *it;
+        if (!IsObject(pSet))
+            continue;
+
+        auto pPrompts = *reinterpret_cast<uint8_t**>(pSet + nPromptSetArray);
+        auto nCount = *reinterpret_cast<uint32_t*>(pSet + nPromptSetCount);
+        if (!pPrompts || nCount > nPromptSetMax)
+            continue;
+
+        for (auto i = static_cast<int32_t>(nCount) - 1; i >= 0; i--)
+        {
+            auto pPrompt = pPrompts + i * static_cast<ptrdiff_t>(nPromptSize);
+            if (IsLivePrompt(pPrompt) && fn(pPrompt))
+                return;
+        }
+    }
+}
+
+// Remembered on the walk that attaches them, and moved to the back so the set that attached most
+// recently is the one the pad buttons ask first.
+static void RememberPromptSet(uint8_t* pSet)
+{
+    if (!pSet)
+        return;
+
+    sPromptSets.erase(std::remove(sPromptSets.begin(), sPromptSets.end(), pSet), sPromptSets.end());
+    sPromptSets.push_back(pSet);
+}
+
 static void RefreshMenuGlyphs()
 {
-    for (auto it = sAttachedPrompts.begin(); it != sAttachedPrompts.end(); )
+    ForEachLivePrompt([](uint8_t* pPrompt)
     {
-        if (!IsLivePrompt(*it))
-        {
-            it = sAttachedPrompts.erase(it);
-            continue;
-        }
-
-        ApplyMenuGlyph(*it);
-        ++it;
-    }
+        ApplyMenuGlyph(pPrompt);
+        return false;
+    });
 }
 
 // --------------------------------------------------------------------------------------------
@@ -2147,22 +2198,27 @@ static ActivatePrompt_t ActivatePrompt = nullptr;
 // checked as a pair: a Node whose drawable is not this prompt's widget is not its Node.
 static uint8_t* FindPrompt(int32_t nButton)
 {
-    for (auto it = sAttachedPrompts.rbegin(); it != sAttachedPrompts.rend(); ++it)
+    uint8_t* pFound = nullptr;
+
+    ForEachLivePrompt([&](uint8_t* pPrompt)
     {
-        if (!IsLivePrompt(*it) || *reinterpret_cast<int32_t*>(*it + nPromptButtonId) != nButton)
-            continue;
+        if (*reinterpret_cast<int32_t*>(pPrompt + nPromptButtonId) != nButton)
+            return false;
 
-        auto pNode = *reinterpret_cast<uint8_t**>(*it + nPromptNode);
-        auto pWidget = *reinterpret_cast<uint8_t**>(*it + nPromptElement);
+        auto pNode = *reinterpret_cast<uint8_t**>(pPrompt + nPromptNode);
+        auto pWidget = *reinterpret_cast<uint8_t**>(pPrompt + nPromptElement);
 
-        if (IsObject(pNode) && IsObject(pWidget)
-            && *reinterpret_cast<uint8_t**>(pNode + nNodeDrawable) == pWidget)
+        if (!IsObject(pNode) || !IsObject(pWidget)
+            || *reinterpret_cast<uint8_t**>(pNode + nNodeDrawable) != pWidget)
         {
-            return *it;
+            return false;
         }
-    }
 
-    return nullptr;
+        pFound = pPrompt;
+        return true;
+    });
+
+    return pFound;
 }
 
 static bool PressPrompt(uint8_t* pPrompt)
@@ -2507,11 +2563,41 @@ public:
                     if (!pPrompt)
                         return;
 
-                    if (std::find(sAttachedPrompts.begin(), sAttachedPrompts.end(), pPrompt) == sAttachedPrompts.end())
-                        sAttachedPrompts.push_back(pPrompt);
-
                     ApplyMenuGlyph(pPrompt);
                 });
+
+                /*
+                  CNavBarModule::AttachPrompts, at its entry, where ECX is the set: the array at +4
+                  and the count at +8 are what every later walk reads, and every path that puts
+                  prompts on screen comes through here.
+
+                      56 57        PUSH ESI / PUSH EDI
+                      8B F1        MOV  ESI,ECX          ; the set
+                      ...
+                      8B 4E 04     MOV  ECX,[ESI+0x4]
+                      03 CB        ADD  ECX,EBX          ; stride 0x54
+                      E8 ? ? ? ?   CALL CNavBarPrompt::OnAttach
+
+                  Detach is the same function with a different call in it, byte for byte otherwise,
+                  so the match is settled on where that call goes rather than on a longer pattern.
+                */
+                static constexpr ptrdiff_t nAttachAllCall = 0x15;
+                auto pOnAttach = navBarAttachPattern.get_first();
+                auto attachAllPattern = dunia_pattern("56 57 8B F1 33 FF 39 7E 08 76 1B 53 33 DB 8B FF 8B 4E 04 03 CB E8");
+
+                for (size_t i = 0; i < attachAllPattern.size(); i++)
+                {
+                    auto pAttachAll = attachAllPattern.get(i).get<uint8_t>();
+                    if (CallTarget(pAttachAll + nAttachAllCall) != reinterpret_cast<uintptr_t>(pOnAttach))
+                        continue;
+
+                    static auto NavBarAttachAllHook = safetyhook::create_mid(pAttachAll, [](SafetyHookContext& regs)
+                    {
+                        RememberPromptSet(reinterpret_cast<uint8_t*>(regs.ecx));
+                    });
+
+                    break;
+                }
 
                 /*
                   Attach is the wrong moment to measure, so the placement is redone every frame.
