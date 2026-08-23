@@ -21,19 +21,6 @@ on:
         options:
           - 'true'
           - 'false'
-      version_increment:
-        description: "Default semantic version release type"
-        type: choice
-        required: false
-        default: 'minor'
-        options:
-          - 'major'
-          - 'minor'
-          - 'patch'
-
-env:
-  VERINC: ${{ github.event.inputs.version_increment || 'patch' }}
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
@@ -54,16 +41,15 @@ jobs:
     - name: Add msbuild to PATH
       uses: microsoft/setup-msbuild@main
 
-    - name: Auto Increment Version
-      uses: MCKanpolat/auto-semver-action@1.0.12
-      id: versioning
-      with:
-        releaseType: ${{ env.VERINC }}
-        incrementPerCommit: false
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Read release number
+      id: release
+      run: |
+        $match = Select-String -Path premake5.lua -Pattern 'local nRelease\s*=\s*(\d+)'
+        if (-not $match) { throw 'nRelease not found in premake5.lua' }
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "number=$($match.Matches[0].Groups[1].Value)"
 
     - name: Configure build
-      run: ./premake5 vs2026 --with-version=${{ steps.versioning.outputs.version }}
+      run: ./premake5 vs2026 --with-version=${{ steps.release.outputs.number }}
 
     - name: Build
       run: |
@@ -101,7 +87,7 @@ jobs:
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         allowUpdates: false
-        name: FC2JackalFix v${{ steps.versioning.outputs.version }}
+        name: FC2JackalFix V${{ steps.release.outputs.number }}
         bodyFile: "release.md"
-        tag: v${{ steps.versioning.outputs.version }}
+        tag: V${{ steps.release.outputs.number }}
         artifacts: FC2JackalFix.zip
