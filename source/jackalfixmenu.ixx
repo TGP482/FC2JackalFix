@@ -1414,7 +1414,8 @@ static constexpr uint32_t nReaderEarly = 32;
 
 // Not the allocator the pages are built with. Pairing that one with the free this block eventually
 // meets would corrupt the heap on the way out.
-static constexpr uint32_t nEngineAllocSlot = 0x00FB6440;
+// The GOG build moved it, along with everything else in that region.
+static uint32_t EngineAllocSlot() { return ByBuild<uint32_t>(0x00FB6440, 0x00F0F3F0); }
 
 using EngineAlloc_t = void* (__cdecl*)(size_t nSize, int nFlags);
 
@@ -1427,7 +1428,7 @@ static EngineAlloc_t EngineAllocator()
     if (hDunia == nullptr)
         return nullptr;
 
-    auto ppAllocator = reinterpret_cast<EngineAlloc_t*>(reinterpret_cast<uint8_t*>(hDunia) + nEngineAllocSlot);
+    auto ppAllocator = reinterpret_cast<EngineAlloc_t*>(reinterpret_cast<uint8_t*>(hDunia) + EngineAllocSlot());
     if (!IsReadable(ppAllocator, sizeof(void*)))
         return nullptr;
 
@@ -1633,15 +1634,21 @@ static bool MatchesSignature(const uint8_t* pCode, const char* pSignature)
 // Resolved by offset and proved by its own first bytes. Dunia loads at its preferred base, so the
 // offset is the address; the signatures carry no absolute immediates and would still match if it
 // did not. The check guards against a different build of the DLL.
+// The offset names the function and the signature proves it. When the offset does not check out,
+// which is every one of these on a build the offsets were not taken from, the signature is asked to
+// name the function on its own - and only when it is the one thing in the image that answers to it,
+// since several of these bodies repeat.
 static void* ResolveEngineFunction(uint32_t nOffset, const char* pSignature)
 {
     if (hDunia == nullptr)
         return nullptr;
 
     auto pCode = reinterpret_cast<uint8_t*>(hDunia) + nOffset;
-    if (!IsReadable(pCode, 32) || !MatchesSignature(pCode, pSignature))
-        return nullptr;
-    return pCode;
+    if (IsReadable(pCode, 32) && MatchesSignature(pCode, pSignature))
+        return pCode;
+
+    auto scanned = dunia_pattern(pSignature);
+    return scanned.size() == 1 ? scanned.get_first() : nullptr;
 }
 
 // Anything that fails to resolve leaves its part of the page where the layout put it, rather than
@@ -1649,7 +1656,7 @@ static void* ResolveEngineFunction(uint32_t nOffset, const char* pSignature)
 static void ResolveLayoutSupport()
 {
     Crc32      = reinterpret_cast<Crc32_t>     (ResolveEngineFunction(0x00AA7150, "80 3D ? ? ? ? 00 0F 84 96 00 00 00 C6 05"));
-    NameLookup = reinterpret_cast<NameLookup_t>(ResolveEngineFunction(0x00AD2B30, "56 8B 71 08 57 8B 7C 24 0C 33 D2 EB 03 8D 49 00"));
+    NameLookup = reinterpret_cast<NameLookup_t>(ResolveEngineFunction(ByBuild<uint32_t>(0x00AD2B30, 0x00AC2040), "56 8B 71 08 57 8B 7C 24 0C 33 D2 EB 03 8D 49 00"));
 
     SetHighlight = reinterpret_cast<SetHighlight_t>(ResolveEngineFunction(0x00A9D1A0,
         "56 8B F1 8B 86 D0 00 00 00 57 8B 7C 24 14 3B F8 89 BE D0 00"));
@@ -1657,8 +1664,8 @@ static void ResolveLayoutSupport()
     SetSelection = reinterpret_cast<SetSelection_t>(ResolveEngineFunction(0x00A9C800,
         "51 53 56 8B F1 8B 8E 94 00 00 00 57 8B BE D4 00 00 00 85 FF"));
 
-    FindArea   = reinterpret_cast<FindArea_t>  (ResolveEngineFunction(0x00535B70, "8B 44 24 08 8B 54 24 04 56 50 52 E8 ? ? ? ? 8B F0 85 F6"));
-    StringMake = reinterpret_cast<StringMake_t>(ResolveEngineFunction(0x000BD1D0, "51 56 8B F1 33 C0 57 8D 4C 24 0B 88 44 24 0B 89 46 14 8D 46"));
+    FindArea   = reinterpret_cast<FindArea_t>  (ResolveEngineFunction(ByBuild<uint32_t>(0x00535B70, 0x00527C10), "8B 44 24 08 8B 54 24 04 56 50 52 E8 ? ? ? ? 8B F0 85 F6"));
+    StringMake = reinterpret_cast<StringMake_t>(ResolveEngineFunction(ByBuild<uint32_t>(0x000BD1D0, 0x000BC530), "51 56 8B F1 33 C0 57 8D 4C 24 0B 88 44 24 0B 89 46 14 8D 46"));
     StringFree = reinterpret_cast<StringFree_t>(ResolveEngineFunction(0x000BCF90, "51 56 8B F1 83 7E 18 10 72 0D 8B 46 04 50 FF 15 ? ? ? ?"));
 }
 
@@ -1703,9 +1710,10 @@ static void* FindElementByName(void* pDocument, const char* pName)
 
 // The three state classes a moveable thing might carry. +26h is y on one family and the right edge
 // on the other, so the class is read rather than assumed and an unrecognised one is left alone.
-static constexpr uint32_t nRectStateVTable  = 0x00EE6D74;
-static constexpr uint32_t nPosStateVTable   = 0x00EEBD24;
-static constexpr uint32_t nScaleStateVTable = 0x00EEA17C;
+// The GOG build's .rdata sits 0x889D0 lower, so every magma vtable moves with it.
+static uint32_t RectStateVTable()  { return ByBuild<uint32_t>(0x00EE6D74, 0x00E5E3A4); }
+static uint32_t PosStateVTable()   { return ByBuild<uint32_t>(0x00EEBD24, 0x00E63354); }
+static uint32_t ScaleStateVTable() { return ByBuild<uint32_t>(0x00EEA17C, 0x00E617AC); }
 static constexpr uint32_t nLockRectY = 0x00000C00; // rect top and bottom
 static constexpr uint32_t nLockPosY  = 0x00000004; // pos y
 
@@ -1734,7 +1742,7 @@ static void MoveInstanceUp(void* pInstance, int nUp)
     auto nBase = reinterpret_cast<uint32_t>(hDunia);
     auto& nLock = *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(pInstance) + nWidgetLockMask);
 
-    if (nVTable == nBase + nRectStateVTable)
+    if (nVTable == nBase + RectStateVTable())
     {
         // Both edges by the same amount. Moving one stretches the box.
         nLock |= nLockRectY;
@@ -1743,7 +1751,7 @@ static void MoveInstanceUp(void* pInstance, int nUp)
         *pTop    = static_cast<int16_t>(*pTop - nUp);
         *pBottom = static_cast<int16_t>(*pBottom - nUp);
     }
-    else if (nVTable == nBase + nPosStateVTable || nVTable == nBase + nScaleStateVTable)
+    else if (nVTable == nBase + PosStateVTable() || nVTable == nBase + ScaleStateVTable())
     {
         nLock |= nLockPosY;
         auto pY = reinterpret_cast<int16_t*>(static_cast<uint8_t*>(pState) + nStateRectRight);
@@ -2118,8 +2126,9 @@ static constexpr ptrdiff_t nTextStateColour = 0x10;
 
 // Which magma class an offset is true of, by vtable. Nothing is read or written until the object
 // has said what it is.
-static constexpr ptrdiff_t nImageVtableRva = 0xEE6A04;
-static constexpr ptrdiff_t nTextVtableRva = 0xEE63E4;
+// Both classes sit 0x889D0 lower in the GOG build, which recompiled the same source.
+static ptrdiff_t ImageVtableRva() { return ByBuild<ptrdiff_t>(0xEE6A04, 0xE5E034); }
+static ptrdiff_t TextVtableRva() { return ByBuild<ptrdiff_t>(0xEE63E4, 0xE5DA14); }
 
 // Fading a row's value, by which row is being drawn rather than by which object it is.
 //
@@ -2683,7 +2692,7 @@ struct GameWideString
     uint32_t       nCapacity;
 };
 
-static const wchar_t szWatermarkText[] = L"Jackal Fix " rsc_VersionW;
+static const wchar_t szWatermarkText[] = L"Jackal Fix V1";
 
 static GameWideString Watermark
 {
@@ -2840,7 +2849,7 @@ static void DrawWatermark(void* pText, Draw&& DrawString)
 // sets and the per-cell draw overrides. Nothing here decides anything.
 static void __fastcall JackalFixTextDraw(void* pText, void* pEdx, void* pArg1, void* pArg2)
 {
-    const auto faded = FadeForDraw(pText, nTextVtableRva, nTextStateColour, 1);
+    const auto faded = FadeForDraw(pText, TextVtableRva(), nTextStateColour, 1);
     TextDrawHook.fastcall(pText, pEdx, pArg1, pArg2);
     RestoreAfterDraw(faded);
 
@@ -2854,7 +2863,7 @@ static void __fastcall JackalFixTextDraw(void* pText, void* pEdx, void* pArg1, v
 
 static void __fastcall JackalFixTextDrawPlain(void* pText, void* pEdx, void* pArg)
 {
-    const auto faded = FadeForDraw(pText, nTextVtableRva, nTextStateColour, 1);
+    const auto faded = FadeForDraw(pText, TextVtableRva(), nTextStateColour, 1);
     TextDrawPlainHook.fastcall(pText, pEdx, pArg);
     RestoreAfterDraw(faded);
 
@@ -2864,7 +2873,7 @@ static void __fastcall JackalFixTextDrawPlain(void* pText, void* pEdx, void* pAr
 
 static void __fastcall JackalFixImageDraw(void* pImage, void* pEdx)
 {
-    const auto faded = FadeForDraw(pImage, nImageVtableRva, nImageStateColour, nImageStateColourCount);
+    const auto faded = FadeForDraw(pImage, ImageVtableRva(), nImageStateColour, nImageStateColourCount);
     ImageDrawHook.fastcall(pImage, pEdx);
     RestoreAfterDraw(faded);
 }

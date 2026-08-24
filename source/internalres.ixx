@@ -521,8 +521,9 @@ public:
                 return;
 
             // FUN_1040F190. The pattern runs past the end of its ten-byte body into the CC padding
-            // and the next prologue on purpose: an identical setter body exists at 0x102795C4.
-            auto wrapperSetter = dunia_pattern("8B 44 24 04 89 41 1C C2 04 00 CC CC CC CC CC CC 56 57 8B F9 33 F6 39 77");
+            // on purpose: an identical setter body exists at 0x102795C4, unpadded. It used to run
+            // on into the next prologue as well, which the GOG build does not share.
+            auto wrapperSetter = dunia_pattern("8B 44 24 04 89 41 1C C2 04 00 CC CC CC CC CC CC");
             if (wrapperSetter.empty())
                 return;
 

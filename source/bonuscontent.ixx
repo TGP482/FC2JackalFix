@@ -18,11 +18,21 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // Predecessor tapes: PrivilegesClient::GetPrivilege(1000).
-            if (auto* pPredecessorTapes = dunia_find("8B 49 0C 85 C9 74 16 8B 44 24 04 50 E8 ? ? ? ? 84 C0 74 08 B8 01 00 00 00 C2 04 00", 5))
+            // Predecessor tapes. Steam asks PrivilegesClient::GetPrivilege(1000), a dead Ubisoft
+            // service. GOG kept the original entitlement check, a PartnerKey%d lookup under
+            // HKCU\Software\Ubisoft\Far Cry 2. Different functions, so the builds want different
+            // patches rather than one shared pattern.
+            auto* pPredecessorTapes = IsGOG()
+                ? dunia_find("81 EC 10 01 00 00 53 8D 44 24 08 50 68 19 00 02 00 33 DB 53")
+                : dunia_find("8B 49 0C 85 C9 74 16 8B 44 24 04 50 E8 ? ? ? ? 84 C0 74 08 B8 01 00 00 00 C2 04 00", 5);
+
+            if (pPredecessorTapes)
             {
-                // JZ fail -> JMP success
-                static raw_mem fnPredecessorTapes(pPredecessorTapes, { 0xEB, 0x0E });
+                // Steam: JZ fail -> JMP success. GOG: MOV AL, 1 / RET 4 over the whole lookup,
+                // since there is no single branch to flip once the registry key is missing.
+                static raw_mem fnPredecessorTapes = IsGOG()
+                    ? raw_mem(pPredecessorTapes, { 0xB0, 0x01, 0xC2, 0x04, 0x00 })
+                    : raw_mem(pPredecessorTapes, { 0xEB, 0x0E });
 
                 BindPatch(fnPredecessorTapes, PREF_PREDECESSORTAPES);
             }

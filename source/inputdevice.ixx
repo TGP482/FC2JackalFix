@@ -169,7 +169,12 @@ public:
             // CInputDriverKeyboard::OnKey(keyStates, sink, keyIndex), one call per changed key.
             // Only a press counts, which also excludes the 256 key sweep the poll runs on device
             // lost: that sweep passes a zeroed state array, so every key reads as released.
-            if (auto* pKey = dunia_find("8B 44 24 0C 83 EC 30 8D 14 C5 00 00 00 00 2B D0 56 8D 34 91 0F B7 56 08"))
+            // GOG reads the flag field at +8 as a byte where Steam reads it as a word, so the
+            // patterns part company four instructions in. Everything the hook below reads, the
+            // entry stack layout, is identical in both.
+            if (auto* pKey = dunia_find(
+                "8B 44 24 0C 83 EC 30 8D 14 C5 00 00 00 00 2B D0 56 8D 34 91 0F B7 56 08",
+                "8B 44 24 0C 83 EC 30 8D 14 C5 00 00 00 00 2B D0 56 8D 34 91 8A 56 08 F6 C2 01"))
             {
                 static auto KeyboardHook = safetyhook::create_mid(pKey, [](SafetyHookContext& regs)
                 {

@@ -1744,8 +1744,12 @@ public:
 
             // GetComponent<CVehiclePhysComponent>. Every one of these getters is the same six
             // instructions around two globals and two calls, so the registrar's call displacement
-            // is left unwildcarded. Wildcard it and the same bytes match 69 other getters.
-            auto vehiclePhysicsPattern = dunia_pattern("83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 3D D6 FD FF 68 ? ? ? ? 8B CE E8 ? ? ? ? 5E C3");
+            // is left unwildcarded. Wildcard it and the same bytes match 69 other getters. The
+            // displacement is build specific, hence one pattern per build; GOG also pins the
+            // pushed descriptor, 0x10F2D95C, which is CVehiclePhysComponent's alone.
+            auto vehiclePhysicsPattern = dunia_pattern(
+                "83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 3D D6 FD FF 68 ? ? ? ? 8B CE E8 ? ? ? ? 5E C3",
+                "83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 0D DE FD FF 68 5C D9 F2 10 8B CE E8 ? ? ? ? 5E C3");
             if (!vehiclePhysicsPattern.empty())
                 GetVehiclePhysics = reinterpret_cast<GetVehiclePhysics_t>(vehiclePhysicsPattern.get_first());
 

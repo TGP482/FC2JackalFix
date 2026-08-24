@@ -31,7 +31,8 @@ static constexpr MaterialRedirect Redirects[] =
 static constexpr ptrdiff_t nFindCallOpcode = 0x09;
 static constexpr ptrdiff_t nCreateCallOpcode = 0x29;
 static constexpr ptrdiff_t nClassDescriptorOperand = 0x22;
-static constexpr uintptr_t nMaterialClassDescriptorRva = 0x1607AE0;
+// The descriptor moved in the GOG build, which recompiled the same source.
+static uintptr_t MaterialClassDescriptorRva() { return ByBuild<uintptr_t>(0x1607AE0, 0x1556ED0); }
 
 // Prologues of the two resolved targets, checked before either is hooked.
 //   Find:   PUSH ECX / MOV EAX,[ESP+8] / PUSH ESI / MOV ESI,ECX
@@ -104,7 +105,7 @@ public:
             if (pattern.empty())
                 return;
 
-            const auto nMaterialClassDescriptor = reinterpret_cast<uintptr_t>(hDunia) + nMaterialClassDescriptorRva;
+            const auto nMaterialClassDescriptor = reinterpret_cast<uintptr_t>(hDunia) + MaterialClassDescriptorRva();
 
             for (size_t i = 0; i < pattern.size(); ++i)
             {

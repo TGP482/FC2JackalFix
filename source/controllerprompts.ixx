@@ -99,15 +99,15 @@ static constexpr ptrdiff_t nStateColour = 0x44;
 static constexpr int nColourCount = 4;
 static constexpr uint32_t nOpaqueWhite = 0xFFFFFFFF;
 
-static constexpr ptrdiff_t nImageVtableRva = 0xEE6A04;
-static constexpr ptrdiff_t nAreaInstanceVtableRva = 0xEE6BB4;
-static constexpr ptrdiff_t nTextVtableRva = 0xEE63E4;
-static constexpr ptrdiff_t nPlaceholderVtableRva = 0xEE9EA4;
+static ptrdiff_t nImageVtableRva = 0xEE6A04;
+static ptrdiff_t nAreaInstanceVtableRva = 0xEE6BB4;
+static ptrdiff_t nTextVtableRva = 0xEE63E4;
+static ptrdiff_t nPlaceholderVtableRva = 0xEE9EA4;
 
 // magma::ListBox and magma::RectShape (named by their own RTTI). The shop page is built out of
 // them, so without both on the rect-state list the arrows read no box off anything.
-static constexpr ptrdiff_t nListBoxVtableRva = 0xEE4794;
-static constexpr ptrdiff_t nRectShapeVtableRva = 0xEE796C;
+static ptrdiff_t nListBoxVtableRva = 0xEE4794;
+static ptrdiff_t nRectShapeVtableRva = 0xEE796C;
 
 static uintptr_t Rva(ptrdiff_t nOffset)
 {
@@ -325,12 +325,12 @@ static uint8_t* FindNamedNode(uint8_t* pArea, uint32_t nWanted)
   changes only, so a stray seek to zero mid-prompt left the repair prompt showing the watch until
   the prompt next hid itself. Seek back to where the area already was instead.
 */
-static constexpr ptrdiff_t nFactoryGlobalRva = 0x1664768;
-static constexpr ptrdiff_t nImageTypeInfoRva = 0x1663F0C;
-static constexpr ptrdiff_t nCreateElementRva = 0xABF0E0;
-static constexpr ptrdiff_t nCreateKeyframeRva = 0xABEE80;
-static constexpr ptrdiff_t nAddKeyframeRva = 0xAB1C10;
-static constexpr ptrdiff_t nAreaSetTimeRva = 0xA973E0;
+static ptrdiff_t nFactoryGlobalRva = 0x1664768;
+static ptrdiff_t nImageTypeInfoRva = 0x1663F0C;
+static ptrdiff_t nCreateElementRva = 0xABF0E0;
+static ptrdiff_t nCreateKeyframeRva = 0xABEE80;
+static ptrdiff_t nAddKeyframeRva = 0xAB1C10;
+static ptrdiff_t nAreaSetTimeRva = 0xA973E0;
 
 // Where SetTime records the time it was given, so it can be handed back.
 static constexpr ptrdiff_t nAreaTime = 0x4C;
@@ -417,11 +417,11 @@ static constexpr std::array<std::string_view, 33> sPadSpriteNames =
 // prompt set. +0x4C is the button id, 0x5C when the prompt was given an icon value instead.
 static constexpr ptrdiff_t nPromptNode = 0x04;
 static constexpr ptrdiff_t nPromptElement = 0x08;
-static constexpr ptrdiff_t nPromptSprite = 0x40;
-static constexpr ptrdiff_t nPromptButtonId = 0x4C;
-static constexpr ptrdiff_t nPromptAttached = 0x51;
-static constexpr size_t nPromptSize = 0x54;
-static constexpr ptrdiff_t nPromptVtableRva = 0xE25054;
+static ptrdiff_t nPromptSprite = 0x40;
+static ptrdiff_t nPromptButtonId = 0x4C;
+static ptrdiff_t nPromptAttached = 0x51;
+static size_t nPromptSize = 0x54;
+static ptrdiff_t nPromptVtableRva = 0xE25054;
 
 // Xbox button ids as FUN_10533F10 numbers them.
 static constexpr int32_t nPadA = 0;
@@ -1217,7 +1217,7 @@ static void ApplyHudGlyph(uint8_t* pPrompt, const HudPrompt& prompt)
       MOV ECX,[0x10FE3178]
       ADD ECX,0x4
 */
-static constexpr ptrdiff_t nScreenManagerRva = 0xFE3178;
+static ptrdiff_t nScreenManagerRva = 0xFE3178;
 static constexpr ptrdiff_t nScreenManagerOffset = 0x04;
 static constexpr ptrdiff_t nCursorEnabledMask = 0x29;
 static constexpr int nCursorSlotCount = 8;
@@ -1377,7 +1377,7 @@ static constexpr ptrdiff_t nBazaarRefreshThis = 0x09;
 // The two calls inside it that turn an element name into a drawable.
 static constexpr ptrdiff_t nMakeElementNameCall = 0x55;
 static constexpr ptrdiff_t nFindElementCall = 0x60;
-static constexpr ptrdiff_t nUiManagerRva = 0x1645C3C;
+static ptrdiff_t nUiManagerRva = 0x1645C3C;
 
 static constexpr uint32_t nBazaarLabelId = 0x81FDCEB5;
 
@@ -2455,11 +2455,45 @@ static void UpdateMenuPadButtons()
     SetPadButtonMask(nMask);
 }
 
+// The GOG build is the same 1.03 source recompiled: the code the patterns below hook is nearly
+// all byte identical, but the data these constants point at moved, and CNavBarPrompt lost 0x18
+// bytes ahead of its embedded string, which drags every member past +8 down with it.
+static void ApplyBuildFixups()
+{
+    if (!IsGOG())
+        return;
+
+    nImageVtableRva = 0xE5E034;
+    nAreaInstanceVtableRva = 0xE5E1E4;
+    nTextVtableRva = 0xE5DA14;
+    nPlaceholderVtableRva = 0xE614D4;
+    nListBoxVtableRva = 0xE5BDC4;
+    nRectShapeVtableRva = 0xE5EF9C;
+
+    nFactoryGlobalRva = 0x15B3B10;
+    nImageTypeInfoRva = 0x15B32B4;
+    nCreateElementRva = 0xAAE7B0;
+    nCreateKeyframeRva = 0xAAE550;
+    nAddKeyframeRva = 0xAA12D0;
+    nAreaSetTimeRva = 0xA860B0;
+
+    nScreenManagerRva = 0xF32878;
+    nUiManagerRva = 0x159501C;
+
+    nPromptVtableRva = 0xD9EC84;
+    nPromptSprite = 0x28;
+    nPromptButtonId = 0x34;
+    nPromptAttached = 0x39;
+    nPromptSize = 0x3C;
+}
+
 class ControllerPrompts
 {
 public:
     ControllerPrompts()
     {
+        JackalFix::onDuniaInitEvent().add(ApplyBuildFixups, nBuildFixupPriority);
+
         JackalFix::onDuniaInitEvent() += []()
         {
             bControllerPrompts = JackalFixSettings.GetInt(PREF_CONTROLLERPROMPTS) != 0;
@@ -2490,11 +2524,16 @@ public:
             // ESP+0x54 string it goes into, which tells this copy from the show copy at ESP+0x70
             // and the text copy at ESP+0x38.
             //
+            //   8D 84 24 ? ? ? ?  LEA  EAX,[ESP+value]
+            //   50 8B CF E8 ? ? ? ? PUSH EAX; MOV ECX,EDI; CALL
             //   68 ? ? ? ?      PUSH "icon"
-            //   8D 4C 24 54     LEA  ECX,[ESP+0x54]
+            //   8D 4C 24 ?      LEA  ECX,[ESP+icon]
             //   68 ? ? ? ?      PUSH "_pc"                <- operand redirected
-            static constexpr ptrdiff_t nIconSuffixOperand = 0x0F;
-            auto iconSuffixPattern = dunia_pattern("68 ? ? ? ? 8D 4C 24 54 E8 ? ? ? ? 68 ? ? ? ? 8D 4C 24 1C E8 ? ? ? ? 6A FF 6A 00 8D 4C 24 20 51 8D 4C 24 5C");
+            //
+            // The stack displacements all moved in the GOG build, so the anchor is the shape of
+            // the preceding call rather than any one of them.
+            static constexpr ptrdiff_t nIconSuffixOperand = 0x1E;
+            auto iconSuffixPattern = dunia_pattern("8D 84 24 ? 00 00 00 50 8B CF E8 ? ? ? ? 68 ? ? ? ? 8D 4C 24 ? E8 ? ? ? ? 68 ? ? ? ? 8D 4C 24 ? E8 ? ? ? ? 6A FF 6A 00 8D 4C 24 ? 51 8D 4C 24 ?");
             if (!iconSuffixPattern.empty())
             {
                 auto pSuffixOperand = iconSuffixPattern.get_first(nIconSuffixOperand);
@@ -2506,14 +2545,20 @@ public:
             // here keeps the id and reuses FUN_105362E0. The instruction is also the fall through
             // for a missing icon attribute, where the value string is empty and the match fails.
             //
-            //   8D 84 24 A4 00 00 00   LEA  EAX,[ESP+0xA4]   ; the icon value
+            //   8D 84 24 ? ? ? ?       LEA  EAX,[ESP+value]  ; the icon value
             //   E8 ? ? ? ?             CALL CNavBarPrompt::SetIconFromValue
-            //   8D 8C 24 C0 00 00 00   LEA  ECX,[ESP+0xC0]   <- hook
+            //   8D 8C 24 ? ? ? ?       LEA  ECX,[ESP+...]    <- hook
+            //
+            // The frame is eight bytes shallower on GOG, so the icon value's displacement is read
+            // off the LEA rather than written down: 0xA4 on Steam, 0x9C on GOG.
             static constexpr ptrdiff_t nMenuIconApplied = 0x0F;
-            static constexpr ptrdiff_t nMenuIconValue = 0xA4;
-            auto menuIconPattern = dunia_pattern("8D 84 24 A4 00 00 00 50 8B CF E8 ? ? ? ? 8D 8C 24 C0 00 00 00 E8 ? ? ? ? 8B 16 8B 52 40");
+            static constexpr ptrdiff_t nMenuIconValueOperand = 0x03;
+            static ptrdiff_t nMenuIconValue = 0xA4;
+            auto menuIconPattern = dunia_pattern("8D 84 24 ? 00 00 00 50 8B CF E8 ? ? ? ? 8D 8C 24 ? 00 00 00 E8 ? ? ? ? 8B 16 8B 52 40");
             if (!menuIconPattern.empty() && GetPadButtonImage)
             {
+                nMenuIconValue = *reinterpret_cast<uint32_t*>(menuIconPattern.get_first(nMenuIconValueOperand));
+
                 static auto MenuIconHook = safetyhook::create_mid(menuIconPattern.get_first(nMenuIconApplied), [](SafetyHookContext& regs)
                 {
                     auto pPrompt = reinterpret_cast<uint8_t*>(regs.edi);
@@ -2534,8 +2579,11 @@ public:
                 });
             }
 
-            // CNavBarPrompt::Activate, FUN_10189D40. See the note above it.
-            if (auto* pActivatePrompt = dunia_find("56 8B F1 8B 4E 04 85 C9 74 4F 8B 01 8B 15 ? ? ? ? 8B 40 08 52 FF D0 85 C0 74 3D 8B 10 8B C8 8B 42 44 FF D0 84 C0 74 30 8B 76 48 85 F6 74 29"))
+            // CNavBarPrompt::Activate, FUN_10189D40. See the note above it. Identical in both
+            // builds bar the owner pointer it loads, which GOG keeps at +0x30 rather than +0x48.
+            if (auto* pActivatePrompt = dunia_find(
+                "56 8B F1 8B 4E 04 85 C9 74 4F 8B 01 8B 15 ? ? ? ? 8B 40 08 52 FF D0 85 C0 74 3D 8B 10 8B C8 8B 42 44 FF D0 84 C0 74 30 8B 76 48 85 F6 74 29",
+                "56 8B F1 8B 4E 04 85 C9 74 4F 8B 01 8B 15 ? ? ? ? 8B 40 08 52 FF D0 85 C0 74 3D 8B 10 8B C8 8B 42 44 FF D0 84 C0 74 30 8B 76 30 85 F6 74 29"))
                 ActivatePrompt = reinterpret_cast<ActivatePrompt_t>(pActivatePrompt);
 
             // FUN_10AB4F50, magma::Text's alignment offset. See the pattern's own note above.
@@ -2553,8 +2601,13 @@ public:
             //   C6 46 51 01     MOV  byte [ESI+0x51],1     ; attached
             //   8B 46 40        MOV  EAX,[ESI+0x40]        ; the cached sprite
             //   E8 ? ? ? ?      CALL CNavBarPrompt::SetIcon   <- hook
+            //
+            // Same instructions in both builds, one displacement apart: every CNavBarPrompt member
+            // past +8 sits 0x18 lower on GOG. The call to hook is at +0x44 either way.
             static constexpr ptrdiff_t nNavBarSetIconCall = 0x44;
-            auto navBarAttachPattern = dunia_pattern("56 8B F1 83 7E 04 00 C6 46 51 01 74 3C 83 7E 08 00 74 36 83 7E 3C 08 72 05 8B 46 28 EB 03 8D 46 28 50 E8");
+            auto navBarAttachPattern = dunia_pattern(
+                "56 8B F1 83 7E 04 00 C6 46 51 01 74 3C 83 7E 08 00 74 36 83 7E 3C 08 72 05 8B 46 28 EB 03 8D 46 28 50 E8",
+                "56 8B F1 83 7E 04 00 C6 46 39 01 74 3C 83 7E 08 00 74 36 83 7E 24 08 72 05 8B 46 10 EB 03 8D 46 10 50 E8");
             if (!navBarAttachPattern.empty())
             {
                 static auto NavBarAttachHook = safetyhook::create_mid(navBarAttachPattern.get_first(nNavBarSetIconCall), [](SafetyHookContext& regs)

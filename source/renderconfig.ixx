@@ -724,8 +724,9 @@ static constexpr size_t nProfileScanBytes = 0x900;
 // The vtable Dunia+350FE5 writes into a geometry config (MOV dword ptr [ESI],10E460AC), and the
 // broadcast's RVA, a known address in the same module that the base is worked out from. Geometry
 // turning up at 660h proves the object being scanned is the right one.
-static constexpr ptrdiff_t nGeometryConfigVTableRva = 0xE460AC;
-static constexpr ptrdiff_t nRenderSettingsChangedRva = 0x3F8AB0;
+// Both moved in the GOG build, which recompiled the same source.
+static ptrdiff_t GeometryConfigVTableRva() { return ByBuild<ptrdiff_t>(0xE460AC, 0xDBDE38); }
+static ptrdiff_t RenderSettingsChangedRva() { return ByBuild<ptrdiff_t>(0x3F8AB0, 0x3EAC70); }
 static constexpr ptrdiff_t nExpectedGeometryOffset = 0x660;
 
 static void* pEmbeddedIn = nullptr;
@@ -772,8 +773,8 @@ static void FindEmbeddedBlocks()
     // fall back to the constant from the copy constructor, based off the broadcast's address.
     if (pProfileGeometry == nullptr && RaiseRenderSettingsChanged != nullptr)
     {
-        const auto nBase = reinterpret_cast<uintptr_t>(RaiseRenderSettingsChanged) - nRenderSettingsChangedRva;
-        pProfileGeometry = FindEmbedded(pProfile, nBase + nGeometryConfigVTableRva);
+        const auto nBase = reinterpret_cast<uintptr_t>(RaiseRenderSettingsChanged) - RenderSettingsChangedRva();
+        pProfileGeometry = FindEmbedded(pProfile, nBase + GeometryConfigVTableRva());
     }
 }
 
