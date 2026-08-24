@@ -116,6 +116,11 @@ static HRESULT __stdcall CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnkOut
                     pRealProvider = nullptr;
                     return hr;
                 }
+
+                // The caller's CoUninitialize would tear the apartment down and leave the cached
+                // pointers dangling into an unloaded dxdiagn.dll, so hold a reference of our own.
+                if (CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED) == RPC_E_CHANGED_MODE)
+                    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             }
 
             InterlockedIncrement(&nProxyRefs);

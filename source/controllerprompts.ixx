@@ -12,26 +12,22 @@
       "i_background"   crc 0x7A8A6532   magma::Image         the pill behind the label
       "t_button_text"  crc 0x49D78B9C   magma::Text          the label
 
-  So the glyph is built through magma's factory and measured off the label, with i_background as the
-  carrier supplying the pill's rect.
-
   Size is the rect and nothing else: magma::Image has no scale field, and Image::Draw (FUN_10AB93F0
   into FUN_10AB8CF0) builds the quad from State+0x24..0x2A unless ACTUALSIZE, bit 2 of the flags
   byte at +0x40. Widgets come from a recycling pool carrying the last tenant's flags (which drew
   every glyph at 64x64 texels) and the UV pair at +0x30..+0x3C.
 
-  PC draws each prompt as a pill, i_background behind t_button_text. 360 has no pill, so its
-  visibility bit at node+0x34 goes off while a pad is active. The mouse pointer goes off with it via
-  the enabled bitmask at screenManager+0x29: handlers and the draw loop both read it, and the
-  position getter FUN_10AB5710 already answers -32768 for a disabled slot. Pad navigation reads
-  neither bitmask.
+  360 has no pill, so i_background's visibility bit at node+0x34 goes off while a pad is active.
+  The mouse pointer goes with it via the enabled bitmask at screenManager+0x29: handlers and the
+  draw loop both read it, and the position getter FUN_10AB5710 already answers -32768 for a
+  disabled slot. Pad navigation reads neither bitmask.
 
   Dead ends: console HUD markup expanding {use} into ~AA (machinery survives -- scan at 0x1061B1F8,
   code map at renderer+0x468, keys are zlib CRC-32 of the two characters -- but no prompt subtree
   holds a magma::Text to write into); GlyphFont, registered but its DynamicCast rejects Font and
   nothing instantiates it; the bed and phone prompts, which console draws no glyph for either.
 
-  magma layout, which every offset below depends on:
+  magma layout:
 
       Widget + 0x08          -> State
       Widget + 0x0C          -> component lock mask, bit set = engine must not write
@@ -60,11 +56,9 @@ import dunia;
 import inputdevice;
 import settings;
 
-// Read at each use site rather than pushed: the nav bar is walked once a frame, the HUD once per
-// prompt update.
+// Read at each use site: the nav bar is walked once a frame, the HUD once per prompt update.
 static bool bControllerPrompts = true;
 
-// The one question this module asks: is the pad the device in use, and do we want prompts.
 static bool PadPromptsWanted()
 {
     return bControllerPrompts && IsPadActiveDevice();
@@ -178,12 +172,9 @@ static uint32_t NameId(std::string_view sName)
     return ~nCrc;
 }
 
-/*
-  Non-null alone is not enough: 0xFFFFFFFF passes a null check and 0xFFFFFFFF + nNodeNameId wraps to
-  7, giving "access violation reading location 0x00000007" in ForEachChild. Arithmetic rather than
-  IsReadable because these recurse over whole subtrees from a per-frame refresh, and anything past
-  the range and alignment test would get past a VirtualQuery too.
-*/
+// Non-null alone is not enough: 0xFFFFFFFF passes a null check and 0xFFFFFFFF + nNodeNameId wraps
+// to 7, giving an access violation reading 0x00000007 in ForEachChild. Arithmetic rather than
+// IsReadable: these recurse over whole subtrees from a per-frame refresh.
 static bool IsPlausiblePointer(const void* pAddress)
 {
     const auto n = reinterpret_cast<uintptr_t>(pAddress);
@@ -192,8 +183,8 @@ static bool IsPlausiblePointer(const void* pAddress)
     return n >= 0x10000 && n < 0x7FFF0000 && (n & 3) == 0;
 }
 
-// Hands over the Node as well: visibility lives on the Node, the rect on the drawable behind it.
-// The 64 cap is a sanity bound on a possibly garbage vector, not a format limit.
+// The Node as well as the drawable: visibility lives on the Node. The 64 cap is a sanity bound on
+// a possibly garbage vector, not a format limit.
 template <typename F>
 static void ForEachChildNode(uint8_t* pArea, F&& fn)
 {
@@ -221,7 +212,6 @@ static void ForEachChildNode(uint8_t* pArea, F&& fn)
     }
 }
 
-// The same walk for callers with no use for the Node.
 template <typename F>
 static void ForEachChild(uint8_t* pArea, F&& fn)
 {
@@ -285,7 +275,7 @@ static uint8_t* FindNamedDeep(uint8_t* pArea, uint32_t nWanted, int nMaxDepth = 
     return pFound;
 }
 
-// Direct children only, and the Node rather than what it draws: visibility lives on the Node.
+// Direct children only, and the Node rather than the drawable.
 static uint8_t* FindNamedNode(uint8_t* pArea, uint32_t nWanted)
 {
     uint8_t* pFound = nullptr;
@@ -317,13 +307,10 @@ static uint8_t* FindNamedNode(uint8_t* pArea, uint32_t nWanted)
   pointer to magma's pool free. The keyframe is not optional: an empty vector gets index 0xFFF and
   the draw gate refuses it. Its contents do not matter, the components are pinned afterwards.
 
-  SetTime is seek, not refresh, and it recurses: it stores the time on the Area, evaluates every
-  visible child's keyframes at it, and each AreaInstance forwards the seek into its own child Area.
-  Seeking to zero is therefore not free. CHudPrompt::Update is nothing but four seeks on the
-  prompt's Area, at 0 to show and at frame*5 to hide, and the HUD's inventory icons share one
-  timeline where the segment is which icon is up: watch first, then the wrench. It seeks on state
-  changes only, so a stray seek to zero mid-prompt left the repair prompt showing the watch until
-  the prompt next hid itself. Seek back to where the area already was instead.
+  SetTime is seek, not refresh, and it recurses into every AreaInstance below. CHudPrompt::Update
+  is nothing but four seeks on the prompt's Area, and the HUD's inventory icons share one timeline
+  where the segment is which icon is up, so a stray seek to zero left the repair prompt showing the
+  watch. Seek back to where the Area already was.
 */
 static ptrdiff_t nFactoryGlobalRva = 0x1664768;
 static ptrdiff_t nImageTypeInfoRva = 0x1663F0C;
@@ -332,7 +319,7 @@ static ptrdiff_t nCreateKeyframeRva = 0xABEE80;
 static ptrdiff_t nAddKeyframeRva = 0xAB1C10;
 static ptrdiff_t nAreaSetTimeRva = 0xA973E0;
 
-// Where SetTime records the time it was given, so it can be handed back.
+// Where SetTime records the time it was given.
 static constexpr ptrdiff_t nAreaTime = 0x4C;
 
 static constexpr ptrdiff_t nElementName = 0x08;
@@ -347,7 +334,7 @@ using AreaAddElement_t = void(__thiscall*)(uint8_t*, uint8_t*);
 using AreaSetTime_t = void(__thiscall*)(uint8_t*, int32_t, int32_t, int32_t);
 
 // Not cached: a cache keyed on the Area pointer would hand back a freed widget once a new Area
-// landed on a recycled address. Callers look for the child first and only build when absent.
+// landed on a recycled address.
 static uint8_t* BuildImageChild(uint8_t* pArea, uint32_t nName)
 {
     if (!pArea)
@@ -448,8 +435,7 @@ static constexpr ptrdiff_t nStateShadowOffsetX = 0x58;
 static constexpr ptrdiff_t nStateShadowOffsetY = 0x59;
 
 // FUN_10AD9400 copies the whole +0x30..+0x59 block back over the widget rather than lerping it, so
-// pinning the rect and colours is not enough to hold ACTUALSIZE down. Nothing else owns a widget we
-// built, so take every component.
+// pinning the rect and colours is not enough to hold ACTUALSIZE down.
 static constexpr uint32_t nAllComponentsLocked = 0xFFFFFFFF;
 
 // magma::Text. Alignment is at +0x34, 0 left, 1 centre, 2 right, 3 justify.
@@ -457,6 +443,17 @@ static constexpr ptrdiff_t nTextString = 0x18;
 static constexpr ptrdiff_t nTextAlignX = 0x34;
 static constexpr int32_t nAlignCentre = 1;
 static constexpr int32_t nAlignRight = 2;
+
+// magma::TextState's shadow, off Text::DrawString (FUN_10AB4350), which builds a second draw
+// from +0x44 whenever either signed offset is nonzero. Same shape as the Image's +0x54/+0x58/
+// +0x59 above, a different state class.
+//
+//   10AB43B4  8B 47 44        MOV  EAX,[EDI+0x44]     ; the shadow colour
+//   10AB43BE  80 7F 48 00     CMP  byte [EDI+0x48],0  ; offset x
+//   10AB43C4  80 7F 49 00     CMP  byte [EDI+0x49],0  ; offset y
+static constexpr ptrdiff_t nTextStateShadowColour = 0x44;
+static constexpr ptrdiff_t nTextStateShadowOffsetX = 0x48;
+static constexpr ptrdiff_t nTextStateShadowOffsetY = 0x49;
 
 // MSVC's std::string and std::wstring: the 16 byte buffer doubles as the pointer once capacity
 // reaches the element count that fills it.
@@ -485,35 +482,28 @@ static int32_t nCalibratedGlyphSide = 0;
 // branches land on the same square.
 static constexpr int nMenuGlyphSideFallback = 409;
 
-// Beside the label. Counted on a 720p console capture of the display options: 7 px on "(B) Back",
-// 7 on "(X) Default", 10 on "Apply (Y)", 9 on "Accept (A)"; the wider two end in a "y" that stops
-// short of the glyph on its own, so the tighter end is the real one. Held against the disc, not the
-// unit space: both are lengths across, so the scale divides out.
+// Beside the label. Counted on a 720p console capture of the display options: 7 px on "(B) Back"
+// and "(X) Default", the tighter of four readings. Held against the disc, not the unit space, so
+// the scale divides out.
 static constexpr int nMenuGlyphGapPixels = 6;
 static constexpr int nMenuGlyphRoundPixels = 31;
 
 // The quad is not the glyph: the sprite carries a transparent margin, so the visible gap starts a
-// margin further in. Solved rather than counted, neither margin edge being visible: gaps of 0.4,
-// 0.2 and 4/7 of the side read 43, 54 and 30 px between the "(B) Back" glyph and its label, and two
-// unknowns against three readings put the quad at 65.0, 65.0, 64.9 and the disc at 34.0, 34.0,
-// 34.3, matching what the disc measures directly.
+// margin further in. Solved rather than counted, neither margin edge being visible: three gap
+// settings against two unknowns put the quad at 65 px and the disc at 34, which the disc confirms.
 static constexpr int nMenuGlyphQuadPixels = 65;
 static constexpr int nMenuGlyphDiscPixels = 34;
 
-// The 34 across against 31 down that an earlier 162/100 corrected for is not on screen: on a
-// 1280x720 capture of the profile page the "(X) Default" and "Apply (Y)" discs measure 27 across
-// against 30 down, and 27 is the calibration's 30 times 162/100 * 720/1280 = 0.911. Without it both
-// read 30 by 30, so the space is square at 16:9 and the squash was the correction.
+// The space is square at 16:9. On a 1280x720 capture of the profile page the "(X) Default" and
+// "Apply (Y)" discs measure 27 across against 30 down, and 27 is 30 * 16/9 * 720/1280.
 //
-// Kept at the aspect the calibration was counted at, where 16/9 * 720/1280 is exactly 1, so a
-// non-16:9 display still draws the glyph round: 4:3 wider in units, 21:9 narrower, height untouched
-// either way. Every round glyph takes it; the category arrows do not, that quad being a pill
-// counted whole off a 16:9 capture.
+// Kept at the aspect the calibration was counted at, so a non-16:9 display still draws the glyph
+// round: 4:3 wider in units, 21:9 narrower, height untouched. Every round glyph takes it; the
+// category arrows do not, that quad being a pill counted whole off a 16:9 capture.
 static constexpr int nUiSpaceWide = 16;
 static constexpr int nUiSpaceHigh = 9;
 
-// If the window cannot be measured. The space was solved at 1280x720, so this leaves the glyph
-// exactly where the capture put it.
+// If the window cannot be measured. The space was solved at 1280x720.
 static constexpr int nFallbackScreenWide = 1280;
 static constexpr int nFallbackScreenHigh = 720;
 
@@ -636,11 +626,9 @@ static int32_t TextLeftInBox(int32_t nAlign, int32_t nBoxWidth, int32_t nTextWid
 }
 
 // Console puts the glyph outboard and the button picks the side, not the slot: the quit box reads
-// "(B) Cancel" against "Accept (A)", and the display options put A and Y behind their labels with B
-// and X in front, so b_prompt2 lands on either side. The slot decides only where there is no button
-// (+0x4C reading 0x5C), where b_prompt1 is rightmost. Comparing element rects across the prompt set
-// gets a lone prompt wrong: the main menu shows only "Accept (A)", and a midpoint with nothing to
-// span puts it in front of the label.
+// "(B) Cancel" against "Accept (A)", so b_prompt2 lands on either side. The slot decides only
+// where there is no button (+0x4C reading 0x5C), where b_prompt1 is rightmost. Comparing element
+// rects across the set gets a lone prompt wrong, the main menu showing only "Accept (A)".
 static bool GlyphSitsRight(uint8_t* pPrompt)
 {
     switch (*reinterpret_cast<int32_t*>(pPrompt + nPromptButtonId))
@@ -668,9 +656,8 @@ static bool GlyphSitsRight(uint8_t* pPrompt)
     return nName == nFirstSlot || nName == nSecondSlot;
 }
 
-// Split out of the placement so it runs on either device: inside ComputeMenuGlyphRect it sat past
-// ApplyMenuGlyph's keyboard branch, so reaching the computer without the pad having dressed a menu
-// prompt left the side at zero and the shop fell back to the menu's square.
+// Split out of the placement so it runs on either device: reaching the computer without the pad
+// having dressed a menu prompt left the side at zero and the shop fell back to the menu's square.
 static int32_t CalibrateGlyphSide(uint8_t* pArea)
 {
     static const auto nLabelName = NameId("t_button_text");
@@ -732,7 +719,7 @@ static void ScreenSize(int32_t& nWide, int32_t& nHigh)
 }
 
 // The width that draws as square as the side is tall on any display shape. Side is an argument:
-// the three pages size their glyphs differently and share only shape.
+// the three pages size their glyphs differently.
 static int32_t GlyphWidth(int32_t nSide)
 {
     int32_t nScreenWide = 0;
@@ -767,8 +754,7 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
 
     auto nWide = GlyphWidth(nSide);
 
-    // Both come off the display-corrected width rather than the side, so the glyph keeps its
-    // proportions wherever it lands. Taking the margin here leaves the gap measured to the disc.
+// Both come off the display-corrected width, so the glyph keeps its proportions wherever it lands.
     auto nDisc = nWide * nMenuGlyphDiscPixels / nMenuGlyphQuadPixels;
     auto nMargin = (nWide - nDisc) / 2;
     auto nGap = nDisc * nMenuGlyphGapPixels / nMenuGlyphRoundPixels - nMargin;
@@ -778,11 +764,9 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
     out.nTop = static_cast<int16_t>(nCentreY - nSide / 2);
     out.nBottom = static_cast<int16_t>(out.nTop + nSide);
 
-    // The captures the margin was solved from sit against the text, not the label rect, so the box
-    // edge is only a fallback. An empty label measures zero rather than failing, and zero must not
-    // be taken: a centred label of no width puts both edges on the box midpoint, where the text
-    // will be. The box edge is wrong by the padding, but wrong outboard, where a glyph waiting for
-    // its label belongs.
+// The captures the margin was solved from sit against the text, not the label rect, so the box edge
+// is only a fallback. Zero must not be taken: a centred label of no width puts both edges on the
+// box midpoint, where the text will be. The box edge is wrong by the padding, but wrong outboard.
     auto nBoxWidth = box.nRight - box.nLeft;
     auto nTextWidth = MeasureTextWidth(pText, nBoxWidth);
     auto bMeasured = nTextWidth > 0;
@@ -796,6 +780,41 @@ static bool ComputeMenuGlyphRect(uint8_t* pArea, bool bRightSide, Rect& out)
     return true;
 }
 
+// Console drops a shadow under both halves of a menu prompt, the glyph quad and the label. Held in
+// 720p pixels and converted through the calibrated square like every other pixel constant here.
+//
+// Provisional, the two numbers here not counted off a capture. 0xAABBGGRR; opaque black drew as a
+// hard second copy of the glyph, so the alpha is half.
+static constexpr uint32_t nPromptShadowColour = 0x80000000;
+static constexpr int nPromptShadowPixels = 1;
+
+// int8 rect units in both states, added straight to the rect corners by the draw, so the horizontal
+// one goes through GlyphWidth or it drags sideways away from 16:9.
+static void WriteShadow(uint8_t* pState, ptrdiff_t nColour, ptrdiff_t nOffsetX, ptrdiff_t nOffsetY,
+    bool bWanted)
+{
+    auto nSide = nCalibratedGlyphSide;
+    auto bOn = bWanted && nSide > 0;
+
+    auto nDown = bOn ? nSide * nPromptShadowPixels / nMenuGlyphPixels : 0;
+    auto nAcross = bOn ? GlyphWidth(nSide) * nPromptShadowPixels / nMenuGlyphPixels : 0;
+
+    *reinterpret_cast<uint32_t*>(pState + nColour) = bOn ? nPromptShadowColour : 0;
+    *reinterpret_cast<int8_t*>(pState + nOffsetX) = static_cast<int8_t>(std::clamp(nAcross, 0, 127));
+    *reinterpret_cast<int8_t*>(pState + nOffsetY) = static_cast<int8_t>(std::clamp(nDown, 0, 127));
+}
+
+// The label is the engine's widget and carries no component lock, so its shadow is rewritten every
+// frame rather than pinned.
+static void ShadowLabel(uint8_t* pArea, bool bWanted)
+{
+    static const auto nLabelName = NameId("t_button_text");
+
+    if (auto pState = GetState(FindNamedDeep(pArea, nLabelName, 0)))
+        WriteShadow(pState, nTextStateShadowColour, nTextStateShadowOffsetX, nTextStateShadowOffsetY,
+            bWanted);
+}
+
 // Runs at the SetIcon call in CNavBarPrompt::OnAttach, and again for every attached prompt when the
 // active device flips. All defined below.
 static bool IsReadable(const void* pAddress);
@@ -805,12 +824,11 @@ static void TintBazaarGlyph(uint8_t* pState);
 static const char* ShopLetterFromButton(int32_t nButton);
 static uintptr_t GetShopSprite(const char* szLetter);
 
-// Whether the computer's own message boxes wear its glyphs. Driven off page enter/leave rather
-// than off the prompt: a bazaar button resolves from anywhere, so asking whether one exists says
-// yes in every menu; the owner chain carries no page name; a flag set from CBazaarComputerUI's
-// destructor never clears; and its page pointers at +0x180 and +0x184 are never zeroed. The menu
-// page base vtable at 0xF4747C takes enter at slot 2 and leave at slot 3, both overridden by
-// CBazaarComputerUI (FUN_10734630, FUN_10731EA0).
+// Whether the computer's own message boxes wear its glyphs. Driven off page enter/leave: a bazaar
+// button resolves from anywhere, the owner chain carries no page name, a flag set from
+// CBazaarComputerUI's destructor never clears, and its page pointers at +0x180 and +0x184 are never
+// zeroed. Menu page base vtable 0xF4747C, enter at slot 2 and leave at slot 3 (FUN_10734630,
+// FUN_10731EA0).
 static constexpr int nShopGlyphToggleKey = VK_F10;
 static bool bShopGlyphsOnPrompts = false;
 
@@ -858,6 +876,7 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
 
         // Every prompt that draws ships with its pill visible, so this is the stock state.
         SetNodeVisible(pBackground, true);
+        ShadowLabel(pArea, false);
         return;
     }
 
@@ -868,10 +887,9 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
     if (!pState)
         return;
 
-    // A prompt on the computer's page is a computer prompt. The menu's square comes off the
-    // label's point size and the menu's scale, both wrong there: the computer's font is larger and
-    // its page draws at twice the scale, so a message box A came out twice the size of the buttons
-    // below it and on the wrong side. Placement and colour go through the shop's instead.
+// A prompt on the computer's page is a computer prompt. The menu's square is wrong there: the
+// computer's font is larger and its page draws at twice the scale, so a message box A came out
+// twice the size of the buttons below it and on the wrong side.
     static const auto nLabelName = NameId("t_button_text");
 
     Rect rect;
@@ -892,6 +910,9 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
     if (bPlaced)
         TintBazaarGlyph(pState);
 
+    WriteShadow(pState, nStateShadowColour, nStateShadowOffsetX, nStateShadowOffsetY, true);
+    ShadowLabel(pArea, true);
+
     *reinterpret_cast<uint32_t*>(pImage + nWidgetLockMask) = nAllComponentsLocked;
     *reinterpret_cast<uintptr_t*>(pImage + nImageSprite) = nSprite;
 
@@ -908,11 +929,9 @@ static void ApplyMenuGlyph(uint8_t* pPrompt)
   change are kept and walked again on the device change.
 
   Prompt addresses cannot be cached. The set holds its prompts by value, 0x54 apart, and growing it
-  moves every one of them without detaching anything, so a cached address is left on a freed block
-  the moment a page asks for one prompt more than the last did. Nothing re-attaches the prompts that
-  moved, so nothing puts a fresh address back either: the pad's Apply and Default simply stopped
-  finding a prompt until the next page change attached everything again.
-
+  moves every one of them without detaching anything, so a cached address is left on a freed block.
+  Nothing re-attaches the prompts that moved, so the pad's Apply and Default simply stopped finding
+  a prompt until the next page change.
   So what is kept is the set, and its array is read out fresh on every walk:
 
       CNavBarModule::AttachPrompts   0x101D1FE0
@@ -936,8 +955,7 @@ static constexpr uint32_t nPromptSetMax = 16;
 // button id, and attach order is the only thing separating a modal's prompts from the page's.
 static std::vector<uint8_t*> sPromptSets;
 
-// VirtualQuery rather than an SEH frame: same cost either way, and the walk stays an ordinary
-// function.
+// VirtualQuery rather than an SEH frame: same cost, and the walk stays an ordinary function.
 static bool IsReadable(const void* pAddress)
 {
     MEMORY_BASIC_INFORMATION mbi{};
@@ -954,9 +972,8 @@ static bool IsReadable(const void* pAddress)
 // Comfortably past Dunia's mapped size, so a vtable check is a range test, not an exact one.
 static constexpr uintptr_t nDuniaImageSize = 0x2000000;
 
-// Readable is not real: a crash faulted on 0x5D with 0x21 in hand (0x21 plus the child area
-// offset), a small integer where an element should have been. Every vtable in this tree lives in
-// Dunia, so one read rejects that outright.
+// Readable is not real: a crash faulted on 0x5D with 0x21 in hand, a small integer where an element
+// should have been. Every vtable in this tree lives in Dunia, so one read rejects that.
 static bool IsObject(uint8_t* pObject)
 {
     if (!pObject || !IsReadable(pObject))
@@ -1004,8 +1021,7 @@ static void ForEachLivePrompt(Fn&& fn)
     }
 }
 
-// Remembered on the walk that attaches them, and moved to the back so the set that attached most
-// recently is the one the pad buttons ask first.
+// Moved to the back so the set that attached most recently is the one the pad buttons ask first.
 static void RememberPromptSet(uint8_t* pSet)
 {
     if (!pSet)
@@ -1065,15 +1081,12 @@ static constexpr int nHudGlyphFallbackPercent = 85;
 
   Two attempts failed: deriving screen centre from the calibration (its own sanity check rejected it
   every frame) and reading the canvas (half the width still did not move the glyph), so these rects
-  are local to a parent nothing here can see. Canvas note: it is no constant, magma refills it from
-  the active screen every frame, and FUN_104EFAD0 clamps a moved cursor against render context +0x34
-  and +0x36 against a literal zero.
+  are local to a parent nothing here can see.
 */
 
 // Position and size do not convert at the same rate here, which is not understood. The square is
-// right: at 30 the interact glyph measures 26 across and at 34 the swap measures 30, both within a
-// pixel or two of Xenia. The offset is not: two captures with pixel-identical anchors put a
-// requested 17 px drop at 33 and a requested 12 at 23, slope two. Measured, not modelled.
+// right, within a pixel or two of Xenia at both sizes. The offset is not: two captures with
+// pixel-identical anchors put a requested 17 px drop at 33 and a requested 12 at 23, slope two.
 static constexpr int nHudOffsetHalving = 2;
 
 // szAbove is both the sibling the glyph is added next to and the rect it is measured from. nDown is
@@ -1382,16 +1395,15 @@ static ptrdiff_t nUiManagerRva = 0x1645C3C;
 static constexpr uint32_t nBazaarLabelId = 0x81FDCEB5;
 
 /*
-  The computer's green, written out rather than borrowed: a label's colour dims with focus, the cart
-  on Checkout reads FF000000 with its green in the texture, and scaling a borrowed value swaps red
-  and blue between the two candidate byte orders.
+  The computer's green, written out rather than borrowed: a label's colour dims with focus and the
+  cart on Checkout reads FF000000 with its green in the texture.
 
   Byte order, measured: 0xFF87FFD0 rendered about 149,200,98. In memory that is D0 FF 87 FF, so
   reading red, green, blue, alpha gives 208,255,135, whose ratios match: 0xAABBGGRR.
 
-  The value is the console glyph's hue at full brightness. Sampling gave 4CB381, and writing that
-  made the glyph vanish since the capture carries the page's dimming and the tint multiplies. What
-  survives sampling is the ratio 0.30 to 0.70 to 0.51, scaled until green is full.
+  Sampling gave 4CB381 and writing that made the glyph vanish, the capture carrying the page's
+  dimming and the tint multiplying. What survives is the ratio 0.30 to 0.70 to 0.51, scaled until
+  green is full.
 */
 static constexpr uint32_t nBazaarGlyphColour = 0xFFB7FF6C;
 
@@ -1640,18 +1652,16 @@ static bool ComputeBazaarGlyphRect(uint8_t* pLabel, Rect& out)
         return false;
 
     // The bazaar draws at a little over twice the menu's scale: the calibrated square, 30 px in the
-    // menu, measured 63 px here, so the calibration is carried across by that ratio. Deriving from
-    // this page's own point size is worse, the computer's font being the larger.
+    // menu, measured 63 px here. Deriving from this page's own point size is worse.
     auto nBase = nCalibratedGlyphSide > 0 ? nCalibratedGlyphSide : nMenuGlyphSideFallback;
 
     auto nSide = nBase * nBazaarGlyphPixels / nBazaarGlyphMeasured;
     if (nSide < 1)
         return false;
 
-    // From the button's own left edge, which is zero, not from the label box: Checkout's box begins
-    // at 33 because the cart sprite has the first 33, so hanging off the box put its glyph inside
-    // the bar and on top of the cart. A negative left is fine, the area does not clip, and a
-    // capture showing -41..-11 was dim rather than clipped, wearing an unfocused label's tint.
+    // From the button's own left edge, not from the label box: Checkout's box begins at 33 because
+    // the cart sprite has the first 33, so hanging off the box put its glyph inside the bar. A
+    // negative left is fine, the area does not clip.
     auto nGap = nBase * nBazaarGapPixels / nBazaarGlyphMeasured;
     auto nCentreY = (box.nTop + box.nBottom) / 2;
 
@@ -1737,15 +1747,13 @@ static void ApplyBazaarGlyph(const BazaarButton& button)
 /*
   The category arrows, the "<<" and ">>" either side of the WEAPONS bar. Nothing to port: the xex
   names BAZAAR_CATEGORY_LIST and nothing either side of it, so console's LB and RB come out of its
-  own ui/weapon_bazaar.mgb and no code at all. They are not in the page tree either -- a walk of
-  BAZAAR_SHOP_PAGE six levels deep accounts for the whole page and finds no arrows, no page title
-  and none of the slider's scroll arrows. They are members of the list, not children of anything.
+  own ui/weapon_bazaar.mgb and no code. They are not in the page tree either, a walk of
+  BAZAAR_SHOP_PAGE six levels deep finding no arrows: they are members of the list.
 */
 
-// The pill does not fill its texture, so the square is worked back from a measurement. A 30 unit
-// square drew it 19 by 18 against 28 by 26 for the round glyph in the same square, and a 58 by 33
-// drew 34 by 20. It covers a little under three fifths either way, so console's 37 by 20 wants 63
-// by 33 with 13 units of empty texture each side.
+// The pill does not fill its texture, so the square is worked back from a measurement: it covers a
+// little under three fifths across two readings, so console's 37 by 20 wants 63 by 33 with 13 units
+// of empty texture each side.
 static constexpr int nBazaarArrowQuadWide = 63;
 static constexpr int nBazaarArrowQuadHigh = 33;
 static constexpr int nBazaarArrowWidePixels = 37;
@@ -1761,11 +1769,9 @@ static constexpr int nBazaarArrowDropPixels = 2;
 /*
   magma::ListBox, read off its own Draw at 0x10A9F590, and why the glyph is measured from the arrow
   and not from the bar. The two arrows hang at +0x58 and +0x74, each drawn under a translate the
-  list writes out of the width of whatever the arrow holds, butting the arrow's right edge against
-  the bar's left. Stock the arrow is 50 across; widened to 128 by a glyph reaching to -78 it moved
-  74 further left, up beside the page title. Anchoring on the bar returns every unit of reach as an
-  equal shift the other way, so the pill takes the inner edge of the arrow's own box instead, with
-  the empty 13 going over the bar.
+  list writes out of the width of whatever the arrow holds. Stock the arrow is 50 across; widened to
+  128 by a glyph reaching to -78 it moved 74 further left. Anchoring on the bar returns every unit
+  of reach as an equal shift the other way, so the pill takes the inner edge of the arrow's own box.
 */
 static constexpr ptrdiff_t nListBoxFirstArrow = 0x58;
 static constexpr ptrdiff_t nListBoxSecondArrow = 0x74;
@@ -2012,10 +2018,8 @@ static UiMouseEvent_t UiMouseMove = nullptr;
 static UiMouseEvent_t UiMouseDown = nullptr;
 static UiMouseEvent_t UiMouseUp = nullptr;
 
-// Every box in the CGameMessageBox family counts: the resolution confirmation is not the plain
-// one, and asking the live object for the base vftable left it without pad input. Nothing has to
-// tell the kinds apart, since A and B are only taken over where a nav bar prompt carries them, and
-// outside a menu there are none.
+// Every box in the CGameMessageBox family counts: the resolution confirmation is not the plain one,
+// and asking the live object for the base vftable left it without pad input.
 static std::vector<uint8_t*> sLiveMessageBoxes;
 
 // Filled by the hook on FUN_10AA5EC0 while a probe move is in flight.
@@ -2054,9 +2058,8 @@ static bool AreaHoldsNode(uint8_t* pArea, uint8_t* pWanted, int32_t& nOffsetX, i
         }
 
         // +0x3C is a child Area on the classes that have one and whatever sits there on the ones
-        // that do not, so both ends go through the page tables and not through the shape of a
-        // pointer: taking it on trust faulted three levels down on an aligned, in range, unmapped
-        // number.
+        // that do not, so both ends go through the page tables: taking it on trust faulted three
+        // levels down on an aligned, in range, unmapped number.
         if (!IsObject(pDrawable))
             return;
 
@@ -2160,12 +2163,10 @@ static bool PromptFromBox(uint8_t* pPrompt)
   CNavBarPrompt::Activate, FUN_10189D40, __fastcall on the prompt alone. It checks the prompt's
   element and its vfunc 0x44, then invokes the delegate at prompt+0x48 and answers whether it fired.
 
-  That delegate is what the owner binds when it builds its prompts: a box's takes the choice
-  straight to the result dispatcher (FUN_10109C60 binds one per prompt, FUN_10109880 records the
-  index, FUN_101098A0 fires it), which needs no pointer position at all. The synthetic press was
-  landing on nothing over a box and coming back spent every time -- the log showed A found and the
-  press answering 0, over and over. Tried first now, with the mouse path left as the fallback for
-  anything whose prompt carries no delegate.
+  A box's delegate takes the choice straight to the result dispatcher (FUN_10109C60 binds one per
+  prompt, FUN_10109880 records the index, FUN_101098A0 fires it) and needs no pointer position. The
+  synthetic press was landing on nothing over a box and coming back spent every time. Tried first
+  now, with the mouse path as the fallback for anything whose prompt carries no delegate.
 */
 using ActivatePrompt_t = int(__fastcall*)(void*);
 static ActivatePrompt_t ActivatePrompt = nullptr;
@@ -2190,9 +2191,7 @@ static ActivatePrompt_t ActivatePrompt = nullptr;
   So the whole event is answered here, with the capture released the way the stock function would
   have and the highlight left alone.
 
-  Hooking the list box alone was not enough -- the log came back with no interception at all while
-  the bar still went out -- so all three handlers that share this shape are taken, and SetHighlight
-  is watched from the log so a bar that still goes out names the instruction that took it.
+  Hooking the list box alone was not enough, so all three handlers that share this shape are taken.
 */
 // Backwards, so a modal's prompts win over whatever was attached behind it. Node and widget are
 // checked as a pair: a Node whose drawable is not this prompt's widget is not its Node.
@@ -2350,11 +2349,10 @@ static bool PressPrompt(uint8_t* pPrompt)
         auto bAlive = PageOnStack(pManager, pPage);
         bActed = !bAlive || (bLanded ? bDown : *ppHovered == nullptr);
 
-        // A press that did nothing changed nothing, so the neighbour is still live and goes back:
-        // leaving the slot empty makes the next press fire an enter on it and only one of those
-        // two runs the action. A press that acted can take the page's children with it, as
-        // accepting a resolution does, and putting the neighbour back there left FUN_10AA3800
-        // firing a leave on a freed one.
+        // A press that did nothing changed nothing, so the neighbour goes back: leaving the slot
+        // empty makes the next press fire an enter on it and only one of those two runs the action.
+        // A press that acted can take the page's children with it, and putting the neighbour back
+        // there left FUN_10AA3800 firing a leave on a freed one.
         if (!bLanded && bAlive && !bActed)
             *ppHovered = pSavedHovered;
     }
