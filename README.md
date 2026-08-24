@@ -43,7 +43,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures instead of using the game's inconsistent defaults.
 - **No Rim Lighting** - Removes the rim lighting glow on the edges of characters, mainly visible at night.
-- **Saturation** - Adjust the saturation levels from the game's 0.5 default, rage: 0.0 - 1.0.
+- **Saturation** - Adjust the saturation levels from the game's 0.5 default, range: 0.0 - 1.0.
 
 ### Beyond Ultra
 - **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) 6x, (4) max draw distance.
