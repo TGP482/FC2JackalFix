@@ -2916,6 +2916,10 @@ static void CommitPendingValues()
     CIniReader iniReader("");
     bApplyingOurselves = true;
 
+    // mINI truncates and rewrites the whole file per key, so every write below opens a window in
+    // which the watcher could read a half-written ini, default everything and broadcast that back.
+    bJackalFixWritingIni = true;
+
     for (size_t i = 0; i < nSlots; i++)
     {
         const auto* pRow = Slots[i];
@@ -2976,6 +2980,9 @@ static void CommitPendingValues()
             }
         }
     }
+
+    // The file is whole again; a watcher event still in flight now re-reads it intact.
+    bJackalFixWritingIni = false;
 
     // Fired whether or not anything moved; everything that reacts to a setting hangs off it.
     JackalFix::onIniFileChange().executeAll();
