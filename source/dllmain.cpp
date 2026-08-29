@@ -42,6 +42,7 @@ import truck;
 import dlcvehiclecolors;
 import entitylibrary;
 import glassdecals;
+import weaponredraw;
 import fpsfixes;
 import guiduplicates;
 import hudfixes;
