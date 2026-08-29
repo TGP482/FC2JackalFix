@@ -99,6 +99,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
   </table>
 </div>
 
+- Fixed an issue where leaving a mounted weapon stayed on E instead of following the rebound interact key.
 - Fixed an issue where the game could crash when changing the resolution at the main menu.
 - Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution.
 - Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner.

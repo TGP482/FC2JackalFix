@@ -17,6 +17,7 @@ import mousespeed;
 import inputdevice;
 import looksensitivity;
 import inputtoggles;
+import turretexitbind;
 import vibration;
 import controllerprompts;
 import loadingscreen;
