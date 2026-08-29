@@ -8,6 +8,7 @@ export module controllerprompts;
 
 import common;
 import dunia;
+import hudfixes;
 import inputdevice;
 import settings;
 
@@ -420,13 +421,6 @@ static constexpr int nMenuGlyphDiscPixels = 34;
 static constexpr int nUiSpaceWide = 16;
 static constexpr int nUiSpaceHigh = 9;
 
-// If the window cannot be measured. The space was solved at 1280x720.
-static constexpr int nFallbackScreenWide = 1280;
-static constexpr int nFallbackScreenHigh = 720;
-
-// Below this a client rect is a window being built or torn down rather than a display.
-static constexpr int nScreenSizeFloor = 64;
-
 // FUN_10AB4F50. The State argument may be null, meaning the widget's own.
 using GetTextAlignOffset_t = int32_t(__thiscall*)(uint8_t*, const wchar_t*, void*);
 static GetTextAlignOffset_t GetTextAlignOffset = nullptr;
@@ -586,56 +580,17 @@ static int32_t CalibrateGlyphSide(uint8_t* pArea)
     return nCalibratedGlyphSide;
 }
 
-// Walked out of the process, not taken as active: the active window is per thread and this runs
-// on the input thread too.
-static HWND hGameWindow = nullptr;
-
-static BOOL CALLBACK TakeGameWindow(HWND hWindow, LPARAM)
-{
-    DWORD nProcess = 0;
-    GetWindowThreadProcessId(hWindow, &nProcess);
-
-    if (nProcess != GetCurrentProcessId() || !IsWindowVisible(hWindow))
-        return TRUE;
-
-    hGameWindow = hWindow;
-    return FALSE;
-}
-
-static void ScreenSize(int32_t& nWide, int32_t& nHigh)
-{
-    nWide = nFallbackScreenWide;
-    nHigh = nFallbackScreenHigh;
-
-    if (!IsWindow(hGameWindow))
-    {
-        hGameWindow = nullptr;
-        EnumWindows(TakeGameWindow, 0);
-    }
-
-    RECT client{};
-    if (!hGameWindow || !GetClientRect(hGameWindow, &client))
-        return;
-
-    auto nClientWide = static_cast<int32_t>(client.right - client.left);
-    auto nClientHigh = static_cast<int32_t>(client.bottom - client.top);
-
-    if (nClientWide < nScreenSizeFloor || nClientHigh < nScreenSizeFloor)
-        return;
-
-    nWide = nClientWide;
-    nHigh = nClientHigh;
-}
-
-// The width that draws as square as the side is tall on any display shape.
+// The shape the engine composes into, shared with the HUD: the window is not it once an internal
+// resolution is in force, and enumerating for it caught whatever overlay was topmost in the process.
 static int32_t GlyphWidth(int32_t nSide)
 {
-    int32_t nScreenWide = 0;
-    int32_t nScreenHigh = 0;
-    ScreenSize(nScreenWide, nScreenHigh);
+    float fAspect = 0.0f;
+    if (!GetFrameAspect(fAspect) || fAspect <= 0.0f)
+        return nSide;
 
-    // One division, not two: rounding twice loses a unit at 16:9.
-    auto nWide = nSide * nUiSpaceWide * nScreenHigh / (nUiSpaceHigh * nScreenWide);
+    // One division, so 16:9 lands back on nSide exactly.
+    auto nWide = static_cast<int32_t>(
+        nSide * (static_cast<float>(nUiSpaceWide) / nUiSpaceHigh) / fAspect + 0.5f);
 
     return nWide > 0 ? nWide : nSide;
 }

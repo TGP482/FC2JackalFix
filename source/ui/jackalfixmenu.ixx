@@ -412,6 +412,7 @@ static const MenuRow GraphicsRows[]
     Enumeration(L"Anisotropic Filtering", PREF_ANISOTROPICFILTERING, "Graphics", "AnisotropicFiltering",
                 AnisotropyValues, AnisotropyLabels),
     Boolean(L"No Rim Lighting", PREF_NORIMLIGHTING, "Graphics", "NoRimLighting"),
+    Boolean(L"No Sprint And Aim Blur", PREF_NOSPRINTAIMBLUR, "Graphics", "NoSprintAimBlur"),
     Range  (L"Saturation", PREF_SATURATION, "Graphics", "Saturation", VALUE_FLOAT, 0, 100, 5, 100.0f, L"%.2f"),
 };
 
@@ -629,6 +630,7 @@ static const PrefDefault PrefDefaults[]
 
     { PREF_ANISOTROPICFILTERING,    16  },
     { PREF_NORIMLIGHTING,           0   },
+    { PREF_NOSPRINTAIMBLUR,         0   },
     { PREF_SATURATION,              50  }, // 0.50
 
     { PREF_BEYONDULTRAGEOMETRY,     0   },

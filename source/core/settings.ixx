@@ -38,6 +38,7 @@ export enum Pref
     PREF_MAXFRAMERATE,
     PREF_ANISOTROPICFILTERING,
     PREF_NORIMLIGHTING,
+    PREF_NOSPRINTAIMBLUR,
     PREF_SATURATION,
     PREF_BEYONDULTRAGEOMETRY,
     PREF_BEYONDULTRASHADOWS,
@@ -136,6 +137,7 @@ public:
 
         mPrefs[PREF_ANISOTROPICFILTERING] = std::clamp(iniReader.ReadInteger("Graphics", "AnisotropicFiltering", 16), 0, 16);
         mPrefs[PREF_NORIMLIGHTING] = std::clamp(iniReader.ReadInteger("Graphics", "NoRimLighting", 0), 0, 1);
+        mPrefs[PREF_NOSPRINTAIMBLUR] = std::clamp(iniReader.ReadInteger("Graphics", "NoSprintAimBlur", 0), 0, 1);
 
         mPrefs[PREF_SATURATION] = std::clamp(iniReader.ReadFloat("Graphics", "Saturation", 0.5f), 0.0f, 4.0f);
 

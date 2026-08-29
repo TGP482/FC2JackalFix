@@ -25,6 +25,7 @@ import maxfps;
 import aniso;
 import renderconfig;
 import rimlighting;
+import postfx;
 import saturation;
 import borderless;
 import internalres;

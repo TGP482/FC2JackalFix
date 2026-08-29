@@ -275,8 +275,8 @@ static PageKind PageKindOf(const void* pPackage)
 }
 
 // The composed frame, not the window: it is fitted to the output whole. FUN_1032D910 gives the
-// window and is the fallback.
-static bool GetFrameAspect(float& fAspect)
+// window and is the fallback. Exported: the controller prompts size glyphs in the same unit space.
+export bool GetFrameAspect(float& fAspect)
 {
     uint32_t nFrameWidth = 0;
     uint32_t nFrameHeight = 0;
