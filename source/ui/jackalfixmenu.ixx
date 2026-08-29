@@ -384,6 +384,11 @@ static const wchar_t* const BeyondUltraShadowLabels[]{ L"Default", L"Max draw di
 static const int     SkipTutorialsValues[]{ 0, 1, 2 };
 static const wchar_t* const SkipTutorialsLabels[]{ L"Off", L"Pop-ups", L"Pop-ups and hints" };
 
+// 0 sits where the stock 3s falls, and leaves the HUD data's own value alone.
+static const int     HudFadeOutValues[]{ -2, 1, 2, 0, 5, 8, 10, 15, 20, 30, 60, -1 };
+static const wchar_t* const HudFadeOutLabels[]{ L"HUD Always Hidden", L"1s", L"2s", L"3s (Default)", L"5s", L"8s",
+                                                L"10s", L"15s", L"20s", L"30s", L"60s", L"HUD Always Visible" };
+
 // Zero means every CPU, so it gets a word rather than a number.
 static const int     CpuAffinityValues[]{ 0, 1, 2, 4, 6, 8, 12, 16 };
 static const wchar_t* const CpuAffinityLabels[]{ L"All CPUs", L"1", L"2", L"4", L"6", L"8", L"12", L"16" };
@@ -437,6 +442,7 @@ static const MenuRow GameplayRows[]
     Boolean(L"Console Autosaves", PREF_CONSOLEAUTOSAVES, "Gameplay", "ConsoleAutosaves"),
     Boolean(L"No Blinking Items", PREF_NOBLINKINGITEMS,  "Gameplay", "NoBlinkingItems"),
     Boolean(L"No Hit Indicator",  PREF_NOHITINDICATOR,   "Gameplay", "NoHitIndicator"),
+    Enumeration(L"HUD Fade Out", PREF_HUDFADEOUT, "Gameplay", "HudFadeOut", HudFadeOutValues, HudFadeOutLabels),
 };
 
 // Hundredths and "%g": "%d" handed a double prints 0, and the ini may hold 91.35. Steps of five,

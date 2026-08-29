@@ -48,6 +48,7 @@ This is the official release version of FC2 Jackal Fix V1. For further informati
 
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
 - **No Hit Indicator** - Disables the directional hit indicators.
+- **HUD Fade Out** - Sets how many seconds the health, ammo and equipment counters stay up before fading out, or keeps them always visible, or always hidden.
 
 ### Field of View
 - **Field of View** - Adjusts the base gameplay field of view.
