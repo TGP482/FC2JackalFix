@@ -287,7 +287,7 @@ static float ViewmodelScaleFor(float fovRad, float aspect)
     if (fScale <= 1.0f)
         return fScale;
 
-    // A Viewmodel FOV above Field of View is legitimate, so no flat ceiling of one - except with
+    // A Viewmodel FOV above Field of View is legitimate, so no flat ceiling of one, except with
     // the sights up, where widening the near pass back out would hold the gun off the eye.
     return fIronsightBlend.load(std::memory_order_relaxed) > 0.0f ? 1.0f : fScale;
 }
@@ -355,8 +355,8 @@ static uintptr_t LivePawnFieldOfView()
     return *(uintptr_t*)nStruct == nVTable ? nStruct : 0;
 }
 
-// Whether the player's own weapon is a magnified optic. The push below cannot judge it - an already
-// pushed value reads back as a scope - so the setup hook decides and leaves the answer here.
+// Whether the player's own weapon is a magnified optic. An already pushed value reads back as a
+// scope, so the push below cannot judge it; the setup hook decides and leaves the answer here.
 static std::atomic<bool> bIronsightIsMagnifiedOptic = false;
 
 // ApplySeatFieldOfView is the only place the paraglider is identified, so the answer is kept.
@@ -398,7 +398,7 @@ static void PushPawnFieldOfView()
 }
 
 // Muzzle particles: weapon in the near pass, flash and smoke in the world one, so the two come
-// apart once the fields of view differ. Mask read from the owner - 1 on the weapon, 0 on every AI.
+// apart once the fields of view differ. Mask read from the owner: 1 on the weapon, 0 on every AI.
 static constexpr uintptr_t nGraphicFirstPersonMask = 0x12C;
 
 using tSetFirstPersonLayerMask = void (__thiscall*)(void*, uint32_t);
@@ -1170,7 +1170,7 @@ public:
             }
 
             // Ironsight FOV, taken where the weapon hands it to the pawn: property +0xE4 copied
-            // into the channel at +0x1C, both radians. Never the weapon's field - that broke it.
+            // into the channel at +0x1C, both radians. Never the weapon's field, which broke it.
             auto ironsightFovPattern = dunia_pattern("D9 80 E4 00 00 00 D9 5F 1C");
             if (!ironsightFovPattern.empty())
             {

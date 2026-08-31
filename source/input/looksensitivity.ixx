@@ -56,7 +56,9 @@ static void InstallAimAssistSkip()
 {
     auto pattern = dunia_pattern(sAimAssistPatterns[nSite]);
     if (pattern.empty())
+    {
         return;
+    }
 
     nHelperJoin[nSite] = reinterpret_cast<uintptr_t>(pattern.get_first(nHelperBlockEnd));
 
@@ -94,21 +96,18 @@ public:
                 });
             }
 
-            // Mouse movement marks the mouse as the look device.
-            if (auto* p = dunia_find("8B 44 24 08 F3 0F 2A 10 F3 0F 2A 58 04 83 EC 14 53 55 8B E9 0F 2E 55 18"))
+            // Anything that is not the pad hands the look back to the mouse. inputdevice owns
+            // CInputDriverMouse::OnMove; hooking it from here as well cost whichever module
+            // installed second its pattern, the first having already written a jmp over the bytes.
+            onInputDeviceChange() += []()
             {
-                static auto MouseLookDeviceHook = safetyhook::create_mid(p, [](SafetyHookContext& regs)
-                {
-                    auto pAccumulator = *(int**)(regs.esp + 8);
-                    if (pAccumulator == nullptr)
-                        return;
-
-                    if (pAccumulator[0] != 0 || pAccumulator[1] != 0)
-                        bPadIsLookDevice = false;
-                });
-            }
+                if (!IsPadActiveDevice())
+                    bPadIsLookDevice = false;
+            };
 
             // Scales the loaded GameProfile sensitivity, leaving the in-game slider value alone.
+            // GameProfile+0xB0 is the "Sensitivity" property, one global for both devices, and
+            // CPawnInputListener's look handler at 0x101438C0 is the only site that applies it.
             if (auto* p = dunia_find("F3 0F 10 88 B0 00 00 00 8B 88 B8 00 00 00 F3 0F 10 15 ? ? ? ? F3 0F 11 4C 24 08", 22))
             {
                 static auto LookSensitivityHook = safetyhook::create_mid(p, [](SafetyHookContext& regs)

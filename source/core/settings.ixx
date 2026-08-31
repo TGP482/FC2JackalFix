@@ -30,6 +30,7 @@ export enum Pref
     PREF_SPRINTTOGGLE,
     PREF_AIMTOGGLECONTROLLER,
     PREF_AIMASSIST,
+    PREF_CUSTOMBINDS,
     PREF_VIBRATION,
     PREF_CONTROLLERPROMPTS,
     PREF_HIGHPRECISIONTIMER,
@@ -161,6 +162,7 @@ public:
         mPrefs[PREF_CONSOLEAUTOSAVES] = std::clamp(iniReader.ReadInteger("Gameplay", "ConsoleAutosaves", 1), 0, 1);
         mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
         mPrefs[PREF_NOHITINDICATOR] = std::clamp(iniReader.ReadInteger("Gameplay", "NoHitIndicator", 0), 0, 1);
+        mPrefs[PREF_CUSTOMBINDS] = std::clamp(iniReader.ReadInteger("Gameplay", "CustomBinds", 1), 0, 1);
 
         // -2 never shows the HUD, -1 never fades it, 0 keeps the game's own delay, above that seconds.
         mPrefs[PREF_HUDFADEOUT] = std::clamp(iniReader.ReadInteger("Gameplay", "HudFadeOut", 0), -2, 60);

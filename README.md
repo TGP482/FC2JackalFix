@@ -63,6 +63,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 
 - **No Blinking Items** - Prevents weapons, ammo, health boxes, diamond cases, beds, and other interactables from flashing.
 - **No Hit Indicator** - Disables the directional hit indicators.
+- **Custom Binds** - Adds Inspect Weapon, Holster Weapon, Walk and Look Back binds to the Controls page. Hold reload to inspect, hold a weapon switch button to holster on controller.
 - **HUD Fade Out** - Sets how many seconds the health, ammo and equipment counters stay up before fading out, or keeps them always visible, or always hidden.
 
 ### Field of View
@@ -100,6 +101,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 </div>
 
 - Fixed an issue where leaving a mounted weapon stayed on E instead of following the rebound interact key.
+- Fixed an issue where the "press any key to bind it" prompt had no way out, escape now closes the prompt.
 - Fixed an issue where the game could crash when changing the resolution at the main menu.
 - Fixed an issue where alt tabbing out of exclusive fullscreen returned to the game windowed and at a lower resolution.
 - Fixed an issue where borderless did not fill the screen at resolutions below the desktop, shrinking the window into the top left corner.

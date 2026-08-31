@@ -389,6 +389,11 @@ static const int     HudFadeOutValues[]{ -2, 1, 2, 0, 5, 8, 10, 15, 20, 30, 60, 
 static const wchar_t* const HudFadeOutLabels[]{ L"HUD Always Hidden", L"1s", L"2s", L"3s (Default)", L"5s", L"8s",
                                                 L"10s", L"15s", L"20s", L"30s", L"60s", L"HUD Always Visible" };
 
+// Real time, so it keeps running while the game is paused.
+static const int     CheckpointRespawnValues[]{ 0, 15, 30, 45, 60, -1 };
+static const wchar_t* const CheckpointRespawnLabels[]{ L"Off (Default)", L"15 Minutes", L"30 Minutes",
+                                                       L"45 Minutes", L"60 Minutes", L"Never" };
+
 // Zero means every CPU, so it gets a word rather than a number.
 static const int     CpuAffinityValues[]{ 0, 1, 2, 4, 6, 8, 12, 16 };
 static const wchar_t* const CpuAffinityLabels[]{ L"All CPUs", L"1", L"2", L"4", L"6", L"8", L"12", L"16" };
@@ -442,6 +447,7 @@ static const MenuRow GameplayRows[]
     Boolean(L"Console Autosaves", PREF_CONSOLEAUTOSAVES, "Gameplay", "ConsoleAutosaves"),
     Boolean(L"No Blinking Items", PREF_NOBLINKINGITEMS,  "Gameplay", "NoBlinkingItems"),
     Boolean(L"No Hit Indicator",  PREF_NOHITINDICATOR,   "Gameplay", "NoHitIndicator"),
+    Boolean(L"Custom Binds",      PREF_CUSTOMBINDS,      "Gameplay", "CustomBinds"),
     Enumeration(L"HUD Fade Out", PREF_HUDFADEOUT, "Gameplay", "HudFadeOut", HudFadeOutValues, HudFadeOutLabels),
 };
 
@@ -652,6 +658,7 @@ static const PrefDefault PrefDefaults[]
     { PREF_CONSOLEAUTOSAVES,        1   },
     { PREF_NOBLINKINGITEMS,         0   },
     { PREF_NOHITINDICATOR,          0   },
+    { PREF_CUSTOMBINDS,             1   },
 
     { PREF_FIELDOFVIEW,             9131 }, // 91.31
     { PREF_VIEWMODELFIELDOFVIEW,    7500 }, // 75.00
