@@ -39,7 +39,7 @@ workspace "FC2JackalFix"
    end
 
    -- -- Local builds show DEV, CI releases use the actual version
-   local nRelease = 1
+   local nRelease = 2
    local szVersion = _OPTIONS["with-version"] and ("V" .. major) or ("V" .. nRelease .. " DEV")
 
    local githash = ""
