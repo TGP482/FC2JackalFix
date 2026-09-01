@@ -2386,7 +2386,7 @@ struct GameWideString
     uint32_t       nCapacity;
 };
 
-static const wchar_t szWatermarkText[] = L"Jackal Fix V1";
+static const wchar_t szWatermarkText[] = L"Jackal Fix V2";
 
 static GameWideString Watermark
 {
