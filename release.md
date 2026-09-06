@@ -8,4 +8,5 @@ This is the official release version of FC2 Jackal Fix V2. For further informati
 - Added an option to disable sprinting and aiming blur.
 - Added an option to change the HUD fadeout timer.
 - Fixed an issue where leaving a mounted weapon stayed on E instead of following the rebound interact key.
-- Added an option for custom Inspect Weapon, Holster Weapon, Walk and Look Back binds in the Controls page. Hold reload to inspect, hold a weapon switch button to holster on controller. 
+- Added an option for custom Inspect Weapon, Holster Weapon, Walk and Look Back binds in the Controls page. Hold reload to inspect, hold a weapon switch button to holster on controller.
+- Jackal Fix menu no longer uses pages.
