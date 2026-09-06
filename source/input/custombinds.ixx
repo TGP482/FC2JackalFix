@@ -39,12 +39,13 @@ static std::atomic<bool> bBindPressed[nBindCount]{};
 // Pressing one of these while holstered has to draw by hand: the equip sync at 0x10161DAA and
 // EquipItemByName at 0x1012D6D0 both bail on the holster latch. Equipping the item holstered
 // instead was a dead end. The one latch free item equip, 0x1012D730, clears the equipped kind and
-// loses the weapon the latch holds.
+// loses the weapon the latch holds. Not toggle_gadget: that is the map key, and the map opens fine
+// over the latch, so drawing there pulled the weapon out with it.
 static constexpr const char* WeaponSelectSignals[] =
 {
     "select_next_weapon", "select_previous_weapon", "select_hand_to_hand_weapon",
     "select_secondary_weapon", "select_primary_weapon", "select_special_weapon",
-    "cycleweapon", "select_next_throw_gadget", "toggle_gadget",
+    "cycleweapon", "select_next_throw_gadget",
 };
 
 static uint32_t nWeaponSelectSignal[std::size(WeaponSelectSignals)]{};
@@ -93,11 +94,11 @@ static uint32_t NameId(std::string_view sName)
 // player bound and +0x40 the default, +0x50 the actionmap name, +0x6C group, +0x70 conflictmask.
 static constexpr ptrdiff_t nElementLabel = 0x00;
 
-// MSVC8 std::wstring: buffer inline at +0x04 while capacity is 7, size at +0x14, capacity at +0x18.
-static constexpr ptrdiff_t nStringBuffer = 0x04;
-static constexpr ptrdiff_t nStringSize = 0x14;
-static constexpr ptrdiff_t nStringCapacity = 0x18;
-static constexpr uint32_t nWideShortCapacity = 7;
+// std::wstring::assign(const wchar_t*, size_t) at 0x10002DF0, what 0x108811C0 fills the label
+// with. The miss text is one character in a short mode string, so writing in place cannot fit.
+using WideAssign_t = void*(__thiscall*)(void* pString, const wchar_t* pText, size_t nLength);
+
+static WideAssign_t WideAssign = nullptr;
 
 // CActionMap. Bindings are a plain array; the name id is the one turretexitbind reads.
 static constexpr ptrdiff_t nMapNameId = 0x6C;
@@ -207,24 +208,8 @@ static void* pBoundMap[nBindCount]{};
 
 static void SetWideString(uintptr_t pString, const wchar_t* pText)
 {
-    auto nCapacity = *reinterpret_cast<uint32_t*>(pString + nStringCapacity);
-    auto* pBuffer = (nCapacity > nWideShortCapacity)
-        ? *reinterpret_cast<wchar_t**>(pString + nStringBuffer)
-        : reinterpret_cast<wchar_t*>(pString + nStringBuffer);
-
-    if (pBuffer == nullptr)
-        return;
-
-    auto nLength = std::wcslen(pText);
-
-    // The oasisstrings miss text is longer than any label here, so this never trims.
-    if (nLength > nCapacity)
-        return;
-
-    for (size_t i = 0; i <= nLength; i++)
-        pBuffer[i] = pText[i];
-
-    *reinterpret_cast<uint32_t*>(pString + nStringSize) = static_cast<uint32_t>(nLength);
+    if (WideAssign != nullptr)
+        WideAssign(reinterpret_cast<void*>(pString), pText, std::wcslen(pText));
 }
 
 static void AddCustomBinding(void* pMap, const uint8_t* pTemplate, uint32_t nKey, uint32_t nAction,
@@ -280,6 +265,11 @@ public:
 
             AddBinding = reinterpret_cast<AddBinding_t>(
                 dunia_find("83 EC 1C 80 7C 24 24 00 53 55 56 57 89 4C 24 14 C6 44 24 13 00"));
+
+            // Two identical copies of it in both builds, so no get_first.
+            auto assign = dunia_pattern("53 55 56 8B F1 8B 4E 18 83 F9 08 8D 5E 04 72 04 8B 03 EB 02 8B C3 8B 6C 24 10 3B E8 72 34");
+            if (!assign.empty())
+                WideAssign = reinterpret_cast<WideAssign_t>(assign.get(0).get<void>());
 
             InstallControls();
             InstallBindings();
@@ -372,6 +362,7 @@ private:
             {
                 if (nMap != nAnchorMap[i] || nKey != nAnchorKey[i] || nSignal != nAnchorSignal[i])
                     continue;
+
                 if (pBoundMap[i] == pMap)
                     continue;
 
@@ -607,6 +598,12 @@ static bool ReloadHoldElapsed()
 //     100A0C98  MOV  [x],08AC6FEA
 //
 // 0x101260E0 reads that latch back: the engine's own record of whether the weapon is away.
+//
+// Water alone leaves the gadgets refusing, so the map queues until the draw. The weapon zone
+// handler at 0x106C4040, which interiors run, also sets pawn state +0xA8 to 2, and the map at
+// 0x10CE25A3 and the phone at 0x106E9B1D take their weaponless path on that mode. Writing the mode
+// itself is out: the tick at 0x10679A04 reads it as a safe zone and stops the music. So those two
+// compares are pointed at a state of our own that reads 2 while the holster is ours.
 
 // The manager keeps its equip state one level down, at +0x04.
 static constexpr ptrdiff_t nEquipState = 0x04;
@@ -625,6 +622,13 @@ static constexpr ptrdiff_t nEquipHolstered = 0x50;
 // builds share them the way nReloadSignal does.
 static constexpr uint32_t nHolsterSignal = 0xC64DABBF;
 static constexpr uint32_t nDrawSignal = 0x08AC6FEA;
+
+// Pawn state at block+0x140, mode at +0xA8.
+static constexpr ptrdiff_t nPawnState = 0x140;
+static constexpr ptrdiff_t nStateMode = 0xA8;
+static constexpr int32_t nModeHolstered = 2;
+
+static int32_t HolsteredState[nStateMode / sizeof(int32_t) + 1]{};
 
 // XINPUT_GAMEPAD_DPAD_UP/DOWN/LEFT/RIGHT.
 static constexpr uint16_t nDpadMask = 0x000F;
@@ -664,54 +668,69 @@ static bool DpadHoldElapsed()
     return true;
 }
 
-static void ToggleHolster(uintptr_t nPawn)
+// Only a holster made here is undone here. The engine sets the same latch for interiors and deep
+// water, and a draw against those leaves the latch clear while the weapon stays away, so the next
+// engine path that reads it, the map among them, brings the weapon out.
+static bool bModHolstered = false;
+
+static uintptr_t EquipState(uintptr_t nPawn)
 {
     auto nBlock = StateBlock(nPawn);
     if (SendSignal == nullptr || nBlock == 0)
-        return;
+        return 0;
 
-    auto nEquip = *reinterpret_cast<uintptr_t*>(nBlock + nWeaponManager + nEquipState);
+    return *reinterpret_cast<uintptr_t*>(nBlock + nWeaponManager + nEquipState);
+}
+
+static void Holster(uintptr_t nBlock, uint8_t* pHolstered)
+{
+    *pHolstered = 1;
+    SendSignal(reinterpret_cast<void*>(nBlock + nStateDriver), nHolsterSignal);
+    bModHolstered = true;
+}
+
+static void Draw(uintptr_t nBlock, uint8_t* pHolstered)
+{
+    *pHolstered = 0;
+    SendSignal(reinterpret_cast<void*>(nBlock + nStateDriver), nDrawSignal);
+    bModHolstered = false;
+}
+
+static void ToggleHolster(uintptr_t nPawn)
+{
+    auto nEquip = EquipState(nPawn);
     if (nEquip == 0)
         return;
 
-    // Read live: a toggle flag of our own would fight the engine's own holstering.
     auto* pHolstered = reinterpret_cast<uint8_t*>(nEquip + nEquipHolstered);
-    auto* pDriver = reinterpret_cast<void*>(nBlock + nStateDriver);
 
     if (*pHolstered != 0)
     {
-        *pHolstered = 0;
-        SendSignal(pDriver, nDrawSignal);
+        if (bModHolstered)
+            Draw(StateBlock(nPawn), pHolstered);
         return;
     }
 
-    // Nothing in the hands to put away, and the state machine has no transition for it either.
+    // Nothing in the hands to put away.
     auto nKind = *reinterpret_cast<int32_t*>(nEquip + nEquippedKind);
     if (nKind != nKindWeapon && nKind != nKindItem)
         return;
 
-    *pHolstered = 1;
-    SendSignal(pDriver, nHolsterSignal);
+    Holster(StateBlock(nPawn), pHolstered);
 }
 
-// The draw half of ToggleHolster, for a weapon change made while the weapon is away. The change
-// itself is left alone and lands once the latch is clear.
+// The draw half of ToggleHolster, for a weapon change made while the weapon is away.
 static void DrawIfHolstered(uintptr_t nPawn)
 {
-    auto nBlock = StateBlock(nPawn);
-    if (SendSignal == nullptr || nBlock == 0)
-        return;
-
-    auto nEquip = *reinterpret_cast<uintptr_t*>(nBlock + nWeaponManager + nEquipState);
-    if (nEquip == 0)
+    auto nEquip = EquipState(nPawn);
+    if (nEquip == 0 || !bModHolstered)
         return;
 
     auto* pHolstered = reinterpret_cast<uint8_t*>(nEquip + nEquipHolstered);
     if (*pHolstered == 0)
         return;
 
-    *pHolstered = 0;
-    SendSignal(reinterpret_cast<void*>(nBlock + nStateDriver), nDrawSignal);
+    Draw(StateBlock(nPawn), pHolstered);
 }
 
 // Walk. Every locomotion mode reaches one join at 0x10144322, where XMM0 is the mode's max speed,
@@ -767,10 +786,37 @@ public:
 
             InstallTick();
             InstallWalk();
+            InstallModeReads();
         };
     }
 
 private:
+    // Both sit on CMP [EAX+0xA8],2 right after the pawn state fetch, and EAX dies at the branch.
+    static void InstallModeReads()
+    {
+        static constexpr const char* Sites[] =
+        {
+            "8B CF E8 ? ? ? ? 83 B8 A8 00 00 00 02 0F 85 ? ? ? ? 8B CE E8 ? ? ? ? 85 C0",
+            "8B CE E8 ? ? ? ? 83 B8 A8 00 00 00 02 75 3B A1",
+        };
+
+        static SafetyHookMid Hooks[std::size(Sites)];
+
+        HolsteredState[nStateMode / sizeof(int32_t)] = nModeHolstered;
+
+        for (size_t i = 0; i < std::size(Sites); i++)
+        {
+            if (auto* p = dunia_find(Sites[i], 7))
+            {
+                Hooks[i] = safetyhook::create_mid(p, [](SafetyHookContext& regs)
+                {
+                    if (bModHolstered)
+                        regs.eax = reinterpret_cast<uintptr_t>(HolsteredState);
+                });
+            }
+        }
+    }
+
     static void InstallInspect()
     {
         auto fireBlock = dunia_pattern("C7 05 ? ? ? ? 93 45 72 D3 8B 15 ? ? ? ? 51 8B 4C 24 14 8B C4 89 10 E8");
@@ -809,6 +855,12 @@ private:
             // Every hold timer runs every frame, so a bind press does not stall them.
             auto bInspectHold = ReloadHoldElapsed();
             auto bHolsterHold = DpadHoldElapsed();
+
+            // The engine drew it, a zone took it over, or the pawn is new: nothing of ours to undo.
+            auto nEquip = EquipState(nPawn);
+            if (nEquip != 0 && (*reinterpret_cast<uint8_t*>(nEquip + nEquipHolstered) == 0
+                || *reinterpret_cast<int32_t*>(StateBlock(nPawn) + nPawnState + nStateMode) == nModeHolstered))
+                bModHolstered = false;
 
             // Before the toggle, so a Holster press on the same frame still ends holstered.
             if (bCustomBinds && bWeaponSelectPressed.exchange(false))

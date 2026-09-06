@@ -147,4 +147,4 @@ workspace "FC2JackalFix"
       staticruntime "On"
 
 project "FC2JackalFix"
-   setpaths("E:/Games/SteamLibrary/steamapps/common/Far Cry 2/", "bin/FarCry2.exe", "bin/plugins/")
+   setpaths(os.getenv("FC2DIR") or "C:/Program Files (x86)/Steam/steamapps/common/Far Cry 2/", "bin/FarCry2.exe", "bin/plugins/")
