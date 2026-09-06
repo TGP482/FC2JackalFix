@@ -30,7 +30,7 @@ static constexpr ptrdiff_t nRegistryEnd       = 0x10;  // that map's end iterato
 // std::wstring leaves its inline buffer for the heap at eight characters.
 static constexpr uint32_t nWideStringInlineCapacity = 7;
 
-// magma::ListBox fields. Wrap cleared: the nav handler's refusal past the last row is the page-turn
+// magma::ListBox fields. Wrap cleared: the nav handler's refusal past the last row is the scroll
 // signal.
 static constexpr ptrdiff_t nListBoxMaxVisible   = 0x18; // byte; visible lines = min(this, item count)
 static constexpr ptrdiff_t nListBoxFlags        = 0x19; // bit 0 = wrap at the ends
@@ -55,7 +55,7 @@ static constexpr size_t nListBoxPointerSlot = 30; // +78h, the other pointer ent
 static constexpr size_t nListBoxVTableSlots = 45;
 
 // Nav result when the selection could not move: direction code plus a pass-it-on flag. Swallow the
-// flag or a page turn also moves focus off the list.
+// flag or a scroll also moves focus off the list.
 static constexpr ptrdiff_t nNavResultCode   = 0x10;
 static constexpr ptrdiff_t nNavResultFlags  = 0x16;
 static constexpr uint8_t   nNavFlagUnhandled = 0x04;
@@ -691,83 +691,67 @@ static const PrefDefault PrefDefaults[]
     { PREF_DEBUGDIAMONDS,           0   },
 };
 
-// The slot plan: slot S draws on line S modulo the line count. Blanks fill skipped slots, and a
-// heading is pushed to the next page rather than stranded on the last line of one.
+// The slot plan: every row in ini order. The screen is a window of usable lines over it, scrolled
+// one slot at a time.
 static constexpr size_t nMaxSlots = 256;
+static constexpr size_t nNoSlot   = SIZE_MAX;
 
-// One entry per slot, null for a blank.
 static const MenuRow* Slots[nMaxSlots]{};
 static size_t   nSlots = 0;
-static size_t   nPages = 0;
+static size_t   nTopSlot = 0; // slot on the first usable line
 
-// Per slot, the value chosen but not yet applied: a page turn destroys the controls that hold it.
+// Per slot, the value chosen but not yet applied: a scroll destroys the controls that hold it.
 static int  PendingValues[nMaxSlots]{};
 static bool bPendingValid = false;
 
-static bool IsUsableLine(size_t nSlot)
+// Slots the window holds: one per usable line.
+static size_t WindowSlots()
 {
-    return RowLines[nSlot % nRowLines].bUsable;
+    size_t nCount = 0;
+    for (size_t i = 0; i < nRowLines; i++)
+        nCount += RowLines[i].bUsable ? 1 : 0;
+    return nCount;
 }
 
-// Without a usable line the search below fills the plan with blanks and nPages divides by zero.
-static bool AnyUsableLine()
+// Slot drawn on a line; nNoSlot for an unusable line or one past the plan.
+static size_t SlotOfLine(size_t nLine)
 {
-    for (size_t i = 0; i < nRowLines; i++)
+    if (nLine >= nRowLines || !RowLines[nLine].bUsable)
+        return nNoSlot;
+
+    auto nSlot = nTopSlot;
+    for (size_t i = 0; i < nLine; i++)
+        nSlot += RowLines[i].bUsable ? 1 : 0;
+    return nSlot < nSlots ? nSlot : nNoSlot;
+}
+
+static const MenuRow* RowOfLine(size_t nLine)
+{
+    auto nSlot = SlotOfLine(nLine);
+    return nSlot != nNoSlot ? Slots[nSlot] : nullptr;
+}
+
+// -1 when the slot is off screen.
+static int LineOfSlot(size_t nSlot)
+{
+    for (size_t i = 0; nSlot != nNoSlot && i < nRowLines; i++)
     {
-        if (RowLines[i].bUsable)
-            return true;
+        if (SlotOfLine(i) == nSlot)
+            return static_cast<int>(i);
     }
-    return false;
+    return -1;
 }
 
 static void PlanSlots()
 {
-    if (nSlots != 0 || !AnyUsableLine())
+    if (nSlots != 0 || WindowSlots() == 0)
         return;
 
     for (const auto& section : MenuSections)
     {
-        if (section.nRows == 0)
-            continue;
-
-        // A heading needs only its first row to fit on the same page; requiring all of it would
-        // push the heading down forever.
-        size_t nHeading = nSlots;
-        if (section.nRows > 1)
-        {
-            size_t nTarget = nHeading + 1;
-            while (nTarget < nMaxSlots && !IsUsableLine(nTarget))
-                nTarget++;
-
-            if (nTarget / nRowLines != nHeading / nRowLines)
-                nHeading = (nHeading / nRowLines + 1) * nRowLines;
-        }
-
-        while (nSlots < nHeading && nSlots < nMaxSlots)
-            Slots[nSlots++] = nullptr;
-
-        if (nSlots >= nMaxSlots)
-            break;
-
-        Slots[nSlots++] = &section.pRows[0];
-
-        for (size_t i = 1; i < section.nRows; i++)
-        {
-            while (nSlots < nMaxSlots && !IsUsableLine(nSlots))
-                Slots[nSlots++] = nullptr;
-
-            if (nSlots >= nMaxSlots)
-                break;
-
+        for (size_t i = 0; i < section.nRows && nSlots < nMaxSlots; i++)
             Slots[nSlots++] = &section.pRows[i];
-        }
     }
-
-    // Round out the last page so the window never runs off the end of the plan.
-    while (nSlots % nRowLines != 0 && nSlots < nMaxSlots)
-        Slots[nSlots++] = nullptr;
-
-    nPages = nSlots / nRowLines;
 }
 
 // What was built, so nothing has to ask the engine's row map: its operator[] inserts a null on a
@@ -782,11 +766,10 @@ struct BuiltRow
 // Defined with the navigation, the only other thing that moves the selection.
 static void SettleSelection(void* pListBox, int nFrom, int nDirection);
 static void RefreshIfStale(void* pPage);
-static void ShowPage(void* pPage, size_t nPage, bool bKeepOnScreenValues, int nTurnDirection);
+static void ShowWindow(void* pPage, size_t nTop, bool bKeepOnScreenValues, bool bResume);
 
 static BuiltRow BuiltRows[nMaxLines]{};
 static size_t   nBuiltRows = 0;
-static size_t   nCurrentPage = 0;
 
 // Inferred offsets are read through here: a wrong one costs a zero, not a crash.
 static bool IsReadable(const void* pAddress, size_t nSize)
@@ -1910,6 +1893,12 @@ static constexpr uint32_t nFadedAlpha = 0x32;
 static constexpr int nAlphaShift = 24;
 static constexpr uint32_t nColourMask = 0x00FFFFFF;
 
+// The stock option pages' setting labels, matched by eye against a heading's solid black.
+static constexpr uint32_t nLabelAlpha = 0xD0;
+
+// Set while the row list draws a cell: its text is the label, value widgets draw on their own.
+static bool bDrawingLabel = false;
+
 // CListBox::Draw.
 static const char* const szListDrawPattern =
     "83 EC 14 56 8B F1 8B 46 08 8B 48 10 C1 E9 18 84 C9 57 75 22";
@@ -1946,9 +1935,19 @@ static bool IsLineUnavailable(int nLine)
     if (nLine < 0 || nRowLines == 0 || nLine >= static_cast<int>(nRowLines))
         return false;
 
-    const auto nSlot = nCurrentPage * nRowLines + static_cast<size_t>(nLine);
-    const auto* pRow = nSlot < nSlots ? Slots[nSlot] : nullptr;
+    const auto* pRow = RowOfLine(static_cast<size_t>(nLine));
     return pRow != nullptr && pRow->nKind != ROW_HEADING && !IsRowAvailable(*pRow);
+}
+
+// Alpha ceiling for what the line is drawing; 0xFF leaves the colour alone. Only text takes the
+// label ink, or the lit bar under a row fades with it.
+static uint32_t LineAlphaCeiling(bool bText)
+{
+    if (IsLineUnavailable(nDrawingLine))
+        return nFadedAlpha;
+
+    const auto* pRow = bText && bDrawingLabel && nDrawingLine >= 0 ? RowOfLine(static_cast<size_t>(nDrawingLine)) : nullptr;
+    return pRow != nullptr && pRow->nKind != ROW_HEADING ? nLabelAlpha : 0xFF;
 }
 
 // Lent for one draw: the arrows are one pair of magma::Images for the whole list, re-posed per row.
@@ -1965,7 +1964,8 @@ static FadedState FadeForDraw(void* pWidget, ptrdiff_t nVtableRva, ptrdiff_t nOf
 {
     FadedState state;
 
-    if (!IsLineUnavailable(nDrawingLine))
+    const auto nCeiling = LineAlphaCeiling(nVtableRva == TextVtableRva());
+    if (nCeiling == 0xFF)
         return state;
 
     auto* pDrawable = static_cast<uint8_t*>(pWidget);
@@ -1986,8 +1986,8 @@ static FadedState FadeForDraw(void* pWidget, ptrdiff_t nVtableRva, ptrdiff_t nOf
         state.Saved[i] = nColour;
 
         const auto nAlpha = nColour >> nAlphaShift;
-        if (nAlpha > nFadedAlpha)
-            nColour = (nFadedAlpha << nAlphaShift) | (nColour & nColourMask);
+        if (nAlpha > nCeiling)
+            nColour = (nCeiling << nAlphaShift) | (nColour & nColourMask);
     }
 
     return state;
@@ -2089,7 +2089,7 @@ static uintptr_t JackalFixVTable[nVTableSlots + 1]{};
 
 static void* pJackalFixPage = nullptr;
 
-// The list widget's table, taken over per instance so only this page's list turns pages.
+// The list widget's table, taken over per instance so only this page's list scrolls.
 static uintptr_t JackalFixListVTable[nListBoxVTableSlots + 1]{};
 static ListBoxNav_t StockListBoxNav = nullptr;
 static ListBoxNav_t StockListBoxMouse = nullptr;
@@ -2145,15 +2145,15 @@ static void BuildRows(void* pPage)
     if (pDocument == nullptr)
         return;
 
-    if (nCurrentPage >= nPages)
-        nCurrentPage = 0;
-
-    auto nFirst = nCurrentPage * nRowLines;
+    // The window never runs off the end of the plan.
+    auto nWindow = WindowSlots();
+    if (nTopSlot + nWindow > nSlots)
+        nTopSlot = nSlots > nWindow ? nSlots - nWindow : 0;
 
     for (size_t nLine = 0; nLine < nRowLines; nLine++)
     {
-        auto nSlot = nFirst + nLine;
-        const auto* pRow = nSlot < nSlots ? Slots[nSlot] : nullptr;
+        auto nSlot = SlotOfLine(nLine);
+        const auto* pRow = nSlot != nNoSlot ? Slots[nSlot] : nullptr;
 
         // Arrows only where a value is bound; otherwise parked until a value row lands here again.
         auto bHasValue = pRow != nullptr && pRow->nKind != ROW_HEADING;
@@ -2239,8 +2239,7 @@ static void BuildRows(void* pPage)
     {
         for (size_t nLine = 0; nLine < nRowLines && !bOrdinaryItemState; nLine++)
         {
-            auto nSlot = nFirst + nLine;
-            const auto* pRow = nSlot < nSlots ? Slots[nSlot] : nullptr;
+            const auto* pRow = RowOfLine(nLine);
 
             // Copying from a greyed row would put every heading into the disabled ink.
             if (pRow == nullptr || pRow->nKind == ROW_HEADING || !IsRowAvailable(*pRow))
@@ -2255,12 +2254,8 @@ static void BuildRows(void* pPage)
 
         for (size_t nLine = 0; nLine < nRowLines; nLine++)
         {
-            auto nSlot = nFirst + nLine;
-            const auto* pRow = nSlot < nSlots ? Slots[nSlot] : nullptr;
-            if (pRow == nullptr)
-                continue;
-
-            if (pRow->nKind != ROW_HEADING)
+            const auto* pRow = RowOfLine(nLine);
+            if (pRow == nullptr || pRow->nKind != ROW_HEADING)
                 continue;
 
             auto pItem = ppItems[nLine];
@@ -2301,22 +2296,16 @@ static void SetActionPrompt(void* pPage, int nPrompt, bool bEnabled)
         SetPromptEnabled(pSlot, nullptr, bEnabled ? 1 : 0);
 }
 
-// Tears the window down and puts the next one up; clear-rows leaves nothing behind.
-static void ShowPage(void* pPage, size_t nPage, bool bKeepOnScreenValues = true, int nTurnDirection = 0)
+// Tears the window down and puts it up over nTop; clear-rows leaves nothing behind. Resuming puts
+// the selection back on the line it was on; otherwise the caller places it.
+static void ShowWindow(void* pPage, size_t nTop, bool bKeepOnScreenValues = true, bool bResume = true)
 {
-    if (nPage >= nPages)
-        return;
-
     // The screen is normally the newest truth. Not after DEFAULT, which has already decided every
     // row; reading the old controls back over it is why pressing it appeared to do nothing.
     if (bKeepOnScreenValues)
         CapturePendingValues();
 
-    auto nPrevious = nCurrentPage;
-    auto bSameWindow = nPage == nCurrentPage;
     auto pList = SafeRead<void*>(pPage, nPageList);
-
-    // A rebuild that is not a page turn puts the selection back on the same line, not at an end.
     auto nWasOn = SafeRead<int32_t>(pList, nListBoxSelected);
 
     // The option layer's state goes with the rows, so the one bit worth keeping is taken first.
@@ -2325,7 +2314,7 @@ static void ShowPage(void* pPage, size_t nPage, bool bKeepOnScreenValues = true,
     auto ppVTable = *reinterpret_cast<uintptr_t**>(pPage);
     reinterpret_cast<PageMethod_t>(ppVTable[nClearRowsSlot])(pPage, nullptr);
 
-    nCurrentPage = nPage;
+    nTopSlot = nTop;
     BuildRows(pPage);
 
     // Clearing the rows dropped the change subscriptions that light APPLY, so the base open runs
@@ -2342,14 +2331,11 @@ static void ShowPage(void* pPage, size_t nPage, bool bKeepOnScreenValues = true,
         }
     }
 
-    // Down onto a page starts at the top, up at the bottom; a rebuild in place resumes. Page order
-    // gives the direction except on the wrap, so the caller says which way where it knows.
-    auto bDownwards = nTurnDirection != 0 ? nTurnDirection > 0 : nPage > nPrevious;
-    auto bResume = bSameWindow && nWasOn >= 0 && nWasOn < static_cast<int>(nRowLines);
-    auto nFrom = bResume ? nWasOn : (bDownwards ? 0 : static_cast<int>(nRowLines) - 1);
+    bResume = bResume && nWasOn >= 0 && nWasOn < static_cast<int>(nRowLines);
 
     pList = SafeRead<void*>(pPage, nPageList);
-    SettleSelection(pList, nFrom, bResume || bDownwards ? 1 : -1);
+    if (bResume)
+        SettleSelection(pList, nWasOn, 1);
 
     // The lit bar does not follow the selection, so a rebuild in place moves it by hand.
     if (bResume && SetHighlight != nullptr && pRowListFocusable != nullptr && pList != nullptr)
@@ -2544,12 +2530,17 @@ static void __fastcall JackalFixImageDraw(void* pImage, void* pEdx)
 static void __fastcall JackalFixDrawRow(void* pList, void* pEdx, int nIndex, void* pPosition)
 {
     const auto nPrevious = nDrawingLine;
+    const auto bWasLabel = bDrawingLabel;
 
     if (pList == pJackalFixList)
+    {
         nDrawingLine = nIndex;
+        bDrawingLabel = true;
+    }
 
     DrawRowHook.fastcall(pList, pEdx, nIndex, pPosition);
     nDrawingLine = nPrevious;
+    bDrawingLabel = bWasLabel;
 }
 
 // CListBox::Draw draws two widgets outside the cell loop, one being the highlight under the pointer,
@@ -2557,12 +2548,17 @@ static void __fastcall JackalFixDrawRow(void* pList, void* pEdx, int nIndex, voi
 static void __fastcall JackalFixListDraw(void* pList, void* pEdx)
 {
     const auto nPrevious = nDrawingLine;
+    const auto bWasLabel = bDrawingLabel;
 
     if (const auto nLine = pList != pJackalFixList ? ValueWidgetLine(pList) : -1; nLine >= 0)
+    {
         nDrawingLine = nLine;
+        bDrawingLabel = false;
+    }
 
     ListDrawHook.fastcall(pList, pEdx);
     nDrawingLine = nPrevious;
+    bDrawingLabel = bWasLabel;
 }
 
 // Puts a heading's look back after the engine recomputes it; the disabled flag stays set.
@@ -2573,14 +2569,10 @@ static void __fastcall JackalFixRefreshRow(void* pListBox, void* pEdx, int nInde
     if (pListBox != pJackalFixList || nIndex < 0 || nIndex >= static_cast<int>(nRowLines))
         return;
 
-    auto nSlot = nCurrentPage * nRowLines + static_cast<size_t>(nIndex);
-    const auto* pRow = nSlot < nSlots ? Slots[nSlot] : nullptr;
-    if (pRow == nullptr)
-        return;
-
     // Ordinary rows are left alone: the refresh undoes any colour written here, so fading waits
     // for the draw.
-    if (pRow->nKind != ROW_HEADING)
+    const auto* pRow = RowOfLine(static_cast<size_t>(nIndex));
+    if (pRow == nullptr || pRow->nKind != ROW_HEADING)
         return;
 
     if (!bOrdinaryItemState)
@@ -2595,21 +2587,44 @@ static void __fastcall JackalFixRefreshRow(void* pListBox, void* pEdx, int nInde
 // A line the selection may rest on: a row with a value behind it, not a title or a spacer.
 static bool IsSelectableLine(size_t nLine)
 {
-    auto nSlot = nCurrentPage * nRowLines + nLine;
-    const auto* pRow = nSlot < nSlots ? Slots[nSlot] : nullptr;
+    const auto* pRow = RowOfLine(nLine);
     return pRow != nullptr && pRow->nKind != ROW_HEADING && IsRowAvailable(*pRow);
 }
 
-// The page a walk off the end of the window lands on. The ends join; a single page answers itself.
-static size_t NextPage(int nDirection)
+static bool IsHeadingSlot(size_t nSlot)
 {
-    if (nPages <= 1)
-        return nCurrentPage;
+    return nSlot < nSlots && Slots[nSlot] != nullptr && Slots[nSlot]->nKind == ROW_HEADING;
+}
 
-    if (nDirection > 0)
-        return nCurrentPage + 1 < nPages ? nCurrentPage + 1 : 0;
+// Scrolls one slot, further while a heading would sit on the new edge line. At an end the list
+// joins to the other. The selection stays on the row it was on, or on nothing after a join, so one
+// stock step lands on the fresh row. False when everything fits in the window.
+static bool ScrollWindow(void* pPage, int nDirection)
+{
+    auto nWindow = WindowSlots();
+    if (pPage == nullptr || pJackalFixList == nullptr || SetSelection == nullptr || nWindow == 0 || nSlots <= nWindow)
+        return false;
 
-    return nCurrentPage > 0 ? nCurrentPage - 1 : nPages - 1;
+    auto nLast = nSlots - nWindow;
+    auto nTop = nTopSlot;
+    auto nWasOn = SafeRead<int32_t>(pJackalFixList, nListBoxSelected);
+    auto nWasSlot = nWasOn >= 0 ? SlotOfLine(static_cast<size_t>(nWasOn)) : nNoSlot;
+
+    auto bJoin = nDirection > 0 ? nTop >= nLast : nTop == 0;
+    if (bJoin)
+    {
+        nTop = nDirection > 0 ? 0 : nLast;
+    }
+    else
+    {
+        do
+            nTop = nDirection > 0 ? nTop + 1 : nTop - 1;
+        while ((nDirection > 0 ? nTop < nLast : nTop > 0) && IsHeadingSlot(nDirection > 0 ? nTop + nWindow - 1 : nTop));
+    }
+
+    ShowWindow(pPage, nTop, true, false);
+    SetSelection(pJackalFixList, nullptr, bJoin ? -1 : LineOfSlot(nWasSlot), 1, 1);
+    return true;
 }
 
 // The nearest restable line, preferring the direction of travel; the other way covers a leading
@@ -2638,14 +2653,14 @@ static void SettleSelection(void* pListBox, int nFrom, int nDirection)
 
 // One row, turning the page at the end. Explicit: the stock handler acts on the widget the input
 // was routed to, which with a value focused did nothing.
-static bool StepRow(void* pPage, int nDirection)
+static bool StepRow(void* pPage, int nDirection, bool bScroll = true)
 {
     if (pJackalFixList == nullptr || SetSelection == nullptr || nRowLines == 0)
         return false;
 
     auto nSelected = SafeRead<int32_t>(pJackalFixList, nListBoxSelected);
 
-    // A selection outside the window is not a page turn; start just outside the near end.
+    // A selection outside the window is not a scroll; start just outside the near end.
     auto nFrom = nSelected;
     if (nFrom < 0 || nFrom >= static_cast<int>(nRowLines))
         nFrom = nDirection > 0 ? -1 : static_cast<int>(nRowLines);
@@ -2665,13 +2680,8 @@ static bool StepRow(void* pPage, int nDirection)
         return true;
     }
 
-    // Off the end of the window, so the window moves instead.
-    auto nPage = NextPage(nDirection);
-    if (nPage == nCurrentPage || pPage == nullptr)
-        return false;
-
-    ShowPage(pPage, nPage, true, nDirection);
-    return true;
+    // Off the end of the window, so the window moves and the step is taken again.
+    return bScroll && ScrollWindow(pPage, nDirection) && StepRow(pPage, nDirection, false);
 }
 
 // The pointer lights a heading by passing over it: the highlight is a separate field, so the
@@ -2757,7 +2767,7 @@ static int __fastcall JackalFixListBoxMouse(void* pListBox, void* pEdx, void* pS
 }
 
 // The list's input handler, for this page's list alone. Its refusal to move the selection is the
-// page-turn signal, which needs wrap off. Safe to rebuild from here: it caches nothing across the
+// scroll signal, which needs wrap off. Safe to rebuild from here: it caches nothing across the
 // call, and the up and down path never runs through the row delegates clear-rows deletes.
 static int __fastcall JackalFixListBoxNav(void* pListBox, void* pEdx, void* pSender, void* pEvent, uint8_t* pResult)
 {
@@ -2793,7 +2803,7 @@ static int __fastcall JackalFixListBoxNav(void* pListBox, void* pEdx, void* pSen
     }
 
     // The table is swapped per instance, so this should only ever be our own list.
-    if (pListBox != pJackalFixList || pResult == nullptr || pJackalFixPage == nullptr || nPages <= 1)
+    if (pListBox != pJackalFixList || pResult == nullptr || pJackalFixPage == nullptr)
         return nReturn;
 
     // Step over a heading by moving again the same way; bounded, or a window of headings spins.
@@ -2832,16 +2842,22 @@ static int __fastcall JackalFixListBoxNav(void* pListBox, void* pEdx, void* pSen
     if (nCode != nNavCodeUp && nCode != nNavCodeDown)
         return nReturn;
 
-    auto nDirection = nCode == nNavCodeDown ? 1 : -1;
-    auto nNext = NextPage(nDirection);
-    if (nNext == nCurrentPage)
+    if (!ScrollWindow(pJackalFixPage, nCode == nNavCodeDown ? 1 : -1))
         return nReturn;
 
-    ShowPage(pJackalFixPage, nNext, true, nDirection);
+    // The stock step onto the fresh row, for its sound. After a join there is no selection to step
+    // from, and only wrap gets up to the last row from there.
+    auto& nFlags = *reinterpret_cast<uint8_t*>(static_cast<uint8_t*>(pListBox) + nListBoxFlags);
+    if (SafeRead<int32_t>(pListBox, nListBoxSelected) < 0)
+        nFlags |= nListBoxWrap;
 
-    // Swallow the refusal, or it also hands the key to whatever sits beyond the list.
-    pResult[nNavResultFlags] &= static_cast<uint8_t>(~nNavFlagUnhandled);
-    return 1;
+    pResult[nNavResultFlags] = nFlagsBefore;
+    nReturn = StockListBoxNav(pListBox, pEdx, pSender, pEvent, pResult);
+    nFlags &= static_cast<uint8_t>(~nListBoxWrap);
+
+    // Swallow any refusal, or it also hands the key to whatever sits beyond the list.
+    pResult[nNavResultFlags] = nFlagsBefore;
+    return nReturn;
 }
 
 // Per instance, not hooked: every list shares the class. Repeated per open in case of a rebuild.
@@ -2921,7 +2937,7 @@ static void RefreshIfStale(void* pPage)
     if (pPage != nullptr && nBuiltRows != 0)
     {
         // No capture: reading the controls back would undo the edit this exists to show.
-        ShowPage(pPage, nCurrentPage, false);
+        ShowWindow(pPage, nTopSlot, false);
     }
 }
 
@@ -3032,7 +3048,7 @@ static void __fastcall JackalFixDefaultPage(void* pPage, void*)
 
     // Without the capture, or the rows would be read back over the values just decided.
     if (pPage != nullptr)
-        ShowPage(pPage, nCurrentPage, false);
+        ShowWindow(pPage, nTopSlot, false);
 }
 
 // Events 1, 2 and 3 are Apply, Revert and Back. The stock handler vtables are used as they are: each
@@ -3084,7 +3100,7 @@ static void __fastcall JackalFixOpenPage(void* pPage, void* pEdx)
     RegisterActionHandlers(pPage);
     TakeOverList(pPage);
 
-    nCurrentPage = 0;
+    nTopSlot = 0;
 
     reinterpret_cast<PageMethod_t>(ppVTable[nClearRowsSlot])(pPage, pEdx);
     BuildRows(pPage);
@@ -3096,7 +3112,7 @@ static void __fastcall JackalFixOpenPage(void* pPage, void* pEdx)
     // so ask again on the way out and rebuild if the answer moved. Once per session.
     if (BeyondUltraAvailability() != nBuiltAvailability)
     {
-        ShowPage(pPage, nCurrentPage, false);
+        ShowWindow(pPage, nTopSlot, false);
     }
 
     // After the base open: it puts the selection on the first row, undoing anything settled before.
