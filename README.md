@@ -34,8 +34,10 @@ What differs under FCSE, and why:
   patch and nothing to restart for.
 - **The update check is dropped**, because it offers the `.asi` release, which is not what is
   installed.
-- **The Debug settings are file-only.** They stay in `bin\fcse.ini` and are not given menu rows,
-  since FCSE's page cannot grey them out during a network session the way ours does.
+- **The Debug settings show greyed out.** They appear on the page with their values but cannot be
+  changed there, so `bin\fcse.ini` is the way to move them. Our own menu greys them only during a
+  network session and until a key is written by hand; FCSE decides once at startup, so they are
+  greyed for good. The multiplayer lock itself is untouched, since the cheats check it themselves.
 - **Internal Resolution X and Y are typed in** rather than picked as a percentage of the window: the
   choice list would have to be built when the page opens, which FCSE settles once at startup.
 

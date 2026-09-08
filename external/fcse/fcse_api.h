@@ -150,8 +150,16 @@ typedef enum FCSE_SettingType {
 } FCSE_SettingType;
 
 // Bit flags for FCSE_Setting::flags, which is otherwise 0.
+//
+// Prefer Disabled to Hidden where either would do: a row the player can see but not change says
+// something is holding it, where a row that is simply absent says nothing at all. Hidden is for a
+// knob that is a modder's rather than a player's, which the file alone is the right place for.
+//
+// The values are not in declaration order for a reason - Disabled holds the bit an earlier draft of
+// this header gave Hidden, so a plugin built against that greys its row rather than doing nothing.
 typedef enum FCSE_SettingFlags {
-    FCSE_SettingFlag_Hidden = 1, // keep it out of the in-game page; the file stays its interface
+    FCSE_SettingFlag_Disabled = 1, // show the row greyed out and unselectable, value and all
+    FCSE_SettingFlag_Hidden = 2,   // keep it off the page entirely; the file is its only interface
 } FCSE_SettingFlags;
 
 // A setting's value, tagged with its own type so this one callback signature keeps working as the
@@ -216,8 +224,8 @@ typedef void (*FCSE_SettingChangedFn)(const FCSE_SettingValue* value, void* user
 //   { "Difficulty", FCSE_CHOICE(1), &OnDifficulty, NULL, kLabels, 3 }
 //   { "Draw distance", FCSE_SLIDER(6), &OnDrawDistance, NULL, NULL, 0, 1, 10 }
 //   { "Server name", FCSE_TEXT(), &OnServerName, NULL, NULL, 0, 0, 0, "kilimanjaro", 24 }
-//   { "Trace allocs", FCSE_CHECKBOX(false), &OnTrace, NULL, NULL, 0, 0, 0, NULL, 0,
-//     FCSE_SettingFlag_Hidden }
+//   { "Reload on save", FCSE_CHECKBOX(false), &OnReload, NULL, NULL, 0, 0, 0, NULL, 0,
+//     FCSE_SettingFlag_Disabled }
 typedef struct FCSE_Setting {
     const char* name;
     FCSE_SettingValue defaultValue;
@@ -241,8 +249,8 @@ typedef struct FCSE_Setting {
     const char* defaultText;
     uint32_t maxTextLength;
 
-    // Any of FCSE_SettingFlags. A Hidden setting still lives in the ini and still reaches
-    // onChanged; it just has no row on the page.
+    // Any of FCSE_SettingFlags. They change the page and nothing else: the value still lives in the
+    // ini, still loads from it, and still reaches onChanged either way.
     uint32_t flags;
 } FCSE_Setting;
 

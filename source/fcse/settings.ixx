@@ -95,7 +95,10 @@ struct PrefSpec
 {
     PrefKind    nKind        = KIND_NONE;
     const char* pName        = nullptr;
-    bool        bHidden      = false;
+
+    // Shown on the page but greyed and unselectable. The value still loads and still applies; the
+    // ini is the only way to move it.
+    bool        bDisabled    = false;
 
     int         nDefault     = 0;       // KIND_BOOL, KIND_ENUM, KIND_SLIDER
     float       fDefault     = 0.0f;    // KIND_BOOL_FLOAT, KIND_STEPS
@@ -122,9 +125,9 @@ static constexpr PrefSpec None()
     return {};
 }
 
-static constexpr PrefSpec Boolean(const char* pName, int nDefault, bool bHidden = false)
+static constexpr PrefSpec Boolean(const char* pName, int nDefault, bool bDisabled = false)
 {
-    return { .nKind = KIND_BOOL, .pName = pName, .bHidden = bHidden, .nDefault = nDefault };
+    return { .nKind = KIND_BOOL, .pName = pName, .bDisabled = bDisabled, .nDefault = nDefault };
 }
 
 // A boolean the game stores as a float, because what it drives is a multiplier.
@@ -150,20 +153,20 @@ static constexpr PrefSpec Steps(const char* pName, float fDefault, int nMinimum,
 }
 
 static constexpr PrefSpec Slider(const char* pName, int nDefault, int nMinimum, int nMaximum,
-                                 bool bHidden = false)
+                                 bool bDisabled = false)
 {
-    return { .nKind = KIND_SLIDER, .pName = pName, .bHidden = bHidden, .nDefault = nDefault,
+    return { .nKind = KIND_SLIDER, .pName = pName, .bDisabled = bDisabled, .nDefault = nDefault,
              .nMinimum = nMinimum, .nMaximum = nMaximum };
 }
 
-static constexpr PrefSpec Text(const char* pName, const char* pDefault, bool bHidden = false)
+static constexpr PrefSpec Text(const char* pName, const char* pDefault, bool bDisabled = false)
 {
-    return { .nKind = KIND_TEXT, .pName = pName, .bHidden = bHidden, .pDefaultText = pDefault };
+    return { .nKind = KIND_TEXT, .pName = pName, .bDisabled = bDisabled, .pDefaultText = pDefault };
 }
 
-static constexpr PrefSpec TextInt(const char* pName, const char* pDefault, bool bHidden = false)
+static constexpr PrefSpec TextInt(const char* pName, const char* pDefault, bool bDisabled = false)
 {
-    return { .nKind = KIND_TEXT_INT, .pName = pName, .bHidden = bHidden, .pDefaultText = pDefault };
+    return { .nKind = KIND_TEXT_INT, .pName = pName, .bDisabled = bDisabled, .pDefaultText = pDefault };
 }
 
 // The choice lists, as the ASI build's own menu offers them.
@@ -457,7 +460,7 @@ static FCSE_Setting DescribeSetting(Pref nPref)
     setting.name = spec.pName;
     setting.onChanged = &OnPrefChanged;
     setting.userdata = reinterpret_cast<void*>(static_cast<uintptr_t>(nPref));
-    setting.flags = spec.bHidden ? static_cast<uint32_t>(FCSE_SettingFlag_Hidden) : 0u;
+    setting.flags = spec.bDisabled ? static_cast<uint32_t>(FCSE_SettingFlag_Disabled) : 0u;
 
     switch (spec.nKind)
     {
