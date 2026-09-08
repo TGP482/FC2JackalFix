@@ -12,7 +12,6 @@ workspace "FC2JackalFix"
    kind "SharedLib"
    language "C++"
    targetdir "bin/%{cfg.buildcfg}"
-   targetextension ".asi"
    buildoptions { "/dxifcInlineFunctions-" }
 
    defines { "rsc_CompanyName=\"FC2JackalFix\"" }
@@ -72,28 +71,10 @@ workspace "FC2JackalFix"
    files { "source/**.h", "source/**.hpp", "source/**.cpp", "source/**.hxx", "source/**.ixx" }
    files { "source/resources/Versioninfo.rc" }
 
+   -- Pattern scanning is the one dependency both builds share: it only reads the image, so there is
+   -- nothing in it for a loader to arbitrate.
    includedirs { "external/hooking" }
-   includedirs { "external/injector/include" }
-   includedirs { "external/injector/safetyhook/include" }
-   includedirs { "external/injector/zydis" }
-   includedirs { "external/inireader" }
    files { "external/hooking/Hooking.Patterns.h", "external/hooking/Hooking.Patterns.cpp" }
-   -- Listed one by one rather than globbed. Wildcards over the submodules produced a project with
-   -- no safetyhook or zydis sources in it at all, which compiles fine and only fails at link time
-   -- once something actually calls safetyhook. Explicit paths are the form known to work here.
-   -- os.linux.cpp is skipped; it is #if'd out on Windows anyway.
-   files { "external/injector/safetyhook/include/safetyhook.hpp" }
-   files {
-      "external/injector/safetyhook/src/allocator.cpp",
-      "external/injector/safetyhook/src/easy.cpp",
-      "external/injector/safetyhook/src/inline_hook.cpp",
-      "external/injector/safetyhook/src/mid_hook.cpp",
-      "external/injector/safetyhook/src/os.windows.cpp",
-      "external/injector/safetyhook/src/utility.cpp",
-      "external/injector/safetyhook/src/vmt_hook.cpp",
-   }
-   files { "external/injector/zydis/Zydis.h", "external/injector/zydis/Zydis.c" }
-   files { "data/bin/plugins/*.ini" }
 
    links { "winmm" } -- timeBeginPeriod, for loadingscreen.ixx
 
@@ -146,5 +127,63 @@ workspace "FC2JackalFix"
       optimize "On"
       staticruntime "On"
 
+   -- Cleared before the projects, or everything below would inherit the Release filter.
+   filter {}
+
+local gamedir = os.getenv("FC2DIR") or "C:/Program Files (x86)/Steam/steamapps/common/Far Cry 2/"
+
+-- The stock build: an ASI plugin loaded by Ultimate ASI Loader, hooking and patching for itself.
 project "FC2JackalFix"
-   setpaths(os.getenv("FC2DIR") or "C:/Program Files (x86)/Steam/steamapps/common/Far Cry 2/", "bin/FarCry2.exe", "bin/plugins/")
+   targetextension ".asi"
+
+   includedirs { "external/injector/include" }
+   includedirs { "external/injector/safetyhook/include" }
+   includedirs { "external/injector/zydis" }
+   includedirs { "external/inireader" }
+
+   -- Listed one by one rather than globbed. Wildcards over the submodules produced a project with
+   -- no safetyhook or zydis sources in it at all, which compiles fine and only fails at link time
+   -- once something actually calls safetyhook. Explicit paths are the form known to work here.
+   -- os.linux.cpp is skipped; it is #if'd out on Windows anyway.
+   files { "external/injector/safetyhook/include/safetyhook.hpp" }
+   files {
+      "external/injector/safetyhook/src/allocator.cpp",
+      "external/injector/safetyhook/src/easy.cpp",
+      "external/injector/safetyhook/src/inline_hook.cpp",
+      "external/injector/safetyhook/src/mid_hook.cpp",
+      "external/injector/safetyhook/src/os.windows.cpp",
+      "external/injector/safetyhook/src/utility.cpp",
+      "external/injector/safetyhook/src/vmt_hook.cpp",
+   }
+   files { "external/injector/zydis/Zydis.h", "external/injector/zydis/Zydis.c" }
+   files { "data/bin/plugins/*.ini" }
+
+   -- The FCSE build's own entry point and settings module. Both declare things this one already
+   -- has - a second `export module settings` in one project does not even compile.
+   removefiles { "source/fcse/**" }
+
+   setpaths(gamedir, "bin/FarCry2.exe", "bin/plugins/")
+
+-- The same fixes as a plugin for FCSE, which owns the process and arbitrates hooks between mods.
+-- Everything under source/ is shared; what differs is the entry point, where settings live, and
+-- that hooking goes through the loader. See README.md, "Running under FCSE".
+project "FC2JackalFix-FCSE"
+   targetname "FC2JackalFix"
+   targetextension ".dll"
+
+   defines { "JACKALFIX_FCSE" }
+
+   -- The shim headers stand in for injector, safetyhook and IniReader under the names common.hxx
+   -- already includes, so no feature module changes to reach FCSE instead.
+   includedirs { "source/fcse/shim" }
+   includedirs { "external/fcse" }
+
+   removefiles {
+      "source/dllmain.cpp",              -- fcse_main.cpp is the entry point here
+      "source/core/settings.ixx",        -- source/fcse/settings.ixx registers with FCSE instead
+      "source/core/updatecheck.ixx",     -- it offers the ASI release, which is not what is installed
+      "source/system/largeaddressaware.ixx", -- FCSE.exe is linked large address aware already
+      "source/ui/jackalfixmenu.ixx",     -- FCSE's Mod Configuration Menu carries the rows
+   }
+
+   setpaths(gamedir, "bin/FCSE.exe", "bin/plugins/")
