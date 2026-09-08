@@ -94,9 +94,9 @@ struct PrefSpec
     const char* pName;
     bool        bHidden;
 
-    int         nDefault;     // KIND_BOOL, KIND_ENUM, KIND_SLIDER, KIND_TEXT_INT
+    int         nDefault;     // KIND_BOOL, KIND_ENUM, KIND_SLIDER
     float       fDefault;     // KIND_BOOL_FLOAT, KIND_STEPS
-    const char* pDefaultText; // KIND_TEXT
+    const char* pDefaultText; // KIND_TEXT, KIND_TEXT_INT
 
     // KIND_STEPS ladder ends and stride, in the setting's own units times fScale. KIND_SLIDER
     // bounds, in its own units.
@@ -154,9 +154,9 @@ static constexpr PrefSpec Text(const char* pName, const char* pDefault, bool bHi
     return { KIND_TEXT, pName, bHidden, 0, 0.0f, pDefault, 0, 0, 1, 1.0f, nullptr, false, nullptr, nullptr, 0 };
 }
 
-static constexpr PrefSpec TextInt(const char* pName, int nDefault, bool bHidden = false)
+static constexpr PrefSpec TextInt(const char* pName, const char* pDefault, bool bHidden = false)
 {
-    return { KIND_TEXT_INT, pName, bHidden, nDefault, 0.0f, nullptr, 0, 0, 1, 1.0f, nullptr, false,
+    return { KIND_TEXT_INT, pName, bHidden, 0, 0.0f, pDefault, 0, 0, 1, 1.0f, nullptr, false,
              nullptr, nullptr, 0 };
 }
 
@@ -223,11 +223,11 @@ static const PrefSpec PrefSpecs[Pref::COUNT]
     Steps("Saturation", 0.5f, 0, 100, 5, 100.0f, "%.2f"),
     Enumeration("Beyond Ultra Geometry", 0, BeyondUltraGeometryValues, BeyondUltraGeometryLabels),
     Enumeration("Beyond Ultra Shadows", 0, BeyondUltraShadowValues, BeyondUltraShadowLabels),
-    TextInt("Shadow Resolution", 2048, true),
+    TextInt("Shadow Resolution", "2048", true),
     Enumeration("Beyond Ultra Terrain", 0, BeyondUltraValues, BeyondUltraLabels),
     Enumeration("Display Mode", 2, DisplayModeValues, DisplayModeLabels),
-    TextInt("Internal Resolution X", 0),
-    TextInt("Internal Resolution Y", 0),
+    TextInt("Internal Resolution X", "0"),
+    TextInt("Internal Resolution Y", "0"),
     Enumeration("Scaling Filter", 1, ScalingFilterValues, ScalingFilterLabels),
     Boolean("FPS Counter", 0),
     Slider("CPU Affinity", 0, 0, 64),
@@ -261,8 +261,10 @@ struct StepLadder
 
 static StepLadder Ladders[Pref::COUNT];
 
-// Every generated default string, kept alive because nothing promises FCSE copies it.
-static std::vector<std::string> DefaultText;
+static int32_t ParseInt(const char* pText, int32_t nFallback = 0)
+{
+    return pText != nullptr ? static_cast<int32_t>(std::strtol(pText, nullptr, 10)) : nFallback;
+}
 
 static std::string FormatStep(const PrefSpec& spec, float fValue)
 {
@@ -288,8 +290,10 @@ static void BuildLadder(Pref nPref)
     if (spec.bOffFirst)
         Add(0.0f, "Off");
 
+    // A default of zero on a ladder that leads with Off is that Off entry, already in at index 0,
+    // which is where nDefault starts.
     const auto szDefault = FormatStep(spec, spec.fDefault);
-    auto bDefaultPlaced = spec.fDefault <= 0.0f && spec.bOffFirst;
+    auto bDefaultPlaced = spec.bOffFirst && spec.fDefault <= 0.0f;
 
     for (auto nStep = spec.nMinimum; nStep <= spec.nMaximum; nStep += spec.nStep)
     {
@@ -384,8 +388,7 @@ static void StorePref(Pref nPref, const FCSE_SettingValue& value)
         break;
 
     case KIND_TEXT_INT:
-        mPrefs[nPref] = value.asText != nullptr ? static_cast<int32_t>(std::strtol(value.asText, nullptr, 10))
-                                                : spec.nDefault;
+        mPrefs[nPref] = ParseInt(value.asText, ParseInt(spec.pDefaultText));
         break;
 
     default:
@@ -423,6 +426,10 @@ static void SeedDefault(Pref nPref)
 
     case KIND_TEXT:
         mPrefs[nPref] = std::string(spec.pDefaultText != nullptr ? spec.pDefaultText : "");
+        break;
+
+    case KIND_TEXT_INT:
+        mPrefs[nPref] = ParseInt(spec.pDefaultText);
         break;
 
     default:
@@ -484,14 +491,9 @@ static FCSE_Setting DescribeSetting(Pref nPref)
         break;
 
     case KIND_TEXT:
-        setting.defaultValue.type = FCSE_SettingType_Text;
-        setting.defaultText = spec.pDefaultText;
-        break;
-
     case KIND_TEXT_INT:
         setting.defaultValue.type = FCSE_SettingType_Text;
-        DefaultText.push_back(std::to_string(spec.nDefault));
-        setting.defaultText = DefaultText.back().c_str();
+        setting.defaultText = spec.pDefaultText;
         break;
 
     default:
@@ -507,7 +509,6 @@ export void RegisterJackalFixSettings()
 {
     std::vector<FCSE_Setting> Settings;
     Settings.reserve(static_cast<size_t>(Pref::COUNT));
-    DefaultText.reserve(static_cast<size_t>(Pref::COUNT));
 
     for (size_t i = 0; i < static_cast<size_t>(Pref::COUNT); i++)
     {
