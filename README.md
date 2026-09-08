@@ -15,7 +15,33 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 WINEDLLOVERRIDES="dinput8=n,b" %command%
 ```
 
+### Running under FCSE
+Every fix below is also buildable as a plugin for [FCSE](https://github.com/jbebe/farcry-sdk/tree/main/tools/FCSE), an
+SKSE-style loader that replaces `FarCry2.exe` and hosts several mods at once. The solution builds
+two projects from the same sources: `FC2JackalFix` produces the `.asi` above, and
+`FC2JackalFix-FCSE` produces `bin\FC2JackalFix.dll` for `bin\plugins\`. It needs FCSE with plugin
+API version 7 or newer.
 
+> [!WARNING]
+> Install one or the other, not both.
+
+What differs under FCSE, and why:
+- **Settings live in `bin\fcse.ini`** under `[FC2JackalFix]`, and the rows appear on FCSE's own Mod
+  Configuration Menu rather than on a page of ours. Changing one applies immediately, as before.
+- **Hooks and byte patches go through the loader**, so FCSE can tell you which mod owns a site when
+  two want the same one. The fixes themselves are the same code.
+- **Large Address Aware is dropped.** `FCSE.exe` is linked with the flag, so there is nothing to
+  patch and nothing to restart for.
+- **The update check is dropped**, because it offers the `.asi` release, which is not what is
+  installed.
+- **The Debug settings are file-only.** They stay in `bin\fcse.ini` and are not given menu rows,
+  since FCSE's page cannot grey them out during a network session the way ours does.
+- **Internal Resolution X and Y are typed in** rather than picked as a percentage of the window: the
+  choice list would have to be built when the page opens, which FCSE settles once at startup.
+
+Two settings lose a little range, both because FCSE stores a choice by its label: a hand-edited
+value that is not on the ladder falls back to the default, and Max Frame Rate cannot take a number
+outside its list.
 
 ## Features
 

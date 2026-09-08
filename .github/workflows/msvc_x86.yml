@@ -78,6 +78,15 @@ jobs:
         archive: false
         path: FC2JackalFix.zip
 
+    # The FCSE plugin build. Kept out of the release zip, which stays the ASI one; this is here so
+    # the second project is downloadable and so a break in it fails the run.
+    - name: Upload FCSE plugin
+      uses: actions/upload-artifact@v7
+      with:
+        archive: false
+        name: FC2JackalFix-FCSE
+        path: bin/FC2JackalFix.dll
+
     - name: Upload Release
       if: |
         github.event.inputs.release == 'true' &&
