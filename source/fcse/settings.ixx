@@ -16,6 +16,9 @@ import logging;
 // The preferences the ASI build reads from FC2JackalFix.ini, declared to FCSE instead. FCSE owns
 // every value, keeps them in bin\fcse.ini under [FC2JackalFix] and gives each one a row on its Mod
 // Configuration Menu, so this module has no file of its own to read or watch.
+//
+// The enum below and PrefSpecs are positional against each other, and the enum mirrors the one in
+// source/core/settings.ixx so that no feature module has to change: keep all three in step.
 export enum Pref
 {
     PREF_SKIPINTRO,
@@ -90,74 +93,77 @@ enum PrefKind
 // section wherever two sections would otherwise collide.
 struct PrefSpec
 {
-    PrefKind    nKind;
-    const char* pName;
-    bool        bHidden;
+    PrefKind    nKind        = KIND_NONE;
+    const char* pName        = nullptr;
+    bool        bHidden      = false;
 
-    int         nDefault;     // KIND_BOOL, KIND_ENUM, KIND_SLIDER
-    float       fDefault;     // KIND_BOOL_FLOAT, KIND_STEPS
-    const char* pDefaultText; // KIND_TEXT, KIND_TEXT_INT
+    int         nDefault     = 0;       // KIND_BOOL, KIND_ENUM, KIND_SLIDER
+    float       fDefault     = 0.0f;    // KIND_BOOL_FLOAT, KIND_STEPS
+    const char* pDefaultText = nullptr; // KIND_TEXT, KIND_TEXT_INT
 
     // KIND_STEPS ladder ends and stride, in the setting's own units times fScale. KIND_SLIDER
     // bounds, in its own units.
-    int         nMinimum;
-    int         nMaximum;
-    int         nStep;
-    float       fScale;
-    const char* pFormat;
-    bool        bOffFirst;    // KIND_STEPS: lead the ladder with an Off worth zero
+    int         nMinimum     = 0;
+    int         nMaximum     = 0;
+    int         nStep        = 1;
+    float       fScale       = 1.0f;
+    const char* pFormat      = nullptr;
+    bool        bOffFirst    = false;   // KIND_STEPS: lead the ladder with an Off worth zero
 
-    const int*         pValues; // KIND_ENUM
-    const char* const* pLabels;
-    uint32_t           nValueCount;
+    const int*         pValues     = nullptr; // KIND_ENUM
+    const char* const* pLabels     = nullptr;
+    uint32_t           nValueCount = 0;
 };
+
+// One factory per kind, each naming only the fields its kind reads.
 
 static constexpr PrefSpec None()
 {
-    return { KIND_NONE, nullptr, false, 0, 0.0f, nullptr, 0, 0, 1, 1.0f, nullptr, false, nullptr, nullptr, 0 };
+    return {};
 }
 
 static constexpr PrefSpec Boolean(const char* pName, int nDefault, bool bHidden = false)
 {
-    return { KIND_BOOL, pName, bHidden, nDefault, 0.0f, nullptr, 0, 1, 1, 1.0f, nullptr, false, nullptr, nullptr, 0 };
+    return { .nKind = KIND_BOOL, .pName = pName, .bHidden = bHidden, .nDefault = nDefault };
 }
 
 // A boolean the game stores as a float, because what it drives is a multiplier.
 static constexpr PrefSpec BooleanFloat(const char* pName, float fDefault)
 {
-    return { KIND_BOOL_FLOAT, pName, false, 0, fDefault, nullptr, 0, 1, 1, 1.0f, nullptr, false, nullptr, nullptr, 0 };
+    return { .nKind = KIND_BOOL_FLOAT, .pName = pName, .fDefault = fDefault };
 }
 
 template<size_t N>
 static constexpr PrefSpec Enumeration(const char* pName, int nDefault,
                                       const int (&Values)[N], const char* const (&Labels)[N])
 {
-    return { KIND_ENUM, pName, false, nDefault, 0.0f, nullptr, 0, 0, 1, 1.0f, nullptr, false, Values, Labels, N };
+    return { .nKind = KIND_ENUM, .pName = pName, .nDefault = nDefault,
+             .pValues = Values, .pLabels = Labels, .nValueCount = N };
 }
 
 static constexpr PrefSpec Steps(const char* pName, float fDefault, int nMinimum, int nMaximum,
                                 int nStep, float fScale, const char* pFormat, bool bOffFirst = false)
 {
-    return { KIND_STEPS, pName, false, 0, fDefault, nullptr, nMinimum, nMaximum, nStep, fScale,
-             pFormat, bOffFirst, nullptr, nullptr, 0 };
+    return { .nKind = KIND_STEPS, .pName = pName, .fDefault = fDefault,
+             .nMinimum = nMinimum, .nMaximum = nMaximum, .nStep = nStep, .fScale = fScale,
+             .pFormat = pFormat, .bOffFirst = bOffFirst };
 }
 
 static constexpr PrefSpec Slider(const char* pName, int nDefault, int nMinimum, int nMaximum,
                                  bool bHidden = false)
 {
-    return { KIND_SLIDER, pName, bHidden, nDefault, 0.0f, nullptr, nMinimum, nMaximum, 1, 1.0f,
-             nullptr, false, nullptr, nullptr, 0 };
+    return { .nKind = KIND_SLIDER, .pName = pName, .bHidden = bHidden, .nDefault = nDefault,
+             .nMinimum = nMinimum, .nMaximum = nMaximum };
 }
 
 static constexpr PrefSpec Text(const char* pName, const char* pDefault, bool bHidden = false)
 {
-    return { KIND_TEXT, pName, bHidden, 0, 0.0f, pDefault, 0, 0, 1, 1.0f, nullptr, false, nullptr, nullptr, 0 };
+    return { .nKind = KIND_TEXT, .pName = pName, .bHidden = bHidden, .pDefaultText = pDefault };
 }
 
 static constexpr PrefSpec TextInt(const char* pName, const char* pDefault, bool bHidden = false)
 {
-    return { KIND_TEXT_INT, pName, bHidden, 0, 0.0f, pDefault, 0, 0, 1, 1.0f, nullptr, false,
-             nullptr, nullptr, 0 };
+    return { .nKind = KIND_TEXT_INT, .pName = pName, .bHidden = bHidden, .pDefaultText = pDefault };
 }
 
 // The choice lists, as the ASI build's own menu offers them.
@@ -223,7 +229,7 @@ static const PrefSpec PrefSpecs[]
     Steps("Saturation", 0.5f, 0, 100, 5, 100.0f, "%.2f"),
     Enumeration("Beyond Ultra Geometry", 0, BeyondUltraGeometryValues, BeyondUltraGeometryLabels),
     Enumeration("Beyond Ultra Shadows", 0, BeyondUltraShadowValues, BeyondUltraShadowLabels),
-    TextInt("Shadow Resolution", "2048", true),
+    None(), // PREF_SHADOWRESOLUTION: read by nothing today, so it would be a dead key in fcse.ini
     Enumeration("Beyond Ultra Terrain", 0, BeyondUltraValues, BeyondUltraLabels),
     Enumeration("Display Mode", 2, DisplayModeValues, DisplayModeLabels),
     TextInt("Internal Resolution X", "0"),

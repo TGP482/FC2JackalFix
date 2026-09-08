@@ -29,9 +29,6 @@ struct memory_pointer_tr {
     T* get() const {
         return reinterpret_cast<T*>(a);
     }
-
-    memory_pointer_tr operator+(uintptr_t rhs) const { return memory_pointer_tr{ a + rhs }; }
-    memory_pointer_tr operator-(uintptr_t rhs) const { return memory_pointer_tr{ a - rhs }; }
 };
 
 using memory_pointer = memory_pointer_tr;

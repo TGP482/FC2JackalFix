@@ -7,6 +7,9 @@
 
 #include <fcse_api.h>
 
+// Importing a feature module is what pulls its registration in, so this list is dllmain.cpp's minus
+// the modules premake leaves out of this build. A module added there and not here is simply absent,
+// with nothing to say so.
 import common;
 import dunia;
 import settings;
@@ -74,16 +77,16 @@ extern "C"
             return false;
         }
 
-        // What InitDunia() works out for itself in the ASI build. Calling it instead would fire the
-        // Dunia event a second time, once per handler already run below.
-        hDunia = pApi->duniaModule;
-        bDuniaGOG = pApi->gameBuild == FCSE_GAME_BUILD_103_RETAIL;
-
-        if (hDunia == nullptr)
+        if (pApi->duniaModule == nullptr)
         {
             pApi->Log("FC2JackalFix was handed no Dunia.dll, not loading");
             return false;
         }
+
+        // What InitDunia() works out for itself in the ASI build, from the loader that already
+        // knows. Calling it instead would fire the Dunia event a second time.
+        hDunia = pApi->duniaModule;
+        bDuniaGOG = pApi->gameBuild == FCSE_GAME_BUILD_103_RETAIL;
 
         // Before the events: every Bind applies its setting as it subscribes, so the values have to
         // be in hand first.

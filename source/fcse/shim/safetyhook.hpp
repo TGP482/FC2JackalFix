@@ -11,7 +11,6 @@
 
 namespace safetyhook {
 
-using Xmm = FCSE_Xmm;
 using Context32 = FCSE_MidHookContext;
 using Context = Context32;
 using MidHookFn = void (*)(Context& ctx);
@@ -31,18 +30,8 @@ public:
     }
 
     template <typename RetT = void, typename... Args>
-    RetT call(Args... args) {
-        return m_original ? original<RetT (*)(Args...)>()(args...) : RetT();
-    }
-
-    template <typename RetT = void, typename... Args>
     RetT ccall(Args... args) {
         return m_original ? original<RetT(__cdecl*)(Args...)>()(args...) : RetT();
-    }
-
-    template <typename RetT = void, typename... Args>
-    RetT thiscall(Args... args) {
-        return m_original ? original<RetT(__thiscall*)(Args...)>()(args...) : RetT();
     }
 
     template <typename RetT = void, typename... Args>
@@ -72,31 +61,24 @@ private:
     bool m_installed = false;
 };
 
-inline InlineHook create_inline(void* target, void* destination) {
+template <typename T, typename U>
+InlineHook create_inline(T target, U destination) {
     void* original = nullptr;
     const FCSE_PluginAPI* api = FCSE::ApiPointer();
 
-    if (api == nullptr || !api->Hook(target, destination, &original))
+    if (api == nullptr || !api->Hook(reinterpret_cast<void*>(target),
+                                     reinterpret_cast<void*>(destination), &original))
         return InlineHook{};
 
     return InlineHook{ original };
 }
 
-template <typename T, typename U>
-InlineHook create_inline(T target, U destination) {
-    return create_inline(reinterpret_cast<void*>(target), reinterpret_cast<void*>(destination));
-}
-
-inline MidHook create_mid(void* target, MidHookFn destination) {
+template <typename T>
+MidHook create_mid(T target, MidHookFn destination) {
     const FCSE_PluginAPI* api = FCSE::ApiPointer();
     const auto handler = reinterpret_cast<FCSE_MidHookHandler>(destination);
 
-    return MidHook{ api != nullptr && api->MidHook(target, handler) };
-}
-
-template <typename T>
-MidHook create_mid(T target, MidHookFn destination) {
-    return create_mid(reinterpret_cast<void*>(target), destination);
+    return MidHook{ api != nullptr && api->MidHook(reinterpret_cast<void*>(target), handler) };
 }
 
 } // namespace safetyhook

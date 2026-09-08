@@ -171,8 +171,6 @@ project "FC2JackalFix-FCSE"
    targetname "FC2JackalFix"
    targetextension ".dll"
 
-   defines { "JACKALFIX_FCSE" }
-
    -- The shim headers stand in for injector, safetyhook and IniReader under the names common.hxx
    -- already includes, so no feature module changes to reach FCSE instead.
    includedirs { "source/fcse/shim" }

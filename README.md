@@ -20,7 +20,7 @@ Every fix below is also buildable as a plugin for [FCSE](https://github.com/jbeb
 SKSE-style loader that replaces `FarCry2.exe` and hosts several mods at once. The solution builds
 two projects from the same sources: `FC2JackalFix` produces the `.asi` above, and
 `FC2JackalFix-FCSE` produces `bin\FC2JackalFix.dll` for `bin\plugins\`. It needs FCSE with plugin
-API version 7 or newer.
+API version 7, which the plugin checks for exactly.
 
 > [!WARNING]
 > Install one or the other, not both.
