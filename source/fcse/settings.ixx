@@ -193,7 +193,7 @@ static const char* const HudFadeOutLabels[]{ "HUD Always Hidden", "1s", "2s", "3
 
 // Defaults are the shipped FC2JackalFix.ini's rather than ReadIniSettings' fallbacks: the shipped
 // file is what a player installing the ASI build actually runs with.
-static const PrefSpec PrefSpecs[Pref::COUNT]
+static const PrefSpec PrefSpecs[]
 {
     Boolean("Skip Intro", 1),
     Boolean("Skip Title Screen", 1),
@@ -248,6 +248,11 @@ static const PrefSpec PrefSpecs[Pref::COUNT]
     Boolean("Freecam", 0, true),
     Text("Freecam Key", "F2", true),
 };
+
+// The table is indexed by Pref, and a short one would zero-fill rather than complain: the missing
+// entries would read as KIND_NONE and simply never be offered.
+static_assert(sizeof(PrefSpecs) / sizeof(PrefSpecs[0]) == static_cast<size_t>(Pref::COUNT),
+              "PrefSpecs needs one entry per Pref, in the same order");
 
 // A KIND_STEPS ladder, built once. FCSE serialises a choice by its label, so the value a label
 // stands for has to stay reachable for the session; the labels themselves it copies.
