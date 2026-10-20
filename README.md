@@ -131,6 +131,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 - **High Precision Timer** - Forces 1ms timer resolution in Window, so the loading screen reaches the proper 30 FPS.
 - **Skip System Detection** - Skips redundant hardware detection, making game startup up much faster.
 - **Large Address Aware** - Patches the executable to increase the memory limit from 2 GB to 4 GB (may improve stability).
+- **Pause On Focus Loss** - Pauses the game and its sound while the window is in the background or minimized.
  
 ### Debug
 - **Debug Options** - Apply these to FC2JackalFix.ini beneath the [Debug] section:

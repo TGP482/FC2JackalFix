@@ -494,6 +494,7 @@ static const MenuRow GeneralRows[]
     Boolean    (L"High Precision Timer",  PREF_HIGHPRECISIONTIMER,  "General", "HighPrecisionTimer"),
     Boolean    (L"Skip System Detection", PREF_SKIPSYSTEMDETECTION, "General", "SkipSystemDetection"),
     Boolean    (L"Large Address Aware",   PREF_LARGEADDRESSAWARE,   "General", "LargeAddressAware"),
+    Boolean    (L"Pause On Focus Loss",   PREF_PAUSEONFOCUSLOSS,    "General", "PauseOnFocusLoss"),
 };
 
 static const MenuRow DebugRows[]
@@ -682,6 +683,7 @@ static const PrefDefault PrefDefaults[]
     { PREF_HIGHPRECISIONTIMER,      1   },
     { PREF_SKIPSYSTEMDETECTION,     1   },
     { PREF_LARGEADDRESSAWARE,       1   },
+    { PREF_PAUSEONFOCUSLOSS,        1   },
 
     { PREF_DEBUGINVINCIBILITY,      0   },
     { PREF_DEBUGINFINITEAMMO,       0   },

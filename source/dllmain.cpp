@@ -34,6 +34,7 @@ import internalres;
 import affinity;
 import utilisation;
 import largeaddressaware;
+import focuspause;
 import limitedsaving;
 import saveonmissioncomplete;
 import blinkingitems;

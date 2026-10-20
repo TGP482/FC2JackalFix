@@ -36,6 +36,7 @@ export enum Pref
     PREF_HIGHPRECISIONTIMER,
     PREF_SKIPSYSTEMDETECTION,
     PREF_LARGEADDRESSAWARE,
+    PREF_PAUSEONFOCUSLOSS,
     PREF_MAXFRAMERATE,
     PREF_ANISOTROPICFILTERING,
     PREF_NORIMLIGHTING,
@@ -112,6 +113,7 @@ public:
         mPrefs[PREF_HIGHPRECISIONTIMER] = std::clamp(iniReader.ReadInteger("General", "HighPrecisionTimer", 1), 0, 1);
         mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
         mPrefs[PREF_LARGEADDRESSAWARE] = std::clamp(iniReader.ReadInteger("General", "LargeAddressAware", 0), 0, 1);
+        mPrefs[PREF_PAUSEONFOCUSLOSS] = std::clamp(iniReader.ReadInteger("General", "PauseOnFocusLoss", 1), 0, 1);
 
         // 1 fullscreen, 2 borderless, 3 windowed.
         mPrefs[PREF_DISPLAYMODE] = std::clamp(iniReader.ReadInteger("Display", "DisplayMode", 2), 1, 3);
