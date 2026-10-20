@@ -196,8 +196,8 @@ static void FrameQueueDepth(SafetyHookContext& regs)
     regs.eax = static_cast<uintptr_t>(nDepth);
 }
 
-// D3D10 has no fence ring, so DXGI's queue sets the run ahead: its default depth on, one frame off, so a
-// GPU bound frame rate paces the game like a frame cap.
+// D3D10 has no fence ring, so DXGI's queue sets the run ahead: its default depth on, one frame off, so
+// a GPU bound frame rate paces the game like a frame cap.
 static constexpr UINT nDxgiDefaultLatency = 3;
 static constexpr UINT nPacedLatency = 1;
 
@@ -329,17 +329,20 @@ public:
             }
 
             // CJobScheduler asking for JOB_THREADS. Match+0x10 is the instruction after the call.
-            if (auto* pSite = static_cast<uint8_t*>(dunia_find("8B 0D ? ? ? ? 68 ? ? ? ? E8 ? ? ? ? 8B F0 3B F7 89 74 24 10 7E")))
+            auto* pSite = static_cast<uint8_t*>(dunia_find("8B 0D ? ? ? ? 68 ? ? ? ? E8 ? ? ? ? 8B F0 3B F7 89 74 24 10 7E"));
+            if (pSite)
             {
-                // Pushed string is wildcarded, so confirm the site by what it names.
+                // The pushed string is wildcarded, so the site is confirmed by what it names.
                 const auto* pszName = *reinterpret_cast<const char* const*>(pSite + 7);
                 if (WithinDunia(pszName) && strcmp(pszName, "JOB_THREADS") == 0)
                     nJobPoolReturnAddress = reinterpret_cast<uintptr_t>(pSite + 0x10);
             }
 
             // CThreadingConfig::GetThreadCount, entry through the name's std::string.
-            if (auto* p = dunia_find("83 EC 24 53 56 57 8D 44 24 0F 8B F9 50 8D 4C 24 1C 33 DB 51 C7 44 24 1C ? ? ? ? C7 44 24 34 0F 00 00 00 88 5C 24 17"); p && nJobPoolReturnAddress != 0)
-                ThreadCountHook = safetyhook::create_inline(p, ThreadCount);
+            auto* pThreadCount = dunia_find("83 EC 24 53 56 57 8D 44 24 0F 8B F9 50 8D 4C 24 1C 33 DB 51 C7 44 24 1C ? ? ? ? "
+                "C7 44 24 34 0F 00 00 00 88 5C 24 17");
+            if (pThreadCount && nJobPoolReturnAddress != 0)
+                ThreadCountHook = safetyhook::create_inline(pThreadCount, ThreadCount);
 
             // Dequeue retry loop. Match+0x0D is the shutdown flag re-read, the only instruction on
             // the empty handed path.

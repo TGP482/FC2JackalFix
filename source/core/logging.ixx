@@ -17,7 +17,8 @@ import common;
 static HMODULE SelfModule()
 {
     HMODULE hSelf = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&SelfModule), &hSelf);
+    const auto nFlags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    GetModuleHandleExW(nFlags, reinterpret_cast<LPCWSTR>(&SelfModule), &hSelf);
     return hSelf;
 }
 
@@ -44,7 +45,8 @@ export void LogWrite(std::string_view level, std::string_view text)
     SYSTEMTIME now{};
     GetLocalTime(&now);
 
-    file << std::format("[{:02}:{:02}:{:02}.{:03}] [{}] {}\n", now.wHour, now.wMinute, now.wSecond, now.wMilliseconds, level, text);
+    file << std::format("[{:02}:{:02}:{:02}.{:03}] [{}] {}\n", now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
+        level, text);
     file.flush();
 }
 
@@ -72,7 +74,8 @@ static std::string RegString(HKEY hKey, const char* szName)
     char szBuffer[256]{};
     DWORD nSize = sizeof(szBuffer) - 1;
 
-    if (RegQueryValueExA(hKey, szName, nullptr, nullptr, reinterpret_cast<LPBYTE>(szBuffer), &nSize) != ERROR_SUCCESS)
+    auto pBuffer = reinterpret_cast<LPBYTE>(szBuffer);
+    if (RegQueryValueExA(hKey, szName, nullptr, nullptr, pBuffer, &nSize) != ERROR_SUCCESS)
         return {};
 
     return szBuffer;
@@ -91,16 +94,20 @@ static std::string FileVersion(const std::filesystem::path& path)
     if (!GetFileVersionInfoW(path.c_str(), 0, nSize, data.data()))
         return {};
 
-    // String block is the version a game is patched to; the fixed block is often the build default
+    // The string block holds the version a game is patched to; the fixed block is often the build default.
     struct Translation { WORD wLanguage; WORD wCodePage; };
     Translation* pTranslation = nullptr;
+    auto ppTranslation = reinterpret_cast<void**>(&pTranslation);
 
-    if (VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void**>(&pTranslation), &nLength) && nLength >= sizeof(Translation))
+    if (VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", ppTranslation, &nLength)
+        && nLength >= sizeof(Translation))
     {
-        const auto szQuery = std::format(L"\\StringFileInfo\\{:04x}{:04x}\\FileVersion", pTranslation->wLanguage, pTranslation->wCodePage);
+        const auto szQuery = std::format(L"\\StringFileInfo\\{:04x}{:04x}\\FileVersion", pTranslation->wLanguage,
+            pTranslation->wCodePage);
 
         wchar_t* szValue = nullptr;
-        if (VerQueryValueW(data.data(), szQuery.c_str(), reinterpret_cast<void**>(&szValue), &nLength) && szValue && *szValue)
+        auto bFound = VerQueryValueW(data.data(), szQuery.c_str(), reinterpret_cast<void**>(&szValue), &nLength);
+        if (bFound && szValue && *szValue)
             return Trim(std::string(szValue, szValue + wcslen(szValue)));
     }
 
@@ -112,6 +119,9 @@ static std::string FileVersion(const std::filesystem::path& path)
         HIWORD(pFixed->dwFileVersionLS), LOWORD(pFixed->dwFileVersionLS));
 }
 
+static constexpr auto szCurrentVersionKey = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+static constexpr REGSAM nCurrentVersionAccess = KEY_READ | KEY_WOW64_64KEY;
+
 static std::string OSVersion()
 {
     std::string szName;
@@ -120,7 +130,7 @@ static std::string OSVersion()
     DWORD nUbr = 0;
 
     HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, szCurrentVersionKey, 0, nCurrentVersionAccess, &hKey) == ERROR_SUCCESS)
     {
         szName = RegString(hKey, "ProductName");
         szDisplay = RegString(hKey, "DisplayVersion");
@@ -134,7 +144,7 @@ static std::string OSVersion()
     if (szName.empty())
         return "unknown";
 
-    // ProductName still reads "Windows 10" on 11, the build number is the only tell
+    // ProductName still reads "Windows 10" on 11; the build number is the only tell.
     if (std::atoi(szBuild.c_str()) >= 22000)
     {
         const auto nTen = szName.find("Windows 10");
@@ -151,36 +161,44 @@ static std::string OSVersion()
     return szName;
 }
 
-// A compatibility mode lies to RtlGetVersion, which is why the build above comes from the registry
+// A compatibility mode lies to RtlGetVersion, which is why the build above comes from the registry.
 static void LogShimmedVersion()
 {
+    using RtlGetVersion_t = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
     RTL_OSVERSIONINFOW info{ sizeof(info) };
-    const auto pRtlGetVersion = reinterpret_cast<LONG(WINAPI*)(PRTL_OSVERSIONINFOW)>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
+    const auto pRtlGetVersion =
+        reinterpret_cast<RtlGetVersion_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
 
     if (!pRtlGetVersion || pRtlGetVersion(&info) != 0)
         return;
 
     HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ | KEY_WOW64_64KEY, &hKey) != ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, szCurrentVersionKey, 0, nCurrentVersionAccess, &hKey) != ERROR_SUCCESS)
         return;
 
     const auto nReal = std::atoi(RegString(hKey, "CurrentBuildNumber").c_str());
     RegCloseKey(hKey);
 
     if (nReal && info.dwBuildNumber != static_cast<DWORD>(nReal))
-        LogWarn("OS: Compatibility mode is on, the game sees {}.{} build {}", info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber);
+    {
+        LogWarn("OS: Compatibility mode is on, the game sees {}.{} build {}", info.dwMajorVersion, info.dwMinorVersion,
+            info.dwBuildNumber);
+    }
 }
 
 static std::string HostVersion()
 {
     const auto hNtdll = GetModuleHandleW(L"ntdll.dll");
-    const auto pWineVersion = reinterpret_cast<const char* (__cdecl*)()>(GetProcAddress(hNtdll, "wine_get_version"));
+    using WineVersion_t = const char* (__cdecl*)();
+    using WineHost_t = void(__cdecl*)(const char**, const char**);
+
+    const auto pWineVersion = reinterpret_cast<WineVersion_t>(GetProcAddress(hNtdll, "wine_get_version"));
     if (!pWineVersion)
         return {};
 
     auto szHost = std::format("Wine {}", pWineVersion());
 
-    const auto pWineHost = reinterpret_cast<void(__cdecl*)(const char**, const char**)>(GetProcAddress(hNtdll, "wine_get_host_version"));
+    const auto pWineHost = reinterpret_cast<WineHost_t>(GetProcAddress(hNtdll, "wine_get_host_version"));
     const char* szSysname = nullptr;
     const char* szRelease = nullptr;
 
@@ -222,12 +240,13 @@ static void LogAdapters()
         if (!EnumDisplayDevicesA(nullptr, i, &device, 0))
             break;
 
-        // Each monitor reports its adapter, so de-duplicate
+        // Every monitor reports its adapter, so each adapter is listed once.
         if (std::find(seen.begin(), seen.end(), device.DeviceString) != seen.end())
             continue;
 
         seen.emplace_back(device.DeviceString);
-        LogInfo("GPU {}: {}{}", seen.size(), device.DeviceString, (device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) ? " (primary)" : "");
+        const auto szPrimary = (device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) ? " (primary)" : "";
+        LogInfo("GPU {}: {}{}", seen.size(), device.DeviceString, szPrimary);
     }
 
     if (seen.empty())
@@ -245,16 +264,21 @@ static void LogSystemInfo()
     const auto exeDir = GetExeModulePath<std::filesystem::path>();
     const auto szGameVersion = FileVersion(GetModulePath<std::filesystem::path>(nullptr));
 
-    LogInfo("ASI: {} (base 0x{:08X})", asiPath.lexically_proximate(exeDir).string(), reinterpret_cast<uintptr_t>(SelfModule()));
-    LogInfo("Game: {}{} (base 0x{:08X})", GetExeModuleName<std::filesystem::path>().string(),
-        szGameVersion.empty() ? std::string() : " " + szGameVersion, reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
+    const auto nAsiBase = reinterpret_cast<uintptr_t>(SelfModule());
+    const auto nGameBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto szGameName = GetExeModuleName<std::filesystem::path>().string();
+    const auto szGameSuffix = szGameVersion.empty() ? std::string() : " " + szGameVersion;
+
+    LogInfo("ASI: {} (base 0x{:08X})", asiPath.lexically_proximate(exeDir).string(), nAsiBase);
+    LogInfo("Game: {}{} (base 0x{:08X})", szGameName, szGameSuffix, nGameBase);
     LogInfo("Path: {}", exeDir.string());
 
     BOOL bWow64 = FALSE;
     IsWow64Process(GetCurrentProcess(), &bWow64);
 
     const auto szHost = HostVersion();
-    LogInfo("OS: {} {}{}", OSVersion(), bWow64 ? "64-bit" : "32-bit", szHost.empty() ? std::string() : " - " + szHost);
+    const auto szHostSuffix = szHost.empty() ? std::string() : " - " + szHost;
+    LogInfo("OS: {} {}{}", OSVersion(), bWow64 ? "64-bit" : "32-bit", szHostSuffix);
     LogShimmedVersion();
 
     SYSTEM_INFO system{};
@@ -271,7 +295,7 @@ static void LogSystemInfo()
     LogInfo("Config: {}", std::filesystem::path(asiPath).replace_extension(".ini").string());
 }
 
-// Ahead of every other init handler, so the header is at the top of the file
+// Ahead of every other init handler, so the header is at the top of the file.
 static constexpr auto nInitPriority = 10;
 
 class Logging

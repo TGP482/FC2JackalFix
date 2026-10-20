@@ -91,7 +91,10 @@ static bool LoadCache(std::string& latest, std::string& mentioned, bool& bFresh,
     std::string when;
     std::string installed;
 
-    if (!std::getline(file, latest) || !std::getline(file, when) || !std::getline(file, mentioned) || !std::getline(file, installed))
+    if (!std::getline(file, latest) || !std::getline(file, when))
+        return false;
+
+    if (!std::getline(file, mentioned) || !std::getline(file, installed))
         return false;
 
     std::getline(file, silenced);
@@ -125,15 +128,50 @@ static void SaveCache(const std::string& latest, const std::string& mentioned, c
     file << silenced << "\n";
 }
 
-// Every failure ends the check silently; 5s on all four timeouts, so a firewalled machine does not
-// stall. No releases yet answers 404, same path.
-static bool QueryLatestVersion(std::string& latest)
+static bool IsSuccessStatus(HINTERNET hRequest)
 {
+    DWORD nStatus = 0;
+    DWORD nStatusSize = sizeof(nStatus);
+    const auto nQuery = WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER;
+
+    const auto bQueried = WinHttpQueryHeaders(hRequest, nQuery, WINHTTP_HEADER_NAME_BY_INDEX, &nStatus, &nStatusSize,
+        WINHTTP_NO_HEADER_INDEX);
+
+    return bQueried && nStatus >= 200 && nStatus < 300;
+}
+
+static void ReadBody(HINTERNET hRequest, std::string& response)
+{
+    DWORD nAvailable = 0;
+    do
+    {
+        if (!WinHttpQueryDataAvailable(hRequest, &nAvailable) || nAvailable == 0)
+            break;
+
+        std::string chunk(nAvailable, '\0');
+        DWORD nRead = 0;
+        if (!WinHttpReadData(hRequest, chunk.data(), nAvailable, &nRead))
+            break;
+
+        response.append(chunk, 0, nRead);
+
+        // tag_name is near the front; the release body can run long.
+        if (response.size() > 256 * 1024)
+            break;
+    } while (nAvailable > 0);
+}
+
+// Every failure ends the check silently. 5 s on all four timeouts, so a firewalled machine does not
+// stall. A repo with no releases answers 404 and takes the same path.
+static std::string FetchLatestRelease()
+{
+    std::string response;
     const auto userAgent = std::wstring(L"FC2JackalFix/") + Widen(szInstalledVersion);
 
-    auto hSession = WinHttpOpen(userAgent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    auto hSession = WinHttpOpen(userAgent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession)
-        return false;
+        return response;
 
     WinHttpSetTimeouts(hSession, 5000, 5000, 5000, 5000);
 
@@ -141,58 +179,40 @@ static bool QueryLatestVersion(std::string& latest)
     if (!hConnect)
     {
         WinHttpCloseHandle(hSession);
-        return false;
+        return response;
     }
 
-    auto hRequest = WinHttpOpenRequest(hConnect, L"GET", szApiPath, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    auto hRequest = WinHttpOpenRequest(hConnect, L"GET", szApiPath, nullptr, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
     if (!hRequest)
     {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        return false;
+        return response;
     }
 
     // GitHub rejects a request with no user agent; the media type pins the reply shape.
-    WinHttpAddRequestHeaders(hRequest, L"Accept: application/vnd.github+json", static_cast<DWORD>(-1), WINHTTP_ADDREQ_FLAG_ADD);
+    const auto szAccept = L"Accept: application/vnd.github+json";
+    WinHttpAddRequestHeaders(hRequest, szAccept, static_cast<DWORD>(-1), WINHTTP_ADDREQ_FLAG_ADD);
 
-    std::string response;
-
-    if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(hRequest, nullptr))
-    {
-        DWORD nStatus = 0;
-        DWORD nStatusSize = sizeof(nStatus);
-
-        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &nStatus, &nStatusSize, WINHTTP_NO_HEADER_INDEX) && nStatus >= 200 && nStatus < 300)
-        {
-            DWORD nAvailable = 0;
-            do
-            {
-                if (!WinHttpQueryDataAvailable(hRequest, &nAvailable) || nAvailable == 0)
-                    break;
-
-                std::string chunk(nAvailable, '\0');
-                DWORD nRead = 0;
-                if (!WinHttpReadData(hRequest, chunk.data(), nAvailable, &nRead))
-                    break;
-
-                response.append(chunk, 0, nRead);
-
-                // tag_name is near the front; the release body can run long.
-                if (response.size() > 256 * 1024)
-                    break;
-            } while (nAvailable > 0);
-        }
-    }
+    auto bSent = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+    if (bSent && WinHttpReceiveResponse(hRequest, nullptr) && IsSuccessStatus(hRequest))
+        ReadBody(hRequest, response);
 
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
+    return response;
+}
 
+static bool QueryLatestVersion(std::string& latest)
+{
+    const auto response = FetchLatestRelease();
     if (response.empty())
         return false;
 
-    // One field, so regex over a json dependency. Tags are v1.2.3; the v is not part of the
-    // version. Custom delimiter: the pattern's own )" would close a plain R"( ).
+    // One field, so a regex rather than a json dependency. Tags are v1.2.3 and the v is not part of
+    // the version. The custom delimiter is because the pattern's own )" would close a plain R"( ).
     std::smatch match;
     const std::regex tag(R"rx("tag_name"\s*:\s*"\s*[vV]?([0-9][^"]*)")rx");
 
@@ -211,7 +231,8 @@ public:
     ComCtl6Scope()
     {
         HMODULE hSelf = nullptr;
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&szTitle), &hSelf) || !hSelf)
+        const auto nFlags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+        if (!GetModuleHandleExW(nFlags, reinterpret_cast<LPCWSTR>(&szTitle), &hSelf) || !hSelf)
             return;
 
         ACTCTXW context{};
@@ -244,53 +265,63 @@ private:
     bool mActivated = false;
 };
 
-// Yes opens the page, No closes, the tick box answers for this release under either. Fallback when
-// the activation context or the export fails: MB_YESNOCANCEL, Cancel standing in for the tick box.
-static bool AskAboutUpdate(const std::wstring& instruction, const std::wstring& content, const std::wstring& verification, bool& bSilence)
+struct UpdatePrompt
 {
-    bSilence = false;
+    std::wstring instruction;
+    std::wstring content;
+    std::wstring verification;
+};
 
+// Fails when the activation context or the export is missing.
+static HRESULT ShowTaskDialog(const UpdatePrompt& prompt, int& nButton, BOOL& bChecked)
+{
+    ComCtl6Scope comctl6;
+    if (!comctl6.IsActive())
+        return E_FAIL;
+
+    auto hComCtl = LoadLibraryW(L"comctl32.dll");
+    if (!hComCtl)
+        return E_FAIL;
+
+    using TaskDialogIndirect_t = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+    auto pTaskDialogIndirect = reinterpret_cast<TaskDialogIndirect_t>(GetProcAddress(hComCtl, "TaskDialogIndirect"));
+
+    auto hr = E_FAIL;
+    if (pTaskDialogIndirect)
     {
-        ComCtl6Scope comctl6;
-        if (comctl6.IsActive())
-        {
-            if (auto hComCtl = LoadLibraryW(L"comctl32.dll"))
-            {
-                using TaskDialogIndirect_t = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
-                auto pTaskDialogIndirect = reinterpret_cast<TaskDialogIndirect_t>(GetProcAddress(hComCtl, "TaskDialogIndirect"));
+        TASKDIALOGCONFIG config{};
+        config.cbSize = sizeof(config);
+        config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+        config.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+        config.pszWindowTitle = szTitle;
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = prompt.instruction.c_str();
+        config.pszContent = prompt.content.c_str();
+        config.pszVerificationText = prompt.verification.c_str();
 
-                auto nButton = 0;
-                auto bChecked = FALSE;
-                auto hr = E_FAIL;
-
-                if (pTaskDialogIndirect)
-                {
-                    TASKDIALOGCONFIG config{};
-                    config.cbSize = sizeof(config);
-                    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
-                    config.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
-                    config.pszWindowTitle = szTitle;
-                    config.pszMainIcon = TD_INFORMATION_ICON;
-                    config.pszMainInstruction = instruction.c_str();
-                    config.pszContent = content.c_str();
-                    config.pszVerificationText = verification.c_str();
-
-                    hr = pTaskDialogIndirect(&config, &nButton, nullptr, &bChecked);
-                }
-
-                FreeLibrary(hComCtl);
-
-                if (SUCCEEDED(hr))
-                {
-                    bSilence = bChecked != FALSE;
-                    return nButton == IDYES;
-                }
-            }
-        }
+        hr = pTaskDialogIndirect(&config, &nButton, nullptr, &bChecked);
     }
 
-    const auto text = instruction + L"\n\n" + content + L"\n\nCancel is the tick box: " + verification + L".";
-    const auto nAnswer = MessageBoxW(nullptr, text.c_str(), szTitle, MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+    FreeLibrary(hComCtl);
+    return hr;
+}
+
+// Yes opens the page, No closes, and the tick box silences this release under either. Without the
+// task dialog it falls back to MB_YESNOCANCEL, Cancel standing in for the tick box.
+static bool AskAboutUpdate(const UpdatePrompt& prompt, bool& bSilence)
+{
+    auto nButton = 0;
+    auto bChecked = FALSE;
+    if (SUCCEEDED(ShowTaskDialog(prompt, nButton, bChecked)))
+    {
+        bSilence = bChecked != FALSE;
+        return nButton == IDYES;
+    }
+
+    const auto text = prompt.instruction + L"\n\n" + prompt.content + L"\n\nCancel is the tick box: "
+        + prompt.verification + L".";
+    const auto nFlags = MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND;
+    const auto nAnswer = MessageBoxW(nullptr, text.c_str(), szTitle, nFlags);
 
     bSilence = nAnswer == IDCANCEL;
     return nAnswer == IDYES;
@@ -298,16 +329,16 @@ static bool AskAboutUpdate(const std::wstring& instruction, const std::wstring& 
 
 static void ShowUpdateMessage(const std::string& installed, const std::string& latest, bool& bSilence)
 {
-    const auto instruction = std::wstring(L"A new version of FC2JackalFix is available.");
-
-    const auto content = std::wstring(L"Installed: ") + FormatVersion(installed) + L"\n"
+    UpdatePrompt prompt;
+    prompt.instruction = L"A new version of FC2JackalFix is available.";
+    prompt.content = std::wstring(L"Installed: ") + FormatVersion(installed) + L"\n"
         + L"Latest: " + FormatVersion(latest) + L"\n\n"
         + L"Releases are published on GitHub at\n" + szUpdateUrl + L"\n\n"
         + L"Open the download page now?";
+    prompt.verification = L"Don't show again";
 
-    const auto verification = std::wstring(L"Don't show again");
-
-    if (!AskAboutUpdate(instruction, content, verification, bSilence))
+    bSilence = false;
+    if (!AskAboutUpdate(prompt, bSilence))
         return;
 
     ShellExecuteW(nullptr, L"open", szUpdateUrl, nullptr, nullptr, SW_SHOWNORMAL);

@@ -35,7 +35,8 @@ public:
         void executeAll(Args... args) const
         {
             auto ordered = handlers;
-            std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+            auto byPriority = [](const auto& left, const auto& right) { return left.first < right.first; };
+            std::stable_sort(ordered.begin(), ordered.end(), byPriority);
 
             for (auto& handler : ordered)
                 handler.second(args...);
@@ -97,20 +98,28 @@ export inline void ApplyAndWatch(std::function<void()> fn)
     JackalFix::onIniFileChange() += std::function<void()>(std::move(fn));
 }
 
-// MSVC8 std::string as the game builds it: length at +0x14, capacity at +0x18, buffer inline at
-// +0x04 until it outgrows 16 bytes and +0x04 becomes a pointer to it.
+// MSVC8 std::string as the game builds it: the buffer sits inline until it outgrows 16 bytes, then
+// the same field holds a pointer to it.
+static constexpr uintptr_t nDuniaStringBuffer = 0x04;
+static constexpr uintptr_t nDuniaStringLength = 0x14;
+static constexpr uintptr_t nDuniaStringCapacity = 0x18;
+static constexpr size_t nDuniaStringSize = 0x1C;
+static constexpr uint32_t nDuniaStringInlineCapacity = 16;
+
 export const char* ReadDuniaString(uintptr_t pStr, char* pBuf, size_t nBufSize)
 {
     pBuf[0] = '\0';
-    if (!pStr || nBufSize < 2 || IsBadReadPtr((void*)pStr, 0x1C))
+    if (!pStr || nBufSize < 2 || IsBadReadPtr((void*)pStr, nDuniaStringSize))
         return pBuf;
 
-    auto nSize = *(uint32_t*)(pStr + 0x14);
-    auto nCapacity = *(uint32_t*)(pStr + 0x18);
+    auto nSize = *(uint32_t*)(pStr + nDuniaStringLength);
+    auto nCapacity = *(uint32_t*)(pStr + nDuniaStringCapacity);
     if (nSize > 512 || nCapacity > 0x10000)
         return pBuf;
 
-    auto pSrc = (nCapacity >= 16) ? *(const char**)(pStr + 4) : (const char*)(pStr + 4);
+    const char* pSrc = (const char*)(pStr + nDuniaStringBuffer);
+    if (nCapacity >= nDuniaStringInlineCapacity)
+        pSrc = *(const char**)(pStr + nDuniaStringBuffer);
     if (!pSrc || IsBadReadPtr(pSrc, nSize))
         return pBuf;
 
@@ -172,7 +181,8 @@ export template<class T = std::filesystem::path>
 T GetThisModulePath()
 {
     HMODULE hm = NULL;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)&JackalFix::onInitEvent, &hm);
+    const auto nFlags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    GetModuleHandleExW(nFlags, (LPCWSTR)&JackalFix::onInitEvent, &hm);
     T r = GetModulePath<T>(hm);
     if constexpr (std::is_same_v<T, std::filesystem::path>)
         return r.parent_path();
@@ -206,9 +216,12 @@ T GetExeModuleName()
         return moduleFileName.substr(moduleFileName.find_last_of(L"/\\") + 1);
 }
 
-export inline void CreateThreadAutoClose(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize, LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, DWORD dwCreationFlags, LPDWORD lpThreadId)
+export inline void CreateThreadAutoClose(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize,
+    LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, DWORD dwCreationFlags, LPDWORD lpThreadId)
 {
-    CloseHandle(CreateThread(lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags, lpThreadId));
+    auto hThread = CreateThread(lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags,
+        lpThreadId);
+    CloseHandle(hThread);
 }
 
 export inline bool IsModuleUAL(HMODULE mod)
@@ -219,14 +232,15 @@ export inline bool IsModuleUAL(HMODULE mod)
 // Walks the call stack for Ultimate ASI Loader, so one binary works as a UAL plugin or on its own.
 export bool IsUALPresent()
 {
+    const auto nFlags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
     for (const auto& entry : std::stacktrace::current())
     {
         HMODULE hModule = NULL;
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)entry.native_handle(), &hModule))
-        {
-            if (IsModuleUAL(hModule))
-                return true;
-        }
+        if (!GetModuleHandleExA(nFlags, (LPCSTR)entry.native_handle(), &hModule))
+            continue;
+
+        if (IsModuleUAL(hModule))
+            return true;
     }
     return false;
 }
@@ -297,7 +311,8 @@ private:
         LDR_DLL_UNLOADED_NOTIFICATION_DATA Unloaded;
     } LDR_DLL_NOTIFICATION_DATA, * PLDR_DLL_NOTIFICATION_DATA;
 
-    static inline void CALLBACK LdrDllNotification(ULONG NotificationReason, PLDR_DLL_NOTIFICATION_DATA NotificationData, PVOID Context)
+    static inline void CALLBACK LdrDllNotification(ULONG NotificationReason,
+        PLDR_DLL_NOTIFICATION_DATA NotificationData, PVOID Context)
     {
         static constexpr auto LDR_DLL_NOTIFICATION_REASON_LOADED = 1;
         if (NotificationReason == LDR_DLL_NOTIFICATION_REASON_LOADED)
@@ -306,7 +321,8 @@ private:
 
     static inline void RegisterDllNotification()
     {
-        LdrRegisterDllNotification = (_LdrRegisterDllNotification)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
+        auto hNtdll = GetModuleHandleW(L"ntdll.dll");
+        LdrRegisterDllNotification = (_LdrRegisterDllNotification)GetProcAddress(hNtdll, "LdrRegisterDllNotification");
         if (LdrRegisterDllNotification && !cookie)
             LdrRegisterDllNotification(0, LdrDllNotification, 0, &cookie);
     }
@@ -361,9 +377,8 @@ public:
     }
 
 private:
-    // injector's scoped_unprotect has no synchronisation: two threads unprotecting the same page race,
-    // and either can reprotect under the other's memcpy. Menu patches on the engine thread, ini watcher
-    // on its own. ponytail: one lock for every patch; per-page locks only if patch writes get hot.
+    // injector's scoped_unprotect has no lock, and the menu (engine thread) and the ini watcher (its own
+    // thread) both patch, so one could reprotect a page under the other's write.
     static inline std::mutex mtx;
 
     injector::memory_pointer ptr;

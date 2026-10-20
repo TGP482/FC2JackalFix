@@ -81,7 +81,8 @@ static void SetChecksum(std::vector<uint8_t>& image)
         return;
 
     // CheckSum counts as zero, so skip it.
-    const auto nHeaderSize = reinterpret_cast<uintptr_t>(&pNtHeaders->OptionalHeader.CheckSum) - reinterpret_cast<uintptr_t>(image.data());
+    const auto nChecksumAddress = reinterpret_cast<uintptr_t>(&pNtHeaders->OptionalHeader.CheckSum);
+    const auto nHeaderSize = nChecksumAddress - reinterpret_cast<uintptr_t>(image.data());
     const auto nRemainSize = (image.size() - nHeaderSize - sizeof(uint32_t)) / sizeof(uint16_t);
 
     auto checksum = CalcChecksum(0, image.data(), nHeaderSize / sizeof(uint16_t));
@@ -97,7 +98,8 @@ static void SetChecksum(std::vector<uint8_t>& image)
 static bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& out)
 {
     // The exe is open as an image section, so share reads or this fails.
-    auto hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    auto hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+        nullptr);
     if (hFile == INVALID_HANDLE_VALUE)
         return false;
 
@@ -120,7 +122,8 @@ static bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t
     if (bResult)
     {
         DWORD nRead = 0;
-        bResult = ReadFile(hFile, out.data(), static_cast<DWORD>(out.size()), &nRead, nullptr) != FALSE && nRead == out.size();
+        bResult = ReadFile(hFile, out.data(), static_cast<DWORD>(out.size()), &nRead, nullptr) != FALSE;
+        bResult = bResult && nRead == out.size();
     }
 
     CloseHandle(hFile);
@@ -134,7 +137,8 @@ static bool WriteFileBytes(const std::filesystem::path& path, const std::vector<
         return false;
 
     DWORD nWritten = 0;
-    auto bResult = WriteFile(hFile, data.data(), static_cast<DWORD>(data.size()), &nWritten, nullptr) != FALSE && nWritten == data.size();
+    auto bResult = WriteFile(hFile, data.data(), static_cast<DWORD>(data.size()), &nWritten, nullptr) != FALSE;
+    bResult = bResult && nWritten == data.size();
     bResult = bResult && FlushFileBuffers(hFile) != FALSE;
 
     CloseHandle(hFile);
@@ -207,6 +211,89 @@ static int ShowMessage(const std::wstring& text, UINT flags)
     return MessageBoxW(nullptr, text.c_str(), szTitle, flags | MB_TOPMOST | MB_SETFOREGROUND);
 }
 
+// True when the game should close to pick up the new executable.
+static bool PatchExecutable(const std::filesystem::path& exePath, std::vector<uint8_t>& image)
+{
+    const auto exeName = exePath.filename().wstring();
+    auto pNtHeaders = GetNtHeaders(image);
+
+    const auto prompt = exeName + L" is not marked large address aware, so Windows caps the game at 2 GB of memory even on a 64 bit system. Setting the flag raises that to 4 GB.\n\n"
+        L"FC2JackalFix can set it now. The current executable is kept as " + exeName + szBackupSuffix + L".\n\n"
+        L"The flag is only read when the process starts, so the game has to close for this to take effect.\n\n"
+        L"Patch " + exeName + L" now?\n\n"
+        L"Choosing No sets LargeAddressAware to 0 in FC2JackalFix.ini, so this is not asked again.";
+
+    if (ShowMessage(prompt, MB_YESNO | MB_ICONQUESTION) != IDYES)
+    {
+        WriteIniSetting(0);
+        return false;
+    }
+
+    pNtHeaders->FileHeader.Characteristics |= IMAGE_FILE_LARGE_ADDRESS_AWARE;
+    SetChecksum(image);
+
+    if (!SwapExecutable(exePath, image))
+    {
+        ShowMessage(exeName + L" could not be patched.\n\n"
+            L"The game folder is most likely read only or needs administrator rights. Moving the install out of Program Files, or running the game once as administrator, usually sorts it.\n\n"
+            L"LargeAddressAware has been left on, so this will be offered again next launch.", MB_OK | MB_ICONEXCLAMATION);
+        return false;
+    }
+
+    ShowMessage(exeName + L" is now large address aware, and the original is kept as " + exeName + szBackupSuffix + L".\n\n"
+        L"The game closes when you press OK. Please relaunch the game.", MB_OK | MB_ICONINFORMATION);
+    return true;
+}
+
+// Only a backup made here is restored, so the player's own changes survive.
+static bool RestoreExecutable(const std::filesystem::path& exePath, const std::vector<uint8_t>& image)
+{
+    const auto exeName = exePath.filename().wstring();
+
+    auto backupPath = exePath;
+    backupPath += szBackupSuffix;
+
+    std::vector<uint8_t> backup;
+    if (!ReadFileBytes(backupPath, backup))
+        return false;
+
+    const auto prompt = L"LargeAddressAware is off in FC2JackalFix.ini, but " + exeName + L" is still patched.\n\n"
+        L"FC2JackalFix can restore the unpatched executable now. The current one is kept as " + exeName + szBackupSuffix + L".\n\n"
+        L"The game has to close for this to take effect.\n\n"
+        L"Restore " + exeName + L" now?\n\n"
+        L"Choosing No sets LargeAddressAware back to 1 in FC2JackalFix.ini, so this is not asked again.";
+
+    if (ShowMessage(prompt, MB_YESNO | MB_ICONQUESTION) != IDYES)
+    {
+        WriteIniSetting(1);
+        return false;
+    }
+
+    if (!BackupMatches(backup, image))
+    {
+        // A stale backup is replaced by the current image with the flag cleared.
+        backup = image;
+        auto pBackupHeaders = GetNtHeaders(backup);
+        if (!pBackupHeaders)
+            return false;
+
+        pBackupHeaders->FileHeader.Characteristics &= ~IMAGE_FILE_LARGE_ADDRESS_AWARE;
+        SetChecksum(backup);
+    }
+
+    if (!SwapExecutable(exePath, backup))
+    {
+        ShowMessage(exeName + L" could not be restored.\n\n"
+            L"The game folder is most likely read only or needs administrator rights.\n\n"
+            L"LargeAddressAware has been left off, so this will be offered again next launch.", MB_OK | MB_ICONEXCLAMATION);
+        return false;
+    }
+
+    ShowMessage(exeName + L" has been restored, and the patched copy is kept as " + exeName + szBackupSuffix + L".\n\n"
+        L"The game closes when you press OK. Please relaunch the game.", MB_OK | MB_ICONINFORMATION);
+    return true;
+}
+
 static void ApplyLargeAddressAware()
 {
     const auto bWanted = JackalFixSettings.GetInt(PREF_LARGEADDRESSAWARE) != 0;
@@ -217,11 +304,6 @@ static void ApplyLargeAddressAware()
     const auto exePath = GetModulePath<std::filesystem::path>(nullptr);
     if (exePath.empty())
         return;
-
-    const auto exeName = exePath.filename().wstring();
-
-    auto backupPath = exePath;
-    backupPath += szBackupSuffix;
 
     std::vector<uint8_t> image;
     if (!ReadFileBytes(exePath, image))
@@ -235,76 +317,9 @@ static void ApplyLargeAddressAware()
     if (IsLargeAddressAware(pNtHeaders) == bWanted)
         return;
 
-    if (bWanted)
-    {
-        const auto prompt = exeName + L" is not marked large address aware, so Windows caps the game at 2 GB of memory even on a 64 bit system. Setting the flag raises that to 4 GB.\n\n"
-            L"FC2JackalFix can set it now. The current executable is kept as " + exeName + szBackupSuffix + L".\n\n"
-            L"The flag is only read when the process starts, so the game has to close for this to take effect.\n\n"
-            L"Patch " + exeName + L" now?\n\n"
-            L"Choosing No sets LargeAddressAware to 0 in FC2JackalFix.ini, so this is not asked again.";
-
-        if (ShowMessage(prompt, MB_YESNO | MB_ICONQUESTION) != IDYES)
-        {
-            WriteIniSetting(0);
-            return;
-        }
-
-        pNtHeaders->FileHeader.Characteristics |= IMAGE_FILE_LARGE_ADDRESS_AWARE;
-        SetChecksum(image);
-
-        if (!SwapExecutable(exePath, image))
-        {
-            ShowMessage(exeName + L" could not be patched.\n\n"
-                L"The game folder is most likely read only or needs administrator rights. Moving the install out of Program Files, or running the game once as administrator, usually sorts it.\n\n"
-                L"LargeAddressAware has been left on, so this will be offered again next launch.", MB_OK | MB_ICONEXCLAMATION);
-            return;
-        }
-
-        ShowMessage(exeName + L" is now large address aware, and the original is kept as " + exeName + szBackupSuffix + L".\n\n"
-            L"The game closes when you press OK. Please relaunch the game.", MB_OK | MB_ICONINFORMATION);
-    }
-    else
-    {
-        // Only restore a backup this made, so user changes survive.
-        std::vector<uint8_t> backup;
-        if (!ReadFileBytes(backupPath, backup))
-            return;
-
-        const auto prompt = L"LargeAddressAware is off in FC2JackalFix.ini, but " + exeName + L" is still patched.\n\n"
-            L"FC2JackalFix can restore the unpatched executable now. The current one is kept as " + exeName + szBackupSuffix + L".\n\n"
-            L"The game has to close for this to take effect.\n\n"
-            L"Restore " + exeName + L" now?\n\n"
-            L"Choosing No sets LargeAddressAware back to 1 in FC2JackalFix.ini, so this is not asked again.";
-
-        if (ShowMessage(prompt, MB_YESNO | MB_ICONQUESTION) != IDYES)
-        {
-            WriteIniSetting(1);
-            return;
-        }
-
-        if (!BackupMatches(backup, image))
-        {
-            // Replace stale backups with the current image.
-            backup = image;
-            auto pBackupHeaders = GetNtHeaders(backup);
-            if (!pBackupHeaders)
-                return;
-
-            pBackupHeaders->FileHeader.Characteristics &= ~IMAGE_FILE_LARGE_ADDRESS_AWARE;
-            SetChecksum(backup);
-        }
-
-        if (!SwapExecutable(exePath, backup))
-        {
-            ShowMessage(exeName + L" could not be restored.\n\n"
-                L"The game folder is most likely read only or needs administrator rights.\n\n"
-                L"LargeAddressAware has been left off, so this will be offered again next launch.", MB_OK | MB_ICONEXCLAMATION);
-            return;
-        }
-
-        ShowMessage(exeName + L" has been restored, and the patched copy is kept as " + exeName + szBackupSuffix + L".\n\n"
-            L"The game closes when you press OK. Please relaunch the game.", MB_OK | MB_ICONINFORMATION);
-    }
+    const auto bClose = bWanted ? PatchExecutable(exePath, image) : RestoreExecutable(exePath, image);
+    if (!bClose)
+        return;
 
     // Not exit(): the game is still initialising on the main thread.
     TerminateProcess(GetCurrentProcess(), 0);

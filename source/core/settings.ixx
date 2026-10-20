@@ -101,26 +101,38 @@ private:
         return reader.ReadString(szSection, szKey, szMissing) != szMissing;
     }
 
-public:
-    static inline void ReadIniSettings()
+    static int32_t ReadInt(CIniReader& reader, const char* szSection, const char* szKey, int32_t nDefault,
+        int32_t nMin, int32_t nMax)
     {
-        CIniReader iniReader("");
-        mPrefs[PREF_SKIPINTRO] = std::clamp(iniReader.ReadInteger("General", "SkipIntro", 1), 0, 1);
-        mPrefs[PREF_SKIPTITLESCREEN] = std::clamp(iniReader.ReadInteger("General", "SkipTitleScreen", 1), 0, 1);
+        return std::clamp(reader.ReadInteger(szSection, szKey, nDefault), nMin, nMax);
+    }
 
-        mPrefs[PREF_SKIPTUTORIALS] = std::clamp(iniReader.ReadInteger("General", "SkipTutorials", 0), 0, 2);
+    // Zero or below gives the fallback, anything else is clamped into range.
+    static float ReadOptionalFloat(CIniReader& reader, const char* szSection, const char* szKey, float fFallback,
+        float fMin, float fMax)
+    {
+        auto fValue = reader.ReadFloat(szSection, szKey, 0.0f);
+        return fValue <= 0.0f ? fFallback : std::clamp(fValue, fMin, fMax);
+    }
 
-        mPrefs[PREF_CPUAFFINITY] = std::clamp(iniReader.ReadInteger("General", "CpuAffinity", 0), 0, 64);
-        mPrefs[PREF_UTILISATION] = std::clamp(iniReader.ReadInteger("Graphics", "ImprovedUtilisation", 1), 0, 1);
-        mPrefs[PREF_HIGHPRECISIONTIMER] = std::clamp(iniReader.ReadInteger("General", "HighPrecisionTimer", 1), 0, 1);
-        mPrefs[PREF_SKIPSYSTEMDETECTION] = std::clamp(iniReader.ReadInteger("General", "SkipSystemDetection", 1), 0, 1);
-        mPrefs[PREF_LARGEADDRESSAWARE] = std::clamp(iniReader.ReadInteger("General", "LargeAddressAware", 0), 0, 1);
-        mPrefs[PREF_PAUSEONFOCUSLOSS] = std::clamp(iniReader.ReadInteger("General", "PauseOnFocusLoss", 1), 0, 1);
+    static void ReadGeneral(CIniReader& iniReader)
+    {
+        mPrefs[PREF_SKIPINTRO] = ReadInt(iniReader, "General", "SkipIntro", 1, 0, 1);
+        mPrefs[PREF_SKIPTITLESCREEN] = ReadInt(iniReader, "General", "SkipTitleScreen", 1, 0, 1);
+        mPrefs[PREF_SKIPTUTORIALS] = ReadInt(iniReader, "General", "SkipTutorials", 0, 0, 2);
+        mPrefs[PREF_CPUAFFINITY] = ReadInt(iniReader, "General", "CpuAffinity", 0, 0, 64);
+        mPrefs[PREF_HIGHPRECISIONTIMER] = ReadInt(iniReader, "General", "HighPrecisionTimer", 1, 0, 1);
+        mPrefs[PREF_SKIPSYSTEMDETECTION] = ReadInt(iniReader, "General", "SkipSystemDetection", 1, 0, 1);
+        mPrefs[PREF_LARGEADDRESSAWARE] = ReadInt(iniReader, "General", "LargeAddressAware", 0, 0, 1);
+        mPrefs[PREF_PAUSEONFOCUSLOSS] = ReadInt(iniReader, "General", "PauseOnFocusLoss", 1, 0, 1);
+    }
 
+    static void ReadDisplay(CIniReader& iniReader)
+    {
         // 1 fullscreen, 2 borderless, 3 windowed.
-        mPrefs[PREF_DISPLAYMODE] = std::clamp(iniReader.ReadInteger("Display", "DisplayMode", 2), 1, 3);
+        mPrefs[PREF_DISPLAYMODE] = ReadInt(iniReader, "Display", "DisplayMode", 2, 1, 3);
 
-        // Both axes or neither; ceiling is the largest square a D3D9 render target can describe.
+        // Both axes or neither; the ceiling is the largest square a D3D9 render target can describe.
         auto nInternalResolutionX = iniReader.ReadInteger("Display", "InternalResolutionX", 0);
         auto nInternalResolutionY = iniReader.ReadInteger("Display", "InternalResolutionY", 0);
         if (nInternalResolutionX < 1 || nInternalResolutionY < 1)
@@ -136,79 +148,88 @@ public:
         mPrefs[PREF_INTERNALRESOLUTIONX] = nInternalResolutionX;
         mPrefs[PREF_INTERNALRESOLUTIONY] = nInternalResolutionY;
 
-        mPrefs[PREF_SCALINGFILTER] = std::clamp(iniReader.ReadInteger("Display", "ScalingFilter", 1), 0, 1);
-        mPrefs[PREF_FPSCOUNTER] = std::clamp(iniReader.ReadInteger("Display", "FpsCounter", 0), 0, 1);
+        mPrefs[PREF_SCALINGFILTER] = ReadInt(iniReader, "Display", "ScalingFilter", 1, 0, 1);
+        mPrefs[PREF_FPSCOUNTER] = ReadInt(iniReader, "Display", "FpsCounter", 0, 0, 1);
+        mPrefs[PREF_MAXFRAMERATE] = ReadInt(iniReader, "Display", "MaxFrameRate", 1, 0, 9999);
+    }
 
-        mPrefs[PREF_MAXFRAMERATE] = std::clamp(iniReader.ReadInteger("Display", "MaxFrameRate", 1), 0, 9999);
-
-        mPrefs[PREF_ANISOTROPICFILTERING] = std::clamp(iniReader.ReadInteger("Graphics", "AnisotropicFiltering", 16), 0, 16);
-        mPrefs[PREF_NORIMLIGHTING] = std::clamp(iniReader.ReadInteger("Graphics", "NoRimLighting", 0), 0, 1);
-        mPrefs[PREF_NOSPRINTAIMBLUR] = std::clamp(iniReader.ReadInteger("Graphics", "NoSprintAimBlur", 0), 0, 1);
-
+    static void ReadGraphics(CIniReader& iniReader)
+    {
+        mPrefs[PREF_UTILISATION] = ReadInt(iniReader, "Graphics", "ImprovedUtilisation", 1, 0, 1);
+        mPrefs[PREF_ANISOTROPICFILTERING] = ReadInt(iniReader, "Graphics", "AnisotropicFiltering", 16, 0, 16);
+        mPrefs[PREF_NORIMLIGHTING] = ReadInt(iniReader, "Graphics", "NoRimLighting", 0, 0, 1);
+        mPrefs[PREF_NOSPRINTAIMBLUR] = ReadInt(iniReader, "Graphics", "NoSprintAimBlur", 0, 0, 1);
         mPrefs[PREF_SATURATION] = std::clamp(iniReader.ReadFloat("Graphics", "Saturation", 0.5f), 0.0f, 4.0f);
-        mPrefs[PREF_VOLUMETRICFOG] = std::clamp(iniReader.ReadInteger("Graphics", "VolumetricFog", 0), 0, 1);
-        mPrefs[PREF_VOLUMETRICCLOUDS] = std::clamp(iniReader.ReadInteger("Graphics", "VolumetricClouds", 0), 0, 1);
+        mPrefs[PREF_VOLUMETRICFOG] = ReadInt(iniReader, "Graphics", "VolumetricFog", 0, 0, 1);
+        mPrefs[PREF_VOLUMETRICCLOUDS] = ReadInt(iniReader, "Graphics", "VolumetricClouds", 0, 0, 1);
 
-        mPrefs[PREF_BEYONDULTRAGEOMETRY] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraGeometry", 4), 0, 4);
-        mPrefs[PREF_BEYONDULTRASHADOWS] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraShadows", 1), 0, 1);
+        mPrefs[PREF_BEYONDULTRAGEOMETRY] = ReadInt(iniReader, "BeyondUltra", "BeyondUltraGeometry", 4, 0, 4);
+        mPrefs[PREF_BEYONDULTRASHADOWS] = ReadInt(iniReader, "BeyondUltra", "BeyondUltraShadows", 1, 0, 1);
 
-        // Unclamped on purpose: the point is to go past the presets, and the device decides.
+        // Not clamped: the point is to go past the presets, and the device decides.
         mPrefs[PREF_SHADOWRESOLUTION] = iniReader.ReadInteger("BeyondUltra", "ShadowResolution", 2048);
 
-        mPrefs[PREF_BEYONDULTRATERRAIN] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraTerrain", 3), 0, 3);
+        mPrefs[PREF_BEYONDULTRATERRAIN] = ReadInt(iniReader, "BeyondUltra", "BeyondUltraTerrain", 3, 0, 3);
+    }
 
-        mPrefs[PREF_MOUSESPEEDCAP] = std::clamp(iniReader.ReadInteger("Gameplay", "RemoveMouseSpeedCap", 1), 0, 1);
-
-        auto nAimToggle = std::clamp(iniReader.ReadInteger("Gameplay", "AimToggle", 0), 0, 1);
-        auto nSprintToggle = std::clamp(iniReader.ReadInteger("Gameplay", "SprintToggle", 0), 0, 1);
-        mPrefs[PREF_AIMTOGGLE] = nAimToggle;
-        mPrefs[PREF_SPRINTTOGGLE] = nSprintToggle;
-
-        mPrefs[PREF_LIMITEDSAVING] = std::clamp(iniReader.ReadInteger("Gameplay", "LimitedSaving", 0), 0, 1);
-        mPrefs[PREF_CONSOLEAUTOSAVES] = std::clamp(iniReader.ReadInteger("Gameplay", "ConsoleAutosaves", 1), 0, 1);
-        mPrefs[PREF_NOBLINKINGITEMS] = std::clamp(iniReader.ReadInteger("Gameplay", "NoBlinkingItems", 0), 0, 1);
-        mPrefs[PREF_NOHITINDICATOR] = std::clamp(iniReader.ReadInteger("Gameplay", "NoHitIndicator", 0), 0, 1);
-        mPrefs[PREF_CUSTOMBINDS] = std::clamp(iniReader.ReadInteger("Gameplay", "CustomBinds", 1), 0, 1);
+    static void ReadGameplay(CIniReader& iniReader)
+    {
+        mPrefs[PREF_MOUSESPEEDCAP] = ReadInt(iniReader, "Gameplay", "RemoveMouseSpeedCap", 1, 0, 1);
+        mPrefs[PREF_AIMTOGGLE] = ReadInt(iniReader, "Gameplay", "AimToggle", 0, 0, 1);
+        mPrefs[PREF_SPRINTTOGGLE] = ReadInt(iniReader, "Gameplay", "SprintToggle", 0, 0, 1);
+        mPrefs[PREF_LIMITEDSAVING] = ReadInt(iniReader, "Gameplay", "LimitedSaving", 0, 0, 1);
+        mPrefs[PREF_CONSOLEAUTOSAVES] = ReadInt(iniReader, "Gameplay", "ConsoleAutosaves", 1, 0, 1);
+        mPrefs[PREF_NOBLINKINGITEMS] = ReadInt(iniReader, "Gameplay", "NoBlinkingItems", 0, 0, 1);
+        mPrefs[PREF_NOHITINDICATOR] = ReadInt(iniReader, "Gameplay", "NoHitIndicator", 0, 0, 1);
+        mPrefs[PREF_CUSTOMBINDS] = ReadInt(iniReader, "Gameplay", "CustomBinds", 1, 0, 1);
 
         // -2 never shows the HUD, -1 never fades it, 0 keeps the game's own delay, above that seconds.
-        mPrefs[PREF_HUDFADEOUT] = std::clamp(iniReader.ReadInteger("Gameplay", "HudFadeOut", 0), -2, 60);
+        mPrefs[PREF_HUDFADEOUT] = ReadInt(iniReader, "Gameplay", "HudFadeOut", 0, -2, 60);
 
-        auto fMouseLookSensitivity = iniReader.ReadFloat("Gameplay", "MouseLookSensitivity", 1.0f);
-        mPrefs[PREF_MOUSELOOKSENSITIVITY] = fMouseLookSensitivity <= 0.0f ? 1.0f : std::clamp(fMouseLookSensitivity, 0.01f, 5.0f);
+        mPrefs[PREF_MOUSELOOKSENSITIVITY] =
+            ReadOptionalFloat(iniReader, "Gameplay", "MouseLookSensitivity", 1.0f, 0.01f, 5.0f);
+        mPrefs[PREF_SPRINTTURNMODIFIER] =
+            ReadOptionalFloat(iniReader, "Gameplay", "SprintTurnModifier", 0.0f, 0.01f, 2.0f);
+    }
 
-        auto fSprintTurnModifier = iniReader.ReadFloat("Gameplay", "SprintTurnModifier", 0.0f);
-        mPrefs[PREF_SPRINTTURNMODIFIER] = fSprintTurnModifier <= 0.0f ? 0.0f : std::clamp(fSprintTurnModifier, 0.01f, 2.0f);
-
+    static void ReadFieldOfView(CIniReader& iniReader)
+    {
         mPrefs[PREF_FIELDOFVIEW] = std::clamp(iniReader.ReadFloat("FieldOfView", "FieldOfView", 75.0f), 45.0f, 140.0f);
-        mPrefs[PREF_VIEWMODELFIELDOFVIEW] = std::clamp(iniReader.ReadFloat("FieldOfView", "ViewmodelFieldOfView", 75.0f), 45.0f, 140.0f);
+        mPrefs[PREF_VIEWMODELFIELDOFVIEW] =
+            std::clamp(iniReader.ReadFloat("FieldOfView", "ViewmodelFieldOfView", 75.0f), 45.0f, 140.0f);
+        mPrefs[PREF_IRONSIGHTFIELDOFVIEW] =
+            ReadOptionalFloat(iniReader, "FieldOfView", "IronsightFieldOfView", 0.0f, 20.0f, 140.0f);
+        mPrefs[PREF_VEHICLEFIELDOFVIEW] =
+            ReadOptionalFloat(iniReader, "FieldOfView", "VehicleFieldOfView", 0.0f, 45.0f, 140.0f);
+    }
 
-        auto fIronsightFieldOfView = iniReader.ReadFloat("FieldOfView", "IronsightFieldOfView", 0.0f);
-        mPrefs[PREF_IRONSIGHTFIELDOFVIEW] = fIronsightFieldOfView <= 0.0f ? 0.0f : std::clamp(fIronsightFieldOfView, 20.0f, 140.0f);
+    // After ReadGameplay: the controller aim toggle defaults to the mouse one.
+    static void ReadController(CIniReader& iniReader)
+    {
+        mPrefs[PREF_CONTROLLERLOOKSENSITIVITY] =
+            ReadOptionalFloat(iniReader, "Controller", "ControllerLookSensitivity", 1.0f, 0.01f, 5.0f);
+        mPrefs[PREF_AIMASSIST] = ReadInt(iniReader, "Controller", "AimAssist", 1, 0, 1);
+        mPrefs[PREF_VIBRATION] = ReadInt(iniReader, "Controller", "Vibration", 1, 0, 1);
+        mPrefs[PREF_CONTROLLERPROMPTS] = ReadInt(iniReader, "Controller", "ControllerPrompts", 1, 0, 1);
 
-        auto fVehicleFieldOfView = iniReader.ReadFloat("FieldOfView", "VehicleFieldOfView", 0.0f);
-        mPrefs[PREF_VEHICLEFIELDOFVIEW] = fVehicleFieldOfView <= 0.0f ? 0.0f : std::clamp(fVehicleFieldOfView, 45.0f, 140.0f);
+        const auto nAimToggle = std::get<int32_t>(mPrefs[PREF_AIMTOGGLE]);
+        mPrefs[PREF_AIMTOGGLECONTROLLER] = ReadInt(iniReader, "Controller", "AimToggle", nAimToggle, 0, 1);
+    }
 
-        auto fControllerLookSensitivity = iniReader.ReadFloat("Controller", "ControllerLookSensitivity", 1.0f);
-        mPrefs[PREF_CONTROLLERLOOKSENSITIVITY] = fControllerLookSensitivity <= 0.0f ? 1.0f : std::clamp(fControllerLookSensitivity, 0.01f, 5.0f);
+    static void ReadContentUnlocks(CIniReader& iniReader)
+    {
+        mPrefs[PREF_PREDECESSORTAPES] = ReadInt(iniReader, "ContentUnlocks", "PredecessorTapesUnlock", 1, 0, 1);
+        mPrefs[PREF_MACHETES] = ReadInt(iniReader, "ContentUnlocks", "MachetesUnlock", 1, 0, 1);
+    }
 
-        mPrefs[PREF_AIMASSIST] = std::clamp(iniReader.ReadInteger("Controller", "AimAssist", 1), 0, 1);
-        mPrefs[PREF_VIBRATION] = std::clamp(iniReader.ReadInteger("Controller", "Vibration", 1), 0, 1);
-        mPrefs[PREF_CONTROLLERPROMPTS] = std::clamp(iniReader.ReadInteger("Controller", "ControllerPrompts", 1), 0, 1);
-
-        mPrefs[PREF_AIMTOGGLECONTROLLER] = std::clamp(iniReader.ReadInteger("Controller", "AimToggle", nAimToggle), 0, 1);
-
-        mPrefs[PREF_PREDECESSORTAPES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "PredecessorTapesUnlock", 1), 0, 1);
-        mPrefs[PREF_MACHETES] = std::clamp(iniReader.ReadInteger("ContentUnlocks", "MachetesUnlock", 1), 0, 1);
-
-        mPrefs[PREF_DEBUGINVINCIBILITY] = std::clamp(iniReader.ReadInteger("Debug", "Invincibility", 0), 0, 1);
-        mPrefs[PREF_DEBUGINFINITEAMMO] = std::clamp(iniReader.ReadInteger("Debug", "InfiniteAmmo", 0), 0, 1);
-        mPrefs[PREF_DEBUGUNLOCKALLWEAPONS] = std::clamp(iniReader.ReadInteger("Debug", "UnlockAllWeapons", 0), 0, 1);
-
-        mPrefs[PREF_DEBUGDIAMONDS] = std::clamp(iniReader.ReadInteger("Debug", "Diamonds", 0), 0, 999);
-
-        mPrefs[PREF_DEBUGNOCLIP] = std::clamp(iniReader.ReadInteger("Debug", "Noclip", 0), 0, 1);
-        mPrefs[PREF_DEBUGFREECAM] = std::clamp(iniReader.ReadInteger("Debug", "Freecam", 0), 0, 1);
-
+    static void ReadDebug(CIniReader& iniReader)
+    {
+        mPrefs[PREF_DEBUGINVINCIBILITY] = ReadInt(iniReader, "Debug", "Invincibility", 0, 0, 1);
+        mPrefs[PREF_DEBUGINFINITEAMMO] = ReadInt(iniReader, "Debug", "InfiniteAmmo", 0, 0, 1);
+        mPrefs[PREF_DEBUGUNLOCKALLWEAPONS] = ReadInt(iniReader, "Debug", "UnlockAllWeapons", 0, 0, 1);
+        mPrefs[PREF_DEBUGDIAMONDS] = ReadInt(iniReader, "Debug", "Diamonds", 0, 0, 999);
+        mPrefs[PREF_DEBUGNOCLIP] = ReadInt(iniReader, "Debug", "Noclip", 0, 0, 1);
+        mPrefs[PREF_DEBUGFREECAM] = ReadInt(iniReader, "Debug", "Freecam", 0, 0, 1);
         mPrefs[PREF_DEBUGNOCLIPKEY] = iniReader.ReadString("Debug", "NoclipKey", "F1");
         mPrefs[PREF_DEBUGFREECAMKEY] = iniReader.ReadString("Debug", "FreecamKey", "F2");
 
@@ -222,12 +243,12 @@ public:
         {
             mInFile[pref] = KeyInFile(iniReader, "Debug", szKey);
         }
+    }
 
-        // Before the holds go back on, so this is the file and nothing else.
-        mFile = mPrefs;
-
-        // Session choices back on top, where the file has not moved. Here, not in the caller, so
-        // the watcher's re-reads go through it too.
+    // Session choices go back on top where the file has not moved. Done here rather than in the
+    // caller, so the watcher's re-reads keep them too.
+    static void ReapplyHolds()
+    {
         for (size_t i = 0; i < static_cast<size_t>(Pref::COUNT); i++)
         {
             if (!mHeld[i])
@@ -238,22 +259,47 @@ public:
             else
                 mHeld[i] = false;
         }
+    }
 
+    static void OnIniChanged(const std::string&, const filewatch::Event change_type)
+    {
+        if (change_type != filewatch::Event::modified || bJackalFixWritingIni)
+            return;
+
+        ReadIniSettings();
+        JackalFix::onIniFileChange().executeAll();
+    }
+
+    static void EnsureIniWatch(CIniReader& iniReader)
+    {
         static std::once_flag flag;
         std::call_once(flag, [&]()
         {
-            if (std::filesystem::exists(iniReader.GetIniPath()))
-            {
-                static filewatch::FileWatch<std::string> watch(iniReader.GetIniPath().string(), [](const std::string&, const filewatch::Event change_type)
-                {
-                    if (change_type == filewatch::Event::modified && !bJackalFixWritingIni)
-                    {
-                        ReadIniSettings();
-                        JackalFix::onIniFileChange().executeAll();
-                    }
-                });
-            }
+            if (!std::filesystem::exists(iniReader.GetIniPath()))
+                return;
+
+            static filewatch::FileWatch<std::string> watch(iniReader.GetIniPath().string(), OnIniChanged);
         });
+    }
+
+public:
+    static inline void ReadIniSettings()
+    {
+        CIniReader iniReader("");
+        ReadGeneral(iniReader);
+        ReadDisplay(iniReader);
+        ReadGraphics(iniReader);
+        ReadGameplay(iniReader);
+        ReadFieldOfView(iniReader);
+        ReadController(iniReader);
+        ReadContentUnlocks(iniReader);
+        ReadDebug(iniReader);
+
+        // Before the holds go back on, so this is the file and nothing else.
+        mFile = mPrefs;
+
+        ReapplyHolds();
+        EnsureIniWatch(iniReader);
     }
 
 public:

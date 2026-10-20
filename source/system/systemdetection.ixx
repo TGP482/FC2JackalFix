@@ -96,41 +96,46 @@ static DxDiagProvider ProxyProvider = { &ProxyVtbl };
 using CoCreateInstance_t = HRESULT(__stdcall*)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
 static CoCreateInstance_t pfnCoCreateInstance = nullptr;
 
-static HRESULT __stdcall CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid, LPVOID* ppv)
+static HRESULT CreateProxyProvider(REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid, LPVOID* ppv)
 {
-    if (bSkipSystemDetection && ppv)
+    if (!pRealProvider)
     {
-        // WMI can just be refused; DxDiag is needed at startup, so it is proxied and cached instead.
-        if (IsEqualGUID(rclsid, guidWbemLocator))
-            return REGDB_E_CLASSNOTREG;
-
-        if (IsEqualGUID(rclsid, guidDxDiagProvider) && IsEqualGUID(riid, guidIDxDiagProvider))
+        auto hr = pfnCoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, (void**)&pRealProvider);
+        if (FAILED(hr))
         {
-            if (!pRealProvider)
-            {
-                auto hr = pfnCoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, (void**)&pRealProvider);
-                if (FAILED(hr))
-                {
-                    pRealProvider = nullptr;
-                    return hr;
-                }
-
-                // The caller's CoUninitialize would unload dxdiagn.dll under the cached pointers.
-                if (CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED) == RPC_E_CHANGED_MODE)
-                    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            }
-
-            InterlockedIncrement(&nProxyRefs);
-            *ppv = &ProxyProvider;
-            return S_OK;
+            pRealProvider = nullptr;
+            return hr;
         }
+
+        // The caller's CoUninitialize would unload dxdiagn.dll under the cached pointers.
+        if (CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED) == RPC_E_CHANGED_MODE)
+            CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     }
+
+    InterlockedIncrement(&nProxyRefs);
+    *ppv = &ProxyProvider;
+    return S_OK;
+}
+
+static HRESULT __stdcall CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid,
+    LPVOID* ppv)
+{
+    if (!bSkipSystemDetection || !ppv)
+        return pfnCoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, ppv);
+
+    // WMI can just be refused; DxDiag is needed at startup, so it is proxied and cached instead.
+    if (IsEqualGUID(rclsid, guidWbemLocator))
+        return REGDB_E_CLASSNOTREG;
+
+    if (IsEqualGUID(rclsid, guidDxDiagProvider) && IsEqualGUID(riid, guidIDxDiagProvider))
+        return CreateProxyProvider(rclsid, pUnkOuter, dwClsContext, riid, ppv);
 
     return pfnCoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, ppv);
 }
 
 // Patches one module's IAT, so only that module's calls are affected.
-static bool HookImport(HMODULE hModule, const char* szModule, const char* szFunction, void* pDetour, void** ppOriginal)
+static bool HookImport(HMODULE hModule, const char* szModule, const char* szFunction, void* pDetour,
+    void** ppOriginal)
 {
     if (!hModule)
         return false;
@@ -154,8 +159,9 @@ static bool HookImport(HMODULE hModule, const char* szModule, const char* szFunc
             continue;
 
         // Names come from OriginalFirstThunk, or FirstThunk when it is missing.
+        auto nNames = pImport->OriginalFirstThunk ? pImport->OriginalFirstThunk : pImport->FirstThunk;
         auto pThunk = (IMAGE_THUNK_DATA*)(pBase + pImport->FirstThunk);
-        auto pNames = (IMAGE_THUNK_DATA*)(pBase + (pImport->OriginalFirstThunk ? pImport->OriginalFirstThunk : pImport->FirstThunk));
+        auto pNames = (IMAGE_THUNK_DATA*)(pBase + nNames);
 
         for (; pNames->u1.AddressOfData; ++pNames, ++pThunk)
         {
@@ -169,12 +175,13 @@ static bool HookImport(HMODULE hModule, const char* szModule, const char* szFunc
             if (ppOriginal)
                 *ppOriginal = (void*)pThunk->u1.Function;
 
+            auto pSlot = &pThunk->u1.Function;
             DWORD nOldProtect = 0;
-            if (!VirtualProtect(&pThunk->u1.Function, sizeof(pThunk->u1.Function), PAGE_READWRITE, &nOldProtect))
+            if (!VirtualProtect(pSlot, sizeof(*pSlot), PAGE_READWRITE, &nOldProtect))
                 return false;
 
-            pThunk->u1.Function = (uintptr_t)pDetour;
-            VirtualProtect(&pThunk->u1.Function, sizeof(pThunk->u1.Function), nOldProtect, &nOldProtect);
+            *pSlot = (uintptr_t)pDetour;
+            VirtualProtect(pSlot, sizeof(*pSlot), nOldProtect, &nOldProtect);
             return true;
         }
     }

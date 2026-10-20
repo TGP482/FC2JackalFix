@@ -51,11 +51,12 @@ export void* dunia_find(std::string_view steam, std::string_view gog, ptrdiff_t 
     return dunia_find(ByBuild(steam, gog), offset);
 }
 
-// CPawnInputListener::Update, the per-frame input pass. Several modules hook inside this pattern's
-// range and the first to land rewrites bytes it asks for, so resolve once while they are stock.
+// CPawnInputListener::Update, the per frame input pass. Several modules hook inside this pattern, so
+// it is found once while the bytes are still stock.
 export void* dunia_input_pass()
 {
-    static auto* pInputPass = dunia_find("56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A E8 ? ? ? ? F6 40 04 40 74 11");
+    static auto* pInputPass = dunia_find(
+        "56 8B F1 74 0A 88 46 04 88 46 05 5E C2 08 00 8B 4E 20 3B C8 74 4A E8 ? ? ? ? F6 40 04 40 74 11");
     return pInputPass;
 }
 
@@ -85,7 +86,9 @@ export void InitDunia()
     const auto nStamp = DuniaTimeDateStamp();
     bDuniaGOG = nStamp == nGogTimeDateStamp;
 
-    LogInfo("Dunia: {} build (timestamp 0x{:08X}, base 0x{:08X})", bDuniaGOG ? "GOG" : "Steam", nStamp, reinterpret_cast<uintptr_t>(hDunia));
+    const auto szBuild = bDuniaGOG ? "GOG" : "Steam";
+    const auto nBase = reinterpret_cast<uintptr_t>(hDunia);
+    LogInfo("Dunia: {} build (timestamp 0x{:08X}, base 0x{:08X})", szBuild, nStamp, nBase);
 
     JackalFix::onDuniaInitEvent().executeAll();
 }
