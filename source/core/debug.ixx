@@ -191,7 +191,8 @@ using SetActiveCameraByName_t = void(__fastcall*)(void* pManager, void* pEdx, co
 using GetActiveCamera_t = void* (__fastcall*)(void* pManager);
 
 // __thiscall on the ref world, callee cleans 12 bytes; caller owns a reference on the holder.
-using EntityRefFromId_t = void* (__fastcall*)(void* pRefWorld, void* pEdx, void** ppOut, uint32_t nIdLow, uint32_t nIdHigh);
+using EntityRefFromId_t = void* (__fastcall*)(void* pRefWorld, void* pEdx, void** ppOut, uint32_t nIdLow,
+    uint32_t nIdHigh);
 
 // Through the vtable. Holder by value: caller adds a reference, callee drops it.
 using SetFocus_t = void(__fastcall*)(void* pCamera, void* pEdx, void* pEntityRef);
@@ -418,8 +419,9 @@ static int ParseKeyName(std::string_view szName)
     }
 
     // Letters and digits are their own virtual key.
-    if (szUpper.size() == 1 && ((szUpper[0] >= 'A' && szUpper[0] <= 'Z') || (szUpper[0] >= '0' && szUpper[0] <= '9')))
-        return szUpper[0];
+    const auto c = szUpper[0];
+    if (szUpper.size() == 1 && ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')))
+        return c;
 
     auto nBase = (szUpper.rfind("0X", 0) == 0) ? 16 : 10;
     auto nParsed = std::strtol(szUpper.c_str() + (nBase == 16 ? 2 : 0), nullptr, nBase);
@@ -439,6 +441,14 @@ static bool HasFocus()
 static bool KeyDown(int nKey)
 {
     return nKey != 0 && (GetAsyncKeyState(nKey) & 0x8000) != 0;
+}
+
+// One for the first key held, minus one for the second.
+static float KeyAxis(int nPlusKey, int nMinusKey)
+{
+    auto fPlus = KeyDown(nPlusKey) ? 1.0f : 0.0f;
+    auto fMinus = KeyDown(nMinusKey) ? 1.0f : 0.0f;
+    return fPlus - fMinus;
 }
 
 // Edge triggered on the way down, one latch per key.
@@ -473,9 +483,9 @@ static MoveAxes ReadMoveAxes(bool bWithPad)
 {
     MoveAxes Move
     {
-        (KeyDown(nKeyStrafeRight) ? 1.0f : 0.0f) - (KeyDown(nKeyStrafeLeft) ? 1.0f : 0.0f),
-        (KeyDown(nKeyForward) ? 1.0f : 0.0f) - (KeyDown(nKeyBack) ? 1.0f : 0.0f),
-        (KeyDown(nKeyUp) ? 1.0f : 0.0f) - (KeyDown(nKeyDown) ? 1.0f : 0.0f),
+        KeyAxis(nKeyStrafeRight, nKeyStrafeLeft),
+        KeyAxis(nKeyForward, nKeyBack),
+        KeyAxis(nKeyUp, nKeyDown),
     };
 
     if (bWithPad)
@@ -1084,8 +1094,8 @@ static void FeedCameraInput(void* pCamera)
     }
 
     // The mouse arrives in the keys' units, and is consumed rather than held.
-    auto fYawKeys = (bFocused && KeyDown(nKeyLookRight) ? 1.0f : 0.0f) - (bFocused && KeyDown(nKeyLookLeft) ? 1.0f : 0.0f);
-    auto fPitchKeys = (bFocused && KeyDown(nKeyLookUp) ? 1.0f : 0.0f) - (bFocused && KeyDown(nKeyLookDown) ? 1.0f : 0.0f);
+    auto fYawKeys = bFocused ? KeyAxis(nKeyLookRight, nKeyLookLeft) : 0.0f;
+    auto fPitchKeys = bFocused ? KeyAxis(nKeyLookUp, nKeyLookDown) : 0.0f;
 
     auto fYaw = fYawKeys * fLookRate + fMouseLookX;
 
@@ -1273,28 +1283,26 @@ static void ReadSettings()
     ApplyActGate();
 }
 
-// Once a frame from CPawnInputListener::Update, on the gameplay-input-enabled branch. Not a camera
-// update: activating by name there mutates the manager's array mid iteration.
-static void Tick(uintptr_t nListener, uintptr_t nPawn)
+// The input pass carries no delta. A hitch or a load comes back as zero, not a huge step.
+static float UpdateFrameDelta()
 {
-    // The input pass carries no delta. A hitch or a load comes back as zero, not a huge step.
     static std::chrono::steady_clock::time_point LastTick{};
 
     const auto Now = std::chrono::steady_clock::now();
-    auto fFrameDelta = (LastTick == std::chrono::steady_clock::time_point{})
-        ? 0.0f : std::chrono::duration<float>(Now - LastTick).count();
+    auto fFrameDelta = 0.0f;
+    if (LastTick != std::chrono::steady_clock::time_point{})
+        fFrameDelta = std::chrono::duration<float>(Now - LastTick).count();
     LastTick = Now;
 
     if (fFrameDelta < 0.0f || fFrameDelta > 0.25f)
-        fFrameDelta = 0.0f;
+        return 0.0f;
 
-    ApplyActGate();
+    return fFrameDelta;
+}
 
-    ApplyProfileFlags();
-    ApplyHealthFloor();
-    ApplyVehicleProtection(nPawn);
-    ApplyDiamonds();
-
+// Runs the mode that is up, and ends it when its camera or entity is gone or its setting is off.
+static void UpdateCameraMode(uintptr_t nListener, uintptr_t nPawn, float fFrameDelta)
+{
     // Mouse look for the free camera, off the listener's accumulators. Skipped on a pad, where the
     // engine's mapping already feeds these and would double them.
     if (eCameraMode == CameraMode::Freecam && nListener != 0 && !IsPadActiveDevice())
@@ -1316,15 +1324,46 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     if (eCameraMode == CameraMode::Freecam && !DebugCameraStillOurs())
         ForgetCameraMode();
 
-    // A mode switched off mid-use, or a match starting, has to put the player back.
+    // A mode switched off mid use, or a match starting, has to put the player back.
     if (eCameraMode == CameraMode::Noclip && !NoclipEnabled())
         LeaveNoclip();
     else if (eCameraMode == CameraMode::Freecam && !FreecamEnabled())
         LeaveCameraMode();
+}
 
-    if (!HasFocus())
+static void ToggleNoclip()
+{
+    if (eCameraMode == CameraMode::Noclip)
+    {
+        LeaveNoclip();
+        return;
+    }
+
+    LeaveCameraMode();
+    if (!EnterNoclip())
         return;
 
+    eCameraMode = CameraMode::Noclip;
+
+    // A step chosen in freecam can sit past noclip's lower ceiling.
+    if (nSpeedStep > nNoclipTopStep)
+        nSpeedStep = nNoclipTopStep;
+}
+
+static void ToggleFreecam()
+{
+    if (eCameraMode == CameraMode::Freecam)
+    {
+        LeaveCameraMode();
+        return;
+    }
+
+    LeaveNoclip();
+    EnterFreecam();
+}
+
+static void HandleModeKeys()
+{
     static bool bNoclipLatch = false;
     static bool bFreecamLatch = false;
     static bool bSpeedLatch = false;
@@ -1339,43 +1378,335 @@ static void Tick(uintptr_t nListener, uintptr_t nPawn)
     auto bPadSpeedEdge = PadPressed(nPadSpeedCycle, bPadSpeedLatch);
     auto bPadSlowEdge = PadPressed(nPadSlowCycle, bPadSlowLatch);
 
-    if ((KeyPressed(nKeySpeedCycle, bSpeedLatch) || bPadSpeedEdge) && eCameraMode != CameraMode::None)
+    auto bSpeedUp = KeyPressed(nKeySpeedCycle, bSpeedLatch) || bPadSpeedEdge;
+    if (bSpeedUp && eCameraMode != CameraMode::None)
         nSpeedStep = (nSpeedStep >= TopSpeedStep()) ? nBaseSpeedStep : nSpeedStep + 1;
 
-    if ((KeyPressed(nKeySlowCycle, bSlowLatch) || bPadSlowEdge) && eCameraMode != CameraMode::None)
+    auto bSlowDown = KeyPressed(nKeySlowCycle, bSlowLatch) || bPadSlowEdge;
+    if (bSlowDown && eCameraMode != CameraMode::None)
         nSpeedStep = (nSpeedStep == 0) ? nBaseSpeedStep : nSpeedStep - 1;
 
     if (NoclipEnabled() && bNoclipEdge)
-    {
-        if (eCameraMode == CameraMode::Noclip)
-        {
-            LeaveNoclip();
-        }
-        else
-        {
-            LeaveCameraMode();
-            if (EnterNoclip())
-            {
-                eCameraMode = CameraMode::Noclip;
-
-                // A step chosen in freecam can sit past noclip's lower ceiling.
-                if (nSpeedStep > nNoclipTopStep)
-                    nSpeedStep = nNoclipTopStep;
-            }
-        }
-    }
+        ToggleNoclip();
     else if (FreecamEnabled() && bFreecamEdge)
+        ToggleFreecam();
+}
+
+// Once a frame from CPawnInputListener::Update, on the gameplay input enabled branch. Not a camera
+// update: activating by name there mutates the manager's array mid iteration.
+static void Tick(uintptr_t nListener, uintptr_t nPawn)
+{
+    const auto fFrameDelta = UpdateFrameDelta();
+
+    ApplyActGate();
+
+    ApplyProfileFlags();
+    ApplyHealthFloor();
+    ApplyVehicleProtection(nPawn);
+    ApplyDiamonds();
+
+    UpdateCameraMode(nListener, nPawn, fFrameDelta);
+
+    if (!HasFocus())
+        return;
+
+    HandleModeKeys();
+}
+
+static SafetyHookMid SessionSlotHook{};
+static SafetyHookMid AddDiamondsHook{};
+static SafetyHookMid RemoveDiamondsHook{};
+static SafetyHookMid BazaarSnapshotHook{};
+static SafetyHookMid EconomyCtorHook{};
+static SafetyHookMid CountersCtorHook{};
+static SafetyHookMid FallUpdateHook{};
+static SafetyHookMid InputPassHook{};
+
+static uintptr_t nFallUpdateRejoin = 0;
+
+// ESI is the session's owner.
+static void LatchSessionType(SafetyHookContext& regs)
+{
+    auto* pSession = *reinterpret_cast<uint8_t**>(regs.esi + nOwnerSession);
+    if (pSession == nullptr)
     {
-        if (eCameraMode == CameraMode::Freecam)
-        {
-            LeaveCameraMode();
-        }
-        else
-        {
-            LeaveNoclip();
-            EnterFreecam();
-        }
+        nLiveSessionType = 0;
+        return;
     }
+
+    nLiveSessionType = *reinterpret_cast<int32_t*>(pSession + nSessionType);
+}
+
+// ECX is the economy component.
+static void NoteAddDiamonds(SafetyHookContext& regs)
+{
+    NoteEconomy(reinterpret_cast<void*>(regs.ecx));
+}
+
+// Spending comes off the grant first, which keeps real progress at the live count minus nGranted.
+static void SpendGrantedDiamonds(SafetyHookContext& regs)
+{
+    NoteEconomy(reinterpret_cast<void*>(regs.ecx));
+
+    if (nGranted <= 0)
+        return;
+
+    auto pLive = LiveDiamonds();
+    if (pLive == nullptr)
+        return;
+
+    // The engine clamps to the balance, so this has to as well.
+    auto nSpent = *reinterpret_cast<int32_t*>(regs.esp + 4);
+    if (nSpent > *pLive)
+        nSpent = *pLive;
+
+    nGranted -= (nSpent < nGranted) ? nSpent : nGranted;
+}
+
+// EAX is the economy component the bazaar page reads.
+static void NoteBazaarSnapshot(SafetyHookContext& regs)
+{
+    NoteEconomy(reinterpret_cast<void*>(regs.eax));
+}
+
+static void NoteNewEconomy(SafetyHookContext& regs)
+{
+    nGranted = 0;
+    NoteEconomy(reinterpret_cast<void*>(regs.esi));
+}
+
+static void NoteNewCounters(SafetyHookContext& regs)
+{
+    pCounters = reinterpret_cast<void*>(regs.esi);
+    pCountersVTable = *reinterpret_cast<void**>(regs.esi);
+}
+
+// ESI is the state block. Collision off takes the ground with it, so the player's fall is cleared
+// and the update jumps to its not falling tail.
+static void SkipNoclipFall(SafetyHookContext& regs)
+{
+    // The player's block only. Every pawn in the level runs this function.
+    auto nBlock = static_cast<uintptr_t>(regs.esi);
+    if (eCameraMode != CameraMode::Noclip || nBlock == 0 || nBlock != nNoclipStateBlock)
+        return;
+
+    *reinterpret_cast<uint8_t*>(nBlock + nPawnFalling) = 0;
+    *reinterpret_cast<int32_t*>(nBlock + nPawnFallFrames) = 0;
+
+    regs.eip = nFallUpdateRejoin;
+}
+
+// ESI is the listener, ECX the pawn the relocated instruction just fetched.
+static void InputPass(SafetyHookContext& regs)
+{
+    Tick(static_cast<uintptr_t>(regs.esi), static_cast<uintptr_t>(regs.ecx));
+}
+
+// CWeaponBazaar::IsWeaponUnlocked: the GameProfile global and the act gates.
+static void InstallWeaponUnlocks()
+{
+    // At the AllWeaponsUnlock test, read only for the operand of the leading MOV EAX,[imm32].
+    auto profilePattern = dunia_pattern("A1 ? ? ? ? 83 B8 A0 00 00 00 00");
+    if (!profilePattern.empty())
+        ppGameProfile = *reinterpret_cast<void***>(profilePattern.get_first(1));
+
+    // The tag at ESI+0x58 compared against 1 and 2, at pattern +3 and +18. The tag is only ever 0 to 2,
+    // so 0xFF makes both jumps unconditional.
+    auto actGatePattern = dunia_pattern("80 7E 58 01 75 09 E8 ? ? ? ? 84 C0 74 11 80 7E 58 02");
+    if (actGatePattern.empty())
+        return;
+
+    static raw_mem fnFirstActGate(actGatePattern.get_first(3), { 0xFF });
+    static raw_mem fnSecondActGate(actGatePattern.get_first(18), { 0xFF });
+
+    pFirstActGate = &fnFirstActGate;
+    pSecondActGate = &fnSecondActGate;
+
+    ApplyActGate();
+
+    JackalFix::onShutdownEvent() += []()
+    {
+        fnFirstActGate.Restore();
+        fnSecondActGate.Restore();
+    };
+}
+
+static void InstallDiamondHooks()
+{
+    // CEconomyComponent::AddDiamonds, only to learn the player's component; count untouched.
+    auto addDiamondsPattern = dunia_pattern("51 A1 ? ? ? ? A8 01 56 57 8B F9 75 12 83 C8 01 A3 ? ? ? ? C7 05 ? ? ? ? A8 64 B0 93");
+    if (!addDiamondsPattern.empty())
+        AddDiamondsHook = safetyhook::create_mid(addDiamondsPattern.get_first(), NoteAddDiamonds);
+
+    // CEconomyComponent::RemoveDiamonds, before its clamp and store.
+    auto removeDiamondsPattern = dunia_pattern("F6 05 ? ? ? ? 01 53 57 8B D9 75 11");
+    if (!removeDiamondsPattern.empty())
+        RemoveDiamondsHook = safetyhook::create_mid(removeDiamondsPattern.get_first(), SpendGrantedDiamonds);
+
+    // The bazaar page snapshotting the wallet as it opens: one more sighting.
+    auto bazaarSnapshotPattern = dunia_pattern("8B 40 10 89 86 70 01 00 00 89 86 74 01 00 00 89 86 78 01 00 00");
+    if (!bazaarSnapshotPattern.empty())
+        BazaarSnapshotHook = safetyhook::create_mid(bazaarSnapshotPattern.get_first(), NoteBazaarSnapshot);
+
+    // CConstIntProperty::Serialise, shared by every int32 property, hence filtering the
+    // descriptor. ESI takes the value, not the field, so the substitution goes round it.
+    auto savePropertyPattern = dunia_pattern("56 8B C1 8B 70 0C 8B 4C 24 0C 8B 11 57 8B 7C 24 0C 8B 34 3E 83 C0 04 56 50 8B 82 A0 00 00 00 FF D0");
+    if (!savePropertyPattern.empty())
+        SaveDiamondPropertyHook = safetyhook::create_inline(savePropertyPattern.get_first(), SaveDiamondProperty);
+
+    // CEconomyComponent's constructor, past both vtable stores with ESI still the object. A new
+    // component always arrives before the save's count lands in it.
+    auto economyCtorPattern = dunia_pattern("56 8B F1 E8 ? ? ? ? 33 C0 89 46 10 C7 06 ? ? ? ? C7 46 04 ? ? ? ? 89 46 14 89 46 18 89 46 1C 89 46 20 89 46 24 89 46 28 8B C6 5E C3");
+    if (!economyCtorPattern.empty())
+        EconomyCtorHook = safetyhook::create_mid(economyCtorPattern.get_first(nEconomyCtorVTableSet), NoteNewEconomy);
+}
+
+static void InstallVitalsHooks()
+{
+    // CFCXCountersComponentPlayerSP's constructor, past the vtable stores with ESI still the
+    // object. Three siblings share the layout; this is the campaign one.
+    auto countersCtorPattern = dunia_pattern("F3 0F 11 8E 10 01 00 00 C7 06 ? ? ? ? C7 46 04 ? ? ? ? F3 0F 11 86 F4 00 00 00");
+    if (!countersCtorPattern.empty())
+    {
+        auto* pVTableSet = countersCtorPattern.get_first(nCountersCtorVTableSet);
+        CountersCtorHook = safetyhook::create_mid(pVTableSet, NoteNewCounters);
+    }
+
+    // The three syringe spend sites, whose return addresses tell ItemConsume a syringe from a
+    // magazine. Three matches, so taken by index rather than through get_first.
+    auto syringeSitePattern = dunia_pattern("3B C1 75 04 33 C9 EB 02 8B 08 6A 01 E8");
+    for (size_t i = 0; i < syringeSitePattern.size() && nSyringeConsumeSiteCount < nSyringeConsumeSites; i++)
+    {
+        auto* pReturn = syringeSitePattern.get(i).get<void>(nSyringeConsumeReturn);
+        pSyringeConsumeSite[nSyringeConsumeSiteCount++] = reinterpret_cast<uintptr_t>(pReturn);
+    }
+
+    // The shared item decrementer, hooked only once the sites above are known.
+    auto itemConsumePattern = dunia_pattern("8B 54 24 04 85 D2 7F 05 33 C0 C2 04 00 80 79 1C 00 75 0E A1 ? ? ? ? 83 B8 98 00 00 00 00 76 05");
+    if (!itemConsumePattern.empty() && nSyringeConsumeSiteCount != 0)
+        ItemConsumeHook = safetyhook::create_inline(itemConsumePattern.get_first(), ItemConsume);
+}
+
+static void InstallVehicleProtection()
+{
+    // CVehicle::GetCurrentVehicle. The trailing 82 A7 1B FD is the fact CRC 0xFD1BA782; without it
+    // the prologue is ordinary and the pattern is not unique.
+    auto currentVehiclePattern = dunia_pattern("83 EC 08 8B 4C 24 0C 8B 01 8B 50 7C 53 FF D2 83 CB FF B9 01 00 00 00 84 0D ? ? ? ? 89 5C 24 04 89 5C 24 08 75 10 09 0D ? ? ? ? C7 05 ? ? ? ? 82 A7 1B FD");
+    if (!currentVehiclePattern.empty())
+        GetCurrentVehicle = reinterpret_cast<GetCurrentVehicle_t>(currentVehiclePattern.get_first());
+
+    auto flushJobPattern = dunia_pattern("56 8B F1 8B 86 C8 00 00 00 85 C0 74 26 8B 80 C4 00 00 00 85 C0 74 1C 8B 0D ? ? ? ? 50 E8");
+    if (!flushJobPattern.empty())
+        FlushEntityJob = reinterpret_cast<FlushEntityJob_t>(flushJobPattern.get_first());
+
+    // GetComponent<CVehiclePhysComponent>. The registrar call displacement is left unwildcarded, or
+    // the bytes match 69 other getters; build specific, hence two patterns.
+    auto vehiclePhysicsPattern = dunia_pattern(
+        "83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 3D D6 FD FF 68 ? ? ? ? 8B CE E8 ? ? ? ? 5E C3",
+        "83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 0D DE FD FF 68 5C D9 F2 10 8B CE E8 ? ? ? ? 5E C3");
+    if (!vehiclePhysicsPattern.empty())
+        GetVehiclePhysics = reinterpret_cast<GetVehiclePhysics_t>(vehiclePhysicsPattern.get_first());
+
+    // CVehiclePhysComponent::ApplyHealthDamage, anchored on its gate tests at +0x102 and +0x106.
+    // Both bytes are recomputed every physics step, so clearing them does not hold.
+    auto vehicleDamagePattern = dunia_pattern("80 B9 02 01 00 00 00 0F 57 C9 74 2C 80 B9 06 01 00 00 00");
+    if (!vehicleDamagePattern.empty())
+        VehicleHealthDamageHook = safetyhook::create_inline(vehicleDamagePattern.get_first(), VehicleHealthDamage);
+
+    // CVehiclePhysComponent::ApplyStimToParts.
+    auto vehicleStimPattern = dunia_pattern("55 8B EC 83 E4 F0 81 EC B4 00 00 00 53 56 57 8B 7D 08 85 FF 8B D9 0F 84 AA 00 00 00");
+    if (!vehicleStimPattern.empty())
+        VehicleStimPartsHook = safetyhook::create_inline(vehicleStimPattern.get_first(), VehicleStimParts);
+}
+
+// The engine functions noclip and freecam call.
+static void FindCameraFunctions()
+{
+    // CPlayer::GetLocalPlayer, and the two camera manager entry points the mode switch needs.
+    auto localPlayerPattern = dunia_pattern("A1 ? ? ? ? 83 78 08 00 75 03 33 C0 C3 8B 40 04 8B 00 C3");
+    auto setCameraPattern = dunia_pattern("51 53 55 56 8B F1 80 7E 14 00 57 0F 85");
+    auto getCameraPattern = dunia_pattern("8B 41 10 85 C0 7C 20 3B 41 1C 73 1B 51 8B 49 18 8D 04 40");
+
+    if (!localPlayerPattern.empty() && !setCameraPattern.empty() && !getCameraPattern.empty())
+    {
+        GetLocalPlayer = reinterpret_cast<GetLocalPlayer_t>(localPlayerPattern.get_first());
+        SetActiveCameraByName = reinterpret_cast<SetActiveCameraByName_t>(setCameraPattern.get_first());
+        GetActiveCamera = reinterpret_cast<GetActiveCamera_t>(getCameraPattern.get_first());
+    }
+
+    // The manager's resolve and set focus sequence, read not hooked.
+    auto focusResolvePattern = dunia_pattern("8B 55 0C 8B 45 08 52 50 8D 4C 24 4C 51 8B 0D ? ? ? ? E8 ? ? ? ? 8B 7C 24 44 83 7F 0C 00 74 12 51 8B C4 89 38 83 47 08 01 8B 13 8B 42 78 8B CB FF D0");
+    if (!focusResolvePattern.empty())
+    {
+        auto* pMatch = static_cast<uint8_t*>(focusResolvePattern.get_first());
+
+        ppRefWorld = *reinterpret_cast<void***>(pMatch + nRefWorldGlobal);
+        EntityRefFromId = reinterpret_cast<EntityRefFromId_t>(dunia_call_target(pMatch + nEntityRefFromIdCall));
+    }
+
+    auto releaseRefPattern = dunia_pattern("51 56 8B F1 E8 ? ? ? ? 56 8D 4C 24 08 51 8B C8 E8 ? ? ? ? E8 ? ? ? ? 8B 54 24 04 3B 50 10");
+    if (!releaseRefPattern.empty())
+        ReleaseEntityRef = reinterpret_cast<ReleaseEntityRef_t>(releaseRefPattern.get_first());
+
+    auto freeRefPattern = dunia_pattern("56 8B 74 24 08 85 F6 74 20 56 E8 ? ? ? ? 83 C4 04 84 C0 56 74 0A");
+    if (!freeRefPattern.empty())
+        FreeEntityRef = reinterpret_cast<FreeEntityRef_t>(freeRefPattern.get_first());
+
+    // The physics tag, its lazy registrar and the fetch, from the one place the engine does all
+    // three in a row: the ghost camera's activate handler.
+    auto physicsTagPattern = dunia_pattern("83 3D ? ? ? ? 00 75 07 33 C9 E8 ? ? ? ? 68 ? ? ? ? 8B CE E8 ? ? ? ? 85 ED 8B F8 75 0D 85 FF 75 09");
+    if (!physicsTagPattern.empty())
+    {
+        auto* pMatch = static_cast<uint8_t*>(physicsTagPattern.get_first());
+
+        pPhysicsTagFlag = *reinterpret_cast<int32_t**>(pMatch + nPhysicsTagFlag);
+        pPhysicsTag = *reinterpret_cast<void**>(pMatch + nPhysicsTagValue);
+
+        auto* pRegister = dunia_call_target(pMatch + nPhysicsTagRegisterCall);
+        auto* pFetch = dunia_call_target(pMatch + nGetComponentCall);
+        RegisterPhysicsTag = reinterpret_cast<RegisterPhysicsTag_t>(pRegister);
+        GetComponentByTag = reinterpret_cast<GetComponentByTag_t>(pFetch);
+    }
+
+    // CEntity::SetPosition, patternable only because SetEuler sits behind it.
+    auto setPositionPattern = dunia_pattern("6A 00 8D 44 24 08 50 E8 ? ? ? ? C2 0C 00 CC 6A 00 8D 44 24 08 50 E8 ? ? ? ? C2 0C 00");
+    if (!setPositionPattern.empty())
+    {
+        SetEntityPosition = reinterpret_cast<SetEntityPosition_t>(setPositionPattern.get_first());
+        SetEntityEuler = reinterpret_cast<SetEntityEuler_t>(setPositionPattern.get_first(0x10));
+    }
+
+    // The render camera accessor; noclip's starting pitch comes off it.
+    auto renderCameraPattern = dunia_pattern("83 C1 14 6A 01 51 B9 ? ? ? ? E8 ? ? ? ? C3");
+    if (!renderCameraPattern.empty())
+        GetRenderCamera = reinterpret_cast<GetRenderCamera_t>(renderCameraPattern.get_first());
+}
+
+static void InstallCameraModeHooks()
+{
+    // The signal dispatcher; opens with a five byte MOV EAX,[imm32], nothing to relocate.
+    auto gameSignalPattern = dunia_pattern("A1 ? ? ? ? 83 EC 50 A8 01 53 55 56 57 8B F9");
+    if (!gameSignalPattern.empty())
+        GameSignalHook = safetyhook::create_inline(gameSignalPattern.get_first(), GameSignal);
+
+    // CCameraFreeComponent::Update.
+    auto freeCameraPattern = dunia_pattern("83 EC 28 53 55 56 57 8B 3D ? ? ? ? 8B F1 8D 44 24 14 8D 4E FC 50");
+    if (!freeCameraPattern.empty())
+        FreeCameraUpdateHook = safetyhook::create_inline(freeCameraPattern.get_first(), FreeCameraUpdate);
+
+    // The pawn's fall update, __thiscall with ESI the state block.
+    auto fallUpdatePattern = dunia_pattern("80 BE 9B 04 00 00 00 F3 0F 10 05 ? ? ? ? C6 44 24 12 00 F3 0F 11 44 24 18 0F 85 ? ? ? ? F6 86 D4 02 00 00 20");
+    if (!fallUpdatePattern.empty())
+    {
+        nFallUpdateRejoin = reinterpret_cast<uintptr_t>(fallUpdatePattern.get_first(nFallUpdateTail));
+        FallUpdateHook = safetyhook::create_mid(fallUpdatePattern.get_first(), SkipNoclipFall);
+    }
+
+    // CPawnInputListener::Update, the module's clock. +0x16 needs gameplay input enabled and a pawn
+    // alive, and lands on a call, so XMM is caller saved. Resolved in dunia.ixx.
+    auto* pInputPass = dunia_input_pass();
+    if (pInputPass != nullptr)
+        InputPassHook = safetyhook::create_mid(static_cast<uint8_t*>(pInputPass) + nInputPassLivePawn, InputPass);
 }
 
 class Debug
@@ -1385,272 +1716,19 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // The session-changed handler, at the load of the session it is about to ask about.
+            // The session changed handler, at the load of the session it is about to ask about.
             auto sessionSlot = dunia_pattern(szSessionSlotPattern);
             if (!sessionSlot.empty())
-            {
-                static auto SessionSlotHook = safetyhook::create_mid(sessionSlot.get_first(), [](SafetyHookContext& regs)
-                {
-                    auto* pSession = *reinterpret_cast<uint8_t**>(regs.esi + nOwnerSession);
-                    const auto nType = pSession != nullptr
-                        ? *reinterpret_cast<int32_t*>(pSession + nSessionType) : 0;
-
-                    nLiveSessionType = nType;
-                });
-            }
+                SessionSlotHook = safetyhook::create_mid(sessionSlot.get_first(), LatchSessionType);
 
             ReadSettings();
 
-            // CWeaponBazaar::IsWeaponUnlocked at the AllWeaponsUnlock test, read only for the
-            // GameProfile global, the operand of the leading MOV EAX,[imm32].
-            auto profilePattern = dunia_pattern("A1 ? ? ? ? 83 B8 A0 00 00 00 00");
-            if (!profilePattern.empty())
-                ppGameProfile = *reinterpret_cast<void***>(profilePattern.get_first(1));
-
-            // The act gates in the same function: the tag at ESI+0x58 compared against 1 and 2, at
-            // pattern +3 and +18. The tag is only ever 0-2, so 0xFF makes both jumps unconditional.
-            auto actGatePattern = dunia_pattern("80 7E 58 01 75 09 E8 ? ? ? ? 84 C0 74 11 80 7E 58 02");
-            if (!actGatePattern.empty())
-            {
-                static raw_mem fnFirstActGate(actGatePattern.get_first(3), { 0xFF });
-                static raw_mem fnSecondActGate(actGatePattern.get_first(18), { 0xFF });
-
-                pFirstActGate = &fnFirstActGate;
-                pSecondActGate = &fnSecondActGate;
-
-                ApplyActGate();
-
-                JackalFix::onShutdownEvent() += []()
-                {
-                    fnFirstActGate.Restore();
-                    fnSecondActGate.Restore();
-                };
-            }
-
-            // CEconomyComponent::AddDiamonds, only to learn the player's component; count untouched.
-            auto addDiamondsPattern = dunia_pattern("51 A1 ? ? ? ? A8 01 56 57 8B F9 75 12 83 C8 01 A3 ? ? ? ? C7 05 ? ? ? ? A8 64 B0 93");
-            if (!addDiamondsPattern.empty())
-            {
-                static auto AddDiamondsHook = safetyhook::create_mid(addDiamondsPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    NoteEconomy(reinterpret_cast<void*>(regs.ecx));
-                });
-            }
-
-            // CEconomyComponent::RemoveDiamonds, before its clamp and store. Spending comes off the
-            // grant first, which holds real progress at live - nGranted.
-            auto removeDiamondsPattern = dunia_pattern("F6 05 ? ? ? ? 01 53 57 8B D9 75 11");
-            if (!removeDiamondsPattern.empty())
-            {
-                static auto RemoveDiamondsHook = safetyhook::create_mid(removeDiamondsPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    NoteEconomy(reinterpret_cast<void*>(regs.ecx));
-
-                    if (nGranted <= 0)
-                        return;
-
-                    auto pLive = LiveDiamonds();
-                    if (pLive == nullptr)
-                        return;
-
-                    // The engine clamps to the balance, so this has to as well.
-                    auto nSpent = *reinterpret_cast<int32_t*>(regs.esp + 4);
-                    if (nSpent > *pLive)
-                        nSpent = *pLive;
-
-                    nGranted -= (nSpent < nGranted) ? nSpent : nGranted;
-                });
-            }
-
-            // The bazaar page snapshotting the wallet as it opens: one more sighting.
-            auto bazaarSnapshotPattern = dunia_pattern("8B 40 10 89 86 70 01 00 00 89 86 74 01 00 00 89 86 78 01 00 00");
-            if (!bazaarSnapshotPattern.empty())
-            {
-                static auto BazaarSnapshotHook = safetyhook::create_mid(bazaarSnapshotPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    NoteEconomy(reinterpret_cast<void*>(regs.eax));
-                });
-            }
-
-            // CConstIntProperty::Serialise, shared by every int32 property, hence filtering the
-            // descriptor. ESI takes the value, not the field, so the substitution goes round it.
-            auto savePropertyPattern = dunia_pattern("56 8B C1 8B 70 0C 8B 4C 24 0C 8B 11 57 8B 7C 24 0C 8B 34 3E 83 C0 04 56 50 8B 82 A0 00 00 00 FF D0");
-            if (!savePropertyPattern.empty())
-                SaveDiamondPropertyHook = safetyhook::create_inline(savePropertyPattern.get_first(), SaveDiamondProperty);
-
-            // CEconomyComponent's constructor, hooked at +0x1A past both vtable stores with ESI
-            // still the object. A new component always arrives before the save's count lands in it.
-            auto economyCtorPattern = dunia_pattern("56 8B F1 E8 ? ? ? ? 33 C0 89 46 10 C7 06 ? ? ? ? C7 46 04 ? ? ? ? 89 46 14 89 46 18 89 46 1C 89 46 20 89 46 24 89 46 28 8B C6 5E C3");
-            if (!economyCtorPattern.empty())
-            {
-                static auto EconomyCtorHook = safetyhook::create_mid(economyCtorPattern.get_first(nEconomyCtorVTableSet), [](SafetyHookContext& regs)
-                {
-                    nGranted = 0;
-                    NoteEconomy(reinterpret_cast<void*>(regs.esi));
-                });
-            }
-
-            // CFCXCountersComponentPlayerSP's constructor, hooked at +0x15 past the vtable stores
-            // with ESI still the object. Three siblings share the layout; this is the campaign one.
-            auto countersCtorPattern = dunia_pattern("F3 0F 11 8E 10 01 00 00 C7 06 ? ? ? ? C7 46 04 ? ? ? ? F3 0F 11 86 F4 00 00 00");
-            if (!countersCtorPattern.empty())
-            {
-                static auto CountersCtorHook = safetyhook::create_mid(countersCtorPattern.get_first(nCountersCtorVTableSet), [](SafetyHookContext& regs)
-                {
-                    pCounters = reinterpret_cast<void*>(regs.esi);
-                    pCountersVTable = *reinterpret_cast<void**>(regs.esi);
-                });
-            }
-
-            // The three syringe spend sites, whose return addresses tell ItemConsume a syringe from
-            // a magazine. Three matches, so taken by index rather than through get_first.
-            auto syringeSitePattern = dunia_pattern("3B C1 75 04 33 C9 EB 02 8B 08 6A 01 E8");
-            for (size_t i = 0; i < syringeSitePattern.size() && nSyringeConsumeSiteCount < nSyringeConsumeSites; i++)
-            {
-                pSyringeConsumeSite[nSyringeConsumeSiteCount++] =
-                    reinterpret_cast<uintptr_t>(syringeSitePattern.get(i).get<void>(nSyringeConsumeReturn));
-            }
-
-            // The shared item decrementer, hooked only once the sites above are known.
-            auto itemConsumePattern = dunia_pattern("8B 54 24 04 85 D2 7F 05 33 C0 C2 04 00 80 79 1C 00 75 0E A1 ? ? ? ? 83 B8 98 00 00 00 00 76 05");
-            if (!itemConsumePattern.empty() && nSyringeConsumeSiteCount != 0)
-                ItemConsumeHook = safetyhook::create_inline(itemConsumePattern.get_first(), ItemConsume);
-
-            // CVehicle::GetCurrentVehicle. The trailing 82 A7 1B FD is the fact CRC 0xFD1BA782;
-            // without it the prologue is ordinary and the pattern is not unique.
-            auto currentVehiclePattern = dunia_pattern("83 EC 08 8B 4C 24 0C 8B 01 8B 50 7C 53 FF D2 83 CB FF B9 01 00 00 00 84 0D ? ? ? ? 89 5C 24 04 89 5C 24 08 75 10 09 0D ? ? ? ? C7 05 ? ? ? ? 82 A7 1B FD");
-            if (!currentVehiclePattern.empty())
-                GetCurrentVehicle = reinterpret_cast<GetCurrentVehicle_t>(currentVehiclePattern.get_first());
-
-            auto flushJobPattern = dunia_pattern("56 8B F1 8B 86 C8 00 00 00 85 C0 74 26 8B 80 C4 00 00 00 85 C0 74 1C 8B 0D ? ? ? ? 50 E8");
-            if (!flushJobPattern.empty())
-                FlushEntityJob = reinterpret_cast<FlushEntityJob_t>(flushJobPattern.get_first());
-
-            // GetComponent<CVehiclePhysComponent>. The registrar call displacement is left
-            // unwildcarded, or the bytes match 69 other getters; build specific, hence two patterns.
-            auto vehiclePhysicsPattern = dunia_pattern(
-                "83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 3D D6 FD FF 68 ? ? ? ? 8B CE E8 ? ? ? ? 5E C3",
-                "83 3D ? ? ? ? 00 56 8B F1 75 07 33 C9 E8 0D DE FD FF 68 5C D9 F2 10 8B CE E8 ? ? ? ? 5E C3");
-            if (!vehiclePhysicsPattern.empty())
-                GetVehiclePhysics = reinterpret_cast<GetVehiclePhysics_t>(vehiclePhysicsPattern.get_first());
-
-            // CVehiclePhysComponent::ApplyHealthDamage, anchored on its gate tests at +0x102 and
-            // +0x106. Both bytes are recomputed every physics step, so clearing them does not hold.
-            auto vehicleDamagePattern = dunia_pattern("80 B9 02 01 00 00 00 0F 57 C9 74 2C 80 B9 06 01 00 00 00");
-            if (!vehicleDamagePattern.empty())
-                VehicleHealthDamageHook = safetyhook::create_inline(vehicleDamagePattern.get_first(), VehicleHealthDamage);
-
-            // CVehiclePhysComponent::ApplyStimToParts.
-            auto vehicleStimPattern = dunia_pattern("55 8B EC 83 E4 F0 81 EC B4 00 00 00 53 56 57 8B 7D 08 85 FF 8B D9 0F 84 AA 00 00 00");
-            if (!vehicleStimPattern.empty())
-                VehicleStimPartsHook = safetyhook::create_inline(vehicleStimPattern.get_first(), VehicleStimParts);
-
-            // CPlayer::GetLocalPlayer, and the two camera manager entry points the mode switch needs.
-            auto localPlayerPattern = dunia_pattern("A1 ? ? ? ? 83 78 08 00 75 03 33 C0 C3 8B 40 04 8B 00 C3");
-            auto setCameraPattern = dunia_pattern("51 53 55 56 8B F1 80 7E 14 00 57 0F 85");
-            auto getCameraPattern = dunia_pattern("8B 41 10 85 C0 7C 20 3B 41 1C 73 1B 51 8B 49 18 8D 04 40");
-
-            if (!localPlayerPattern.empty() && !setCameraPattern.empty() && !getCameraPattern.empty())
-            {
-                GetLocalPlayer = reinterpret_cast<GetLocalPlayer_t>(localPlayerPattern.get_first());
-                SetActiveCameraByName = reinterpret_cast<SetActiveCameraByName_t>(setCameraPattern.get_first());
-                GetActiveCamera = reinterpret_cast<GetActiveCamera_t>(getCameraPattern.get_first());
-            }
-
-            // The manager's resolve-and-set-focus sequence, read not hooked: the ref world global
-            // at +0x0F and the id resolver called at +0x13.
-            auto focusResolvePattern = dunia_pattern("8B 55 0C 8B 45 08 52 50 8D 4C 24 4C 51 8B 0D ? ? ? ? E8 ? ? ? ? 8B 7C 24 44 83 7F 0C 00 74 12 51 8B C4 89 38 83 47 08 01 8B 13 8B 42 78 8B CB FF D0");
-            if (!focusResolvePattern.empty())
-            {
-                auto pMatch = reinterpret_cast<uintptr_t>(focusResolvePattern.get_first());
-
-                ppRefWorld = *reinterpret_cast<void***>(pMatch + nRefWorldGlobal);
-
-                // Past the opcode, over the displacement, to what it points at.
-                auto pCall = pMatch + nEntityRefFromIdCall;
-                EntityRefFromId = reinterpret_cast<EntityRefFromId_t>(pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1));
-            }
-
-            auto releaseRefPattern = dunia_pattern("51 56 8B F1 E8 ? ? ? ? 56 8D 4C 24 08 51 8B C8 E8 ? ? ? ? E8 ? ? ? ? 8B 54 24 04 3B 50 10");
-            if (!releaseRefPattern.empty())
-                ReleaseEntityRef = reinterpret_cast<ReleaseEntityRef_t>(releaseRefPattern.get_first());
-
-            auto freeRefPattern = dunia_pattern("56 8B 74 24 08 85 F6 74 20 56 E8 ? ? ? ? 83 C4 04 84 C0 56 74 0A");
-            if (!freeRefPattern.empty())
-                FreeEntityRef = reinterpret_cast<FreeEntityRef_t>(freeRefPattern.get_first());
-
-            // The physics tag, its lazy registrar and the fetch, from the one place the engine does
-            // all three in a row: the ghost camera's activate handler.
-            auto physicsTagPattern = dunia_pattern("83 3D ? ? ? ? 00 75 07 33 C9 E8 ? ? ? ? 68 ? ? ? ? 8B CE E8 ? ? ? ? 85 ED 8B F8 75 0D 85 FF 75 09");
-            if (!physicsTagPattern.empty())
-            {
-                auto pMatch = reinterpret_cast<uintptr_t>(physicsTagPattern.get_first());
-
-                pPhysicsTagFlag = *reinterpret_cast<int32_t**>(pMatch + nPhysicsTagFlag);
-                pPhysicsTag = *reinterpret_cast<void**>(pMatch + nPhysicsTagValue);
-
-                auto pRegister = pMatch + nPhysicsTagRegisterCall;
-                RegisterPhysicsTag = reinterpret_cast<RegisterPhysicsTag_t>(pRegister + 5 + *reinterpret_cast<int32_t*>(pRegister + 1));
-
-                auto pFetch = pMatch + nGetComponentCall;
-                GetComponentByTag = reinterpret_cast<GetComponentByTag_t>(pFetch + 5 + *reinterpret_cast<int32_t*>(pFetch + 1));
-            }
-
-            // CEntity::SetPosition, patternable only because SetEuler sits behind it.
-            auto setPositionPattern = dunia_pattern("6A 00 8D 44 24 08 50 E8 ? ? ? ? C2 0C 00 CC 6A 00 8D 44 24 08 50 E8 ? ? ? ? C2 0C 00");
-            if (!setPositionPattern.empty())
-            {
-                SetEntityPosition = reinterpret_cast<SetEntityPosition_t>(setPositionPattern.get_first());
-                SetEntityEuler = reinterpret_cast<SetEntityEuler_t>(setPositionPattern.get_first(0x10));
-            }
-
-            // The render camera accessor; noclip's starting pitch comes off it.
-            auto renderCameraPattern = dunia_pattern("83 C1 14 6A 01 51 B9 ? ? ? ? E8 ? ? ? ? C3");
-            if (!renderCameraPattern.empty())
-                GetRenderCamera = reinterpret_cast<GetRenderCamera_t>(renderCameraPattern.get_first());
-
-            // The signal dispatcher; opens with a five byte MOV EAX,[imm32], nothing to relocate.
-            auto gameSignalPattern = dunia_pattern("A1 ? ? ? ? 83 EC 50 A8 01 53 55 56 57 8B F9");
-            if (!gameSignalPattern.empty())
-                GameSignalHook = safetyhook::create_inline(gameSignalPattern.get_first(), GameSignal);
-
-            // CCameraFreeComponent::Update.
-            auto freeCameraPattern = dunia_pattern("83 EC 28 53 55 56 57 8B 3D ? ? ? ? 8B F1 8D 44 24 14 8D 4E FC 50");
-            if (!freeCameraPattern.empty())
-                FreeCameraUpdateHook = safetyhook::create_inline(freeCameraPattern.get_first(), FreeCameraUpdate);
-
-            // The pawn's fall update, __thiscall with ESI the state block. Collision off takes the
-            // ground with it, so clear the flag and jump to the not-falling tail at +0x303.
-            auto fallUpdatePattern = dunia_pattern("80 BE 9B 04 00 00 00 F3 0F 10 05 ? ? ? ? C6 44 24 12 00 F3 0F 11 44 24 18 0F 85 ? ? ? ? F6 86 D4 02 00 00 20");
-            if (!fallUpdatePattern.empty())
-            {
-                static auto nFallUpdateRejoin = reinterpret_cast<uintptr_t>(fallUpdatePattern.get_first(nFallUpdateTail));
-
-                static auto FallUpdateHook = safetyhook::create_mid(fallUpdatePattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    // The player's block only. Every pawn in the level runs this function.
-                    auto nBlock = static_cast<uintptr_t>(regs.esi);
-                    if (eCameraMode != CameraMode::Noclip || nBlock == 0 || nBlock != nNoclipStateBlock)
-                        return;
-
-                    *reinterpret_cast<uint8_t*>(nBlock + nPawnFalling) = 0;
-                    *reinterpret_cast<int32_t*>(nBlock + nPawnFallFrames) = 0;
-
-                    regs.eip = nFallUpdateRejoin;
-                });
-            }
-
-            // CPawnInputListener::Update, the module's clock. +0x16 needs gameplay input enabled
-            // and a pawn alive, and lands on a call, so XMM is caller-saved. Resolved in dunia.ixx.
-            auto* pInputPass = dunia_input_pass();
-            if (pInputPass != nullptr)
-            {
-                static auto InputPassHook = safetyhook::create_mid(static_cast<uint8_t*>(pInputPass) + nInputPassLivePawn, [](SafetyHookContext& regs)
-                {
-                    // ESI is the listener, ECX the pawn the relocated instruction just fetched.
-                    Tick(static_cast<uintptr_t>(regs.esi), static_cast<uintptr_t>(regs.ecx));
-                });
-            }
+            InstallWeaponUnlocks();
+            InstallDiamondHooks();
+            InstallVitalsHooks();
+            InstallVehicleProtection();
+            FindCameraFunctions();
+            InstallCameraModeHooks();
 
             JackalFix::onIniFileChange() += []()
             {
