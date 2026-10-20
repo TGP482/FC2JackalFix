@@ -354,10 +354,14 @@ public:
 // Renderer vtable +0x40, end of frame. `this` in ECX, renderer+0x38 the IDirect3DDevice9*.
 static void OnFrameEnd(uintptr_t nRenderer)
 {
-    if (!bSubstituted || !nRenderer)
+    if (!nRenderer)
         return;
 
-    CResolver::Resolve(*reinterpret_cast<IDirect3DDevice9**>(nRenderer + 0x38));
+    auto* pDevice = *reinterpret_cast<IDirect3DDevice9**>(nRenderer + 0x38);
+    if (bSubstituted)
+        CResolver::Resolve(pDevice);
+
+    JackalFix::onFrameEndDX9Event().executeAll(pDevice);
 }
 
 // FUN_1040F190, the wrapper's generic surface setter: every render-target wrapper goes through it,
@@ -579,6 +583,7 @@ public:
                 // Unconditional: nothing here may outlive the Reset four instructions away.
                 CResolver::ReleaseForReset(regs.ecx ? *reinterpret_cast<IDirect3DDevice9**>(regs.ecx + 0x38) : nullptr);
                 bSubstituted = false;
+                JackalFix::onDeviceResetEvent().executeAll();
             });
 
             static auto InternalResolutionCB = []()
@@ -1103,6 +1108,8 @@ public:
             {
                 if (bActive)
                     CResolver::Resolve(Device(regs.esi), SwapChain(regs.esi));
+
+                JackalFix::onFrameEndDX10Event().executeAll(Device(regs.esi), SwapChain(regs.esi));
             });
 
             JackalFix::onShutdownEvent() += []()

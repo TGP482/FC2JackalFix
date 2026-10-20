@@ -681,7 +681,6 @@ static uintptr_t GetShopSprite(const char* szLetter);
 
 // Whether the computer's message boxes wear its glyphs; driven off the page enter and leave hooks,
 // nothing on a bazaar button saying which page it belongs to.
-static constexpr int nShopGlyphToggleKey = VK_F10;
 static bool bShopGlyphsOnPrompts = false;
 
 static void ApplyMenuGlyph(uint8_t* pPrompt)
@@ -1077,18 +1076,6 @@ static SafetyHookInline UiInputHook{};
 
 static char __fastcall UiInput(void* pThis, void* pEdx, uint32_t* pEvent)
 {
-    // The dispatcher sees key events, so the press that flips this also applies it.
-    static auto bToggleWasDown = false;
-    auto bToggleDown = (GetAsyncKeyState(nShopGlyphToggleKey) & 0x8000) != 0;
-
-    if (bToggleDown && !bToggleWasDown)
-    {
-        bShopGlyphsOnPrompts = !bShopGlyphsOnPrompts;
-        RefreshMenuGlyphs();
-    }
-
-    bToggleWasDown = bToggleDown;
-
     // FUN_10AB75C0 reaches back into the event machinery to fire the leave.
     if (!bInCursorUpdate)
     {

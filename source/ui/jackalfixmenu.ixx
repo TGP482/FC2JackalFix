@@ -341,7 +341,7 @@ static const wchar_t* const ScalingFilterLabels[]{ L"Point", L"Bilinear" };
 
 // Percentages of InternalResolutionX/Y, both axes together to keep the aspect, each choice writing
 // both keys. No "off": an unset pair already means the window.
-static constexpr int nRenderScaleStep = 10;
+static constexpr int nRenderScaleStep = 5;
 static constexpr int nRenderScaleFloor = 20;
 static constexpr int nRenderScaleCeiling = 200;
 
@@ -355,7 +355,7 @@ static constexpr int nRenderPixelMinH = 240;
 static constexpr int nRenderPixelMax = 16384;
 
 // Filled in at page open; the base pair is not known before. One entry per step.
-static constexpr size_t nMaxRenderChoices = 32;
+static constexpr size_t nMaxRenderChoices = 40;
 static constexpr size_t nRenderLabelLength = 32;
 
 static int     RenderChoiceX[nMaxRenderChoices]{};
@@ -364,9 +364,9 @@ static wchar_t RenderChoiceText[nMaxRenderChoices][nRenderLabelLength]{};
 static const wchar_t* RenderChoiceLabels[nMaxRenderChoices]{};
 static uint32_t nRenderChoices = 0;
 
-static const int     MaxFrameRateValues[]{ 0, 1, 30, 60, 72, 75, 90, 120, 144, 165, 180, 240 };
-static const wchar_t* const MaxFrameRateLabels[]{ L"Unlocked", L"Screen Refresh", L"30Hz", L"60Hz", L"72Hz", L"75Hz",
-                                                  L"90Hz", L"120Hz", L"144Hz", L"165Hz", L"180Hz", L"240Hz" };
+static const int     MaxFrameRateValues[]{ 30, 60, 75, 90, 120, 144, 165, 240, 360, 1, 0 };
+static const wchar_t* const MaxFrameRateLabels[]{ L"30Hz", L"60Hz", L"75Hz", L"90Hz", L"120Hz", L"144Hz",
+                                                  L"165Hz", L"240Hz", L"360Hz", L"Screen Refresh", L"Unlocked" };
 
 static const int     AnisotropyValues[]{ 0, 2, 4, 8, 16 };
 static const wchar_t* const AnisotropyLabels[]{ L"Game default", L"2x", L"4x", L"8x", L"16x" };
@@ -439,7 +439,7 @@ static const MenuRow GameplayRows[]
     Heading(L"GAMEPLAY"),
     Boolean(L"Remove Mouse Speed Cap", PREF_MOUSESPEEDCAP, "Gameplay", "RemoveMouseSpeedCap"),
     Range  (L"Mouse Look Sensitivity", PREF_MOUSELOOKSENSITIVITY, "Gameplay", "MouseLookSensitivity",
-            VALUE_FLOAT, 10, 500, 5, 100.0f, L"%.2f"),
+            VALUE_FLOAT, 10, 500, 10, 100.0f, L"%.1f"),
     BooleanFloat(L"Sprint Turn Modifier", PREF_SPRINTTURNMODIFIER, "Gameplay", "SprintTurnModifier"),
     Boolean(L"Aim Toggle",        PREF_AIMTOGGLE,        "Gameplay", "AimToggle"),
     Boolean(L"Sprint Toggle",     PREF_SPRINTTOGGLE,     "Gameplay", "SprintToggle"),
@@ -451,26 +451,26 @@ static const MenuRow GameplayRows[]
     Enumeration(L"HUD Fade Out", PREF_HUDFADEOUT, "Gameplay", "HudFadeOut", HudFadeOutValues, HudFadeOutLabels),
 };
 
-// Hundredths and "%g": "%d" handed a double prints 0, and the ini may hold 91.35. Steps of five,
+// Hundredths and "%g": "%d" handed a double prints 0, and the ini may hold 91.35. Steps of one,
 // with the ini's own value kept wherever it falls between two.
 static const MenuRow FieldOfViewRows[]
 {
     Heading(L"FIELD OF VIEW"),
     Range(L"Field of View",     PREF_FIELDOFVIEW,          "FieldOfView", "FieldOfView",
-          VALUE_FLOAT, 4500, 14000, 500, 100.0f, L"%g"),
+          VALUE_FLOAT, 4500, 14000, 100, 100.0f, L"%g"),
     Range(L"Viewmodel FOV",     PREF_VIEWMODELFIELDOFVIEW, "FieldOfView", "ViewmodelFieldOfView",
-          VALUE_FLOAT, 4500, 14000, 500, 100.0f, L"%g"),
+          VALUE_FLOAT, 4500, 14000, 100, 100.0f, L"%g"),
     Range(L"Ironsight FOV",     PREF_IRONSIGHTFIELDOFVIEW, "FieldOfView", "IronsightFieldOfView",
-          VALUE_FLOAT, 2000, 14000, 500, 100.0f, L"%g"),
+          VALUE_FLOAT, 2000, 14000, 100, 100.0f, L"%g"),
     Range(L"Vehicle FOV",       PREF_VEHICLEFIELDOFVIEW,   "FieldOfView", "VehicleFieldOfView",
-          VALUE_FLOAT, 4500, 14000, 500, 100.0f, L"%g"),
+          VALUE_FLOAT, 4500, 14000, 100, 100.0f, L"%g"),
 };
 
 static const MenuRow ControllerRows[]
 {
     Heading(L"CONTROLLER"),
     Range  (L"Look Sensitivity", PREF_CONTROLLERLOOKSENSITIVITY, "Controller", "ControllerLookSensitivity",
-            VALUE_FLOAT, 0, 200, 5, 100.0f, L"%.2f"),
+            VALUE_FLOAT, 10, 500, 10, 100.0f, L"%.1f"),
     Boolean(L"Aim Assist",         PREF_AIMASSIST,          "Controller", "AimAssist"),
     Boolean(L"Vibration",          PREF_VIBRATION,          "Controller", "Vibration"),
     Boolean(L"Controller Prompts", PREF_CONTROLLERPROMPTS,  "Controller", "ControllerPrompts"),
@@ -1757,7 +1757,7 @@ static int NearestEnumValue(const MenuRow& row, int nValue)
 // Generated step lists. A value the steps miss is inserted rather than snapped, which would rewrite
 // a value nobody touched. Deep copied by the engine, so this need only survive the call.
 
-static constexpr size_t nMaxSteps = 48;
+static constexpr size_t nMaxSteps = 128;
 // The longest step text any row produces is the render resolution's "200% (15360x8640)".
 static constexpr size_t nStepTextLength = 24;
 
@@ -2941,6 +2941,60 @@ static void RefreshIfStale(void* pPage)
     }
 }
 
+// One setting, as APPLY writes it: held for the session or saved to the ini.
+static void WriteSetting(CIniReader& iniReader, const MenuRow& row, int nValue)
+{
+    const auto bHold = IsSessionOnly(row.nPref);
+
+    if (row.nValue == VALUE_FLOAT)
+    {
+        auto fValue = static_cast<float>(nValue) / row.fScale;
+        if (bHold)
+        {
+            JackalFixSettings.HoldFloat(row.nPref, fValue);
+        }
+        else
+        {
+            JackalFixSettings.SetFloat(row.nPref, fValue);
+            iniReader.WriteFloat(row.pIniSection, row.pIniKey, fValue);
+        }
+    }
+    else
+    {
+        if (bHold)
+        {
+            JackalFixSettings.HoldInt(row.nPref, nValue);
+        }
+        else
+        {
+            JackalFixSettings.SetInt(row.nPref, nValue);
+            iniReader.WriteInteger(row.pIniSection, row.pIniKey, nValue);
+        }
+    }
+
+    // A paired row carries a second key whose value is chosen by the same index.
+    if (row.nPref2 != Pref::COUNT && row.pValues2 != nullptr)
+    {
+        for (uint32_t n = 0; n < row.nValueCount; n++)
+        {
+            if (row.pValues[n] != nValue)
+                continue;
+
+            if (IsSessionOnly(row.nPref2))
+            {
+                JackalFixSettings.HoldInt(row.nPref2, row.pValues2[n]);
+            }
+            else
+            {
+                JackalFixSettings.SetInt(row.nPref2, row.pValues2[n]);
+                iniReader.WriteInteger(row.pIniSection, row.pIniKey2, row.pValues2[n]);
+            }
+
+            break;
+        }
+    }
+}
+
 // Shared by APPLY and DEFAULT, which differ only in where the staged values came from.
 static void CommitPendingValues()
 {
@@ -2961,55 +3015,7 @@ static void CommitPendingValues()
         if (nValue == SettingToRow(*pRow))
             continue;
 
-        const auto bHold = IsSessionOnly(pRow->nPref);
-
-        if (pRow->nValue == VALUE_FLOAT)
-        {
-            auto fValue = static_cast<float>(nValue) / pRow->fScale;
-            if (bHold)
-            {
-                JackalFixSettings.HoldFloat(pRow->nPref, fValue);
-            }
-            else
-            {
-                JackalFixSettings.SetFloat(pRow->nPref, fValue);
-                iniReader.WriteFloat(pRow->pIniSection, pRow->pIniKey, fValue);
-            }
-        }
-        else
-        {
-            if (bHold)
-            {
-                JackalFixSettings.HoldInt(pRow->nPref, nValue);
-            }
-            else
-            {
-                JackalFixSettings.SetInt(pRow->nPref, nValue);
-                iniReader.WriteInteger(pRow->pIniSection, pRow->pIniKey, nValue);
-            }
-        }
-
-        // A paired row carries a second key whose value is chosen by the same index.
-        if (pRow->nPref2 != Pref::COUNT && pRow->pValues2 != nullptr)
-        {
-            for (uint32_t n = 0; n < pRow->nValueCount; n++)
-            {
-                if (pRow->pValues[n] != nValue)
-                    continue;
-
-                if (IsSessionOnly(pRow->nPref2))
-                {
-                    JackalFixSettings.HoldInt(pRow->nPref2, pRow->pValues2[n]);
-                }
-                else
-                {
-                    JackalFixSettings.SetInt(pRow->nPref2, pRow->pValues2[n]);
-                    iniReader.WriteInteger(pRow->pIniSection, pRow->pIniKey2, pRow->pValues2[n]);
-                }
-
-                break;
-            }
-        }
+        WriteSetting(iniReader, *pRow, nValue);
     }
 
     // The file is whole again; a watcher event still in flight now re-reads it intact.
@@ -3482,3 +3488,182 @@ public:
         };
     }
 } JackalFixMenu;
+
+// The F10 settings panel's view of the page: the same rows, values and writes.
+
+export struct JackalFixPanelRow
+{
+    bool bHeading;
+    bool bAvailable;
+    std::string label;
+    std::string value;
+};
+
+static std::string Utf8(const wchar_t* pText)
+{
+    char szText[128]{};
+    WideCharToMultiByte(CP_UTF8, 0, pText, -1, szText, sizeof(szText), nullptr, nullptr);
+    return szText;
+}
+
+static const MenuRow* PanelRow(size_t nIndex)
+{
+    for (const auto& section : MenuSections)
+    {
+        if (nIndex < section.nRows)
+            return &section.pRows[nIndex];
+
+        nIndex -= section.nRows;
+    }
+    return nullptr;
+}
+
+static bool IsPanelSetting(const MenuRow* pRow)
+{
+    return pRow != nullptr && pRow->nKind != ROW_HEADING && pRow->nPref != Pref::COUNT;
+}
+
+static std::wstring RangeText(const MenuRow& row, int nValue)
+{
+    wchar_t szText[nStepTextLength]{};
+    if (row.nValue == VALUE_FLOAT)
+        swprintf(szText, nStepTextLength, row.pFormat, static_cast<double>(nValue) / row.fScale);
+    else
+        swprintf(szText, nStepTextLength, row.pFormat, nValue);
+
+    std::wstring text = szText;
+    if (row.nPref == PREF_SATURATION && nValue == DefaultForRow(row))
+        text += L" (Default)";
+    return text;
+}
+
+static std::wstring ValueText(const MenuRow& row, int nValue)
+{
+    if (row.nKind == ROW_BOOL)
+        return nValue != 0 ? L"On" : L"Off";
+
+    if (row.nKind == ROW_RANGE)
+        return RangeText(row, nValue);
+
+    // A value the list does not offer shows as entry zero, as on the page.
+    for (uint32_t i = 0; i < row.nValueCount; i++)
+    {
+        if (row.pValues[i] == nValue)
+            return row.pValueLabels[i];
+    }
+    return row.nValueCount != 0 ? row.pValueLabels[0] : L"";
+}
+
+static int StepEnumeration(const MenuRow& row, int nValue, int nDirection)
+{
+    const auto nCount = static_cast<int>(row.nValueCount);
+    if (nCount == 0)
+        return nValue;
+
+    auto nIndex = 0;
+    for (auto i = 0; i < nCount; i++)
+    {
+        if (row.pValues[i] == nValue)
+            nIndex = i;
+    }
+
+    nIndex = ((nIndex + nDirection) % nCount + nCount) % nCount;
+    return row.pValues[nIndex];
+}
+
+// The neighbouring step; a value between two steps, such as a hand set FOV, moves to the nearer
+// one in that direction. Wraps at the ends.
+static int StepRange(const MenuRow& row, int nValue, int nDirection)
+{
+    if (nDirection > 0)
+    {
+        if (nValue >= row.nMaximum)
+            return row.nMinimum;
+
+        const auto nNext = row.nMinimum + ((nValue - row.nMinimum) / row.nStep + 1) * row.nStep;
+        return std::clamp(nNext, row.nMinimum, row.nMaximum);
+    }
+
+    if (nValue <= row.nMinimum)
+        return row.nMaximum;
+
+    const auto nPrevious = row.nMinimum + ((nValue - row.nMinimum - 1) / row.nStep) * row.nStep;
+    return (std::max)(nPrevious, row.nMinimum);
+}
+
+static int StepValue(const MenuRow& row, int nValue, int nDirection)
+{
+    if (row.nKind == ROW_BOOL)
+        return nValue != 0 ? 0 : 1;
+
+    if (row.nKind == ROW_RANGE)
+        return StepRange(row, nValue, nDirection);
+
+    return StepEnumeration(row, nValue, nDirection);
+}
+
+// Written at once, as CommitPendingValues writes; the page notices through the ini change.
+template<class Write>
+static void WritePanelSettings(Write&& WriteRows)
+{
+    CIniReader iniReader("");
+    bJackalFixWritingIni = true;
+    WriteRows(iniReader);
+    bJackalFixWritingIni = false;
+    JackalFix::onIniFileChange().executeAll();
+}
+
+export size_t JackalFixPanelRowCount()
+{
+    size_t nCount = 0;
+    for (const auto& section : MenuSections)
+        nCount += section.nRows;
+    return nCount;
+}
+
+export JackalFixPanelRow JackalFixPanelRowAt(size_t nIndex)
+{
+    const auto* pRow = PanelRow(nIndex);
+    if (pRow == nullptr)
+        return {};
+
+    if (pRow->nKind == ROW_HEADING)
+        return { true, true, Utf8(pRow->pLabel), {} };
+
+    const auto bAvailable = IsRowAvailable(*pRow);
+    return { false, bAvailable, Utf8(pRow->pLabel), Utf8(ValueText(*pRow, SettingToRow(*pRow)).c_str()) };
+}
+
+// The render resolution choices follow the window, so they are settled each time the panel opens.
+export void JackalFixPanelOpen()
+{
+    SettleRenderResolutionChoices();
+}
+
+export void JackalFixPanelStep(size_t nIndex, int nDirection)
+{
+    const auto* pRow = PanelRow(nIndex);
+    if (!IsPanelSetting(pRow) || nDirection == 0 || !IsRowAvailable(*pRow))
+        return;
+
+    const auto nValue = StepValue(*pRow, SettingToRow(*pRow), nDirection);
+    WritePanelSettings([&](CIniReader& iniReader) { WriteSetting(iniReader, *pRow, nValue); });
+}
+
+export void JackalFixPanelDefaults()
+{
+    WritePanelSettings([](CIniReader& iniReader)
+    {
+        for (size_t i = 0; i < JackalFixPanelRowCount(); i++)
+        {
+            const auto* pRow = PanelRow(i);
+            // Or DEFAULT writes a greyed row's ini key.
+            if (!IsPanelSetting(pRow) || !IsRowAvailable(*pRow))
+                continue;
+
+            const auto nDefault = DefaultForRow(*pRow);
+            if (nDefault != SettingToRow(*pRow))
+                WriteSetting(iniReader, *pRow, nDefault);
+        }
+    });
+}

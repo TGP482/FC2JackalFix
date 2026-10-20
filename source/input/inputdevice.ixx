@@ -3,6 +3,7 @@ module;
 #include <common.hxx>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 
 export module inputdevice;
 
@@ -33,10 +34,16 @@ static constexpr ptrdiff_t nPadStateReady = 0x1F;
 // DirectInput reports a byte per key and per button, high bit set while held.
 static constexpr uint8_t nPressedBit = 0x80;
 
-// Button bytes in the mouse driver's frame state block, after the x, y and wheel deltas.
+// The mouse driver's frame state block: x, y and wheel deltas, then the button bytes.
+static constexpr size_t nMouseX = 0;
+static constexpr size_t nMouseY = 1;
+static constexpr size_t nMouseWheel = 2;
 static constexpr ptrdiff_t nMouseButtons = 0x0C;
 static constexpr int32_t nMouseButtonCount = 8;
 static constexpr int32_t nKeyboardKeyCount = 256;
+
+// sizeof(XINPUT_GAMEPAD): buttons, triggers and both sticks.
+static constexpr size_t nPadStateSize = 12;
 
 export bool IsPadActiveDevice()
 {
@@ -56,6 +63,52 @@ static PadState LastPad{};
 export const PadState& GetPadState()
 {
     return LastPad;
+}
+
+// Raised while the settings panel is open: the game sees no keys, buttons or motion, and the mouse
+// is kept for the panel. Atomic: the input and render threads.
+static std::atomic<bool> bGameInputBlocked = false;
+static std::atomic<int32_t> nBlockedMouseX = 0;
+static std::atomic<int32_t> nBlockedMouseY = 0;
+static std::atomic<int32_t> nBlockedWheel = 0;
+static std::atomic<uint32_t> nBlockedButtons = 0;
+
+export void SetGameInputBlocked(bool bBlocked)
+{
+    bGameInputBlocked = bBlocked;
+}
+
+export struct BlockedMouse
+{
+    int32_t nX;
+    int32_t nY;
+    int32_t nWheel;
+    uint32_t nButtons;
+};
+
+// Motion since the last call, and the buttons held.
+export BlockedMouse TakeBlockedMouse()
+{
+    return { nBlockedMouseX.exchange(0), nBlockedMouseY.exchange(0), nBlockedWheel.exchange(0), nBlockedButtons.load() };
+}
+
+static void KeepBlockedMotion(int32_t* pFrameState)
+{
+    nBlockedMouseX += pFrameState[nMouseX];
+    nBlockedMouseY += pFrameState[nMouseY];
+    nBlockedWheel += pFrameState[nMouseWheel];
+    pFrameState[nMouseX] = 0;
+    pFrameState[nMouseY] = 0;
+    pFrameState[nMouseWheel] = 0;
+}
+
+static void KeepBlockedButton(int32_t nButton, bool bPressed)
+{
+    const auto nBit = 1u << nButton;
+    if (bPressed)
+        nBlockedButtons |= nBit;
+    else
+        nBlockedButtons &= ~nBit;
 }
 
 // Buttons the pad driver keeps this frame. A/B become UI Enter/Escape before a nav bar prompt can
@@ -143,6 +196,9 @@ public:
                     {
                         SetPadActiveDevice(true);
                     }
+
+                    if (bGameInputBlocked)
+                        std::memset(reinterpret_cast<void*>(pPad + nPadButtons), 0, nPadStateSize);
                 });
             }
 
@@ -160,8 +216,12 @@ public:
                     if (pKeyStates == nullptr || nKey < 0 || nKey >= nKeyboardKeyCount)
                         return;
 
-                    if (pKeyStates[nKey] & nPressedBit)
-                        SetPadActiveDevice(false);
+                    if ((pKeyStates[nKey] & nPressedBit) == 0)
+                        return;
+
+                    SetPadActiveDevice(false);
+                    if (bGameInputBlocked)
+                        pKeyStates[nKey] = 0;
                 });
             }
 
@@ -176,8 +236,16 @@ public:
                     if (pFrameState == nullptr || nButton < 0 || nButton >= nMouseButtonCount)
                         return;
 
-                    if (pFrameState[nMouseButtons + nButton] & nPressedBit)
+                    auto& nButtonState = pFrameState[nMouseButtons + nButton];
+                    const auto bPressed = (nButtonState & nPressedBit) != 0;
+                    if (bPressed)
                         SetPadActiveDevice(false);
+
+                    if (!bGameInputBlocked)
+                        return;
+
+                    KeepBlockedButton(nButton, bPressed);
+                    nButtonState = 0;
                 });
             }
 
@@ -190,8 +258,11 @@ public:
                     if (pAccumulator == nullptr)
                         return;
 
-                    if (pAccumulator[0] != 0 || pAccumulator[1] != 0)
+                    if (pAccumulator[nMouseX] != 0 || pAccumulator[nMouseY] != 0)
                         SetPadActiveDevice(false);
+
+                    if (bGameInputBlocked)
+                        KeepBlockedMotion(pAccumulator);
                 });
             }
         };

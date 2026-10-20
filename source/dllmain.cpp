@@ -52,6 +52,7 @@ import debug;
 import logging;
 import effectsorting;
 import jackalfixmenu;
+import settingspanel;
 import updatecheck;
 
 void Init()

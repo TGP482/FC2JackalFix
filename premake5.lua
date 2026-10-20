@@ -77,6 +77,7 @@ workspace "FC2JackalFix"
    includedirs { "external/injector/safetyhook/include" }
    includedirs { "external/injector/zydis" }
    includedirs { "external/inireader" }
+   includedirs { "external/imgui" }
    files { "external/hooking/Hooking.Patterns.h", "external/hooking/Hooking.Patterns.cpp" }
    -- Listed one by one rather than globbed. Wildcards over the submodules produced a project with
    -- no safetyhook or zydis sources in it at all, which compiles fine and only fails at link time
@@ -93,6 +94,14 @@ workspace "FC2JackalFix"
       "external/injector/safetyhook/src/vmt_hook.cpp",
    }
    files { "external/injector/zydis/Zydis.h", "external/injector/zydis/Zydis.c" }
+   files {
+      "external/imgui/imgui.cpp",
+      "external/imgui/imgui_draw.cpp",
+      "external/imgui/imgui_tables.cpp",
+      "external/imgui/imgui_widgets.cpp",
+      "external/imgui/backends/imgui_impl_dx9.cpp",
+      "external/imgui/backends/imgui_impl_dx10.cpp",
+   }
    files { "data/bin/plugins/*.ini" }
 
    links { "winmm" } -- timeBeginPeriod, for loadingscreen.ixx

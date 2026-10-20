@@ -6,7 +6,7 @@ The latest version of [Far Cry 2: Jackal Fix](https://github.com/TGP482/FC2Jacka
 
 ### Game Setup
 - After downloading Far Cry 2: Jackal Fix, extract the contents to your Far Cry 2 directory and overwrite all existing files when prompted.
-- You can adjust the mod settings inside the in-game options menu whilst the game is running or alternatively inside `FC2JackalFix.ini` located in the `bin\Plugins` folder.
+- Jackal Fix Options can be adjusted in the in-game options menu while the game is running, or through the Settings overlay, which is opened with <kbd>F10</kbd> by default. They can also be adjusted inside `FC2JackalFix.ini` located in the `bin\Plugins` folder.
 <img width="1920" height="1080" alt="Far Cry 2 Screenshot 2026 08 22 - 19 41 10 68" src="https://github.com/user-attachments/assets/a186c60a-e1f1-4c69-a694-2119ba6bd70e" />
 
 > [!NOTE]

@@ -65,6 +65,24 @@ public:
         static Event<> IniFileChange;
         return IniFileChange;
     }
+    // Every frame once the scene is drawn, before Present; the IDirect3DDevice9.
+    static Event<void*>& onFrameEndDX9Event()
+    {
+        static Event<void*> FrameEndDX9Event;
+        return FrameEndDX9Event;
+    }
+    // The same for Direct3D 10; the ID3D10Device and its IDXGISwapChain.
+    static Event<void*, void*>& onFrameEndDX10Event()
+    {
+        static Event<void*, void*> FrameEndDX10Event;
+        return FrameEndDX10Event;
+    }
+    // D3D9, right before Reset; D3DPOOL_DEFAULT resources and state blocks must be gone.
+    static Event<>& onDeviceResetEvent()
+    {
+        static Event<> DeviceResetEvent;
+        return DeviceResetEvent;
+    }
     static Event<>& onShutdownEvent()
     {
         static Event<> ShutdownEvent;
