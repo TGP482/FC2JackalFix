@@ -5,6 +5,8 @@ module;
 #include <atomic>
 #include <cstring>
 #include <intrin.h>
+#include <d3d10.h>
+#include <dxgi.h>
 
 export module utilisation;
 
@@ -194,6 +196,33 @@ static void FrameQueueDepth(SafetyHookContext& regs)
     regs.eax = static_cast<uintptr_t>(nDepth);
 }
 
+// D3D10 has no fence ring, so DXGI's queue sets the run ahead: its default depth on, one frame off, so a
+// GPU bound frame rate paces the game like a frame cap.
+static constexpr UINT nDxgiDefaultLatency = 3;
+static constexpr UINT nPacedLatency = 1;
+
+static void ApplyFrameLatencyDX10(void* pDevice)
+{
+    static void* pAppliedDevice = nullptr;
+    static UINT nAppliedLatency = 0;
+
+    const auto nLatency = bUtilisation ? nDxgiDefaultLatency : nPacedLatency;
+    if (pDevice == pAppliedDevice && nLatency == nAppliedLatency)
+        return;
+
+    pAppliedDevice = pDevice;
+    nAppliedLatency = nLatency;
+
+    auto pDevice10 = static_cast<ID3D10Device*>(pDevice);
+    IDXGIDevice1* pDxgiDevice = nullptr;
+    auto hr = pDevice10->QueryInterface(__uuidof(IDXGIDevice1), reinterpret_cast<void**>(&pDxgiDevice));
+    if (FAILED(hr))
+        return;
+
+    pDxgiDevice->SetMaximumFrameLatency(nLatency);
+    pDxgiDevice->Release();
+}
+
 // One timer per limiter thread. INVALID_HANDLE_VALUE = not tried, null = unavailable, so the
 // create runs once. Never closed: the thread outlives the module.
 static HANDLE WaitableTimer(int64_t& nMargin)
@@ -324,6 +353,8 @@ public:
             // Limiter busy wait. Match+6 is the counter call.
             if (auto* p = dunia_find("DF F1 DD D8 76 ? E8 ? ? ? ? 8B C8 8B F9 2B BE 38 03 00 00 8B C2 1B 86 3C 03 00 00", 6))
                 FrameLimiterHook = safetyhook::create_mid(p, FrameLimiterWait);
+
+            JackalFix::onFrameEndDX10Event() += [](void* pDevice, void*) { ApplyFrameLatencyDX10(pDevice); };
         };
     }
 } Utilisation;
