@@ -424,6 +424,7 @@ static const MenuRow GraphicsRows[]
     Boolean(L"No Rim Lighting", PREF_NORIMLIGHTING, "Graphics", "NoRimLighting"),
     Boolean(L"No Sprint And Aim Blur", PREF_NOSPRINTAIMBLUR, "Graphics", "NoSprintAimBlur"),
     Range  (L"Saturation", PREF_SATURATION, "Graphics", "Saturation", VALUE_FLOAT, 0, 100, 5, 100.0f, L"%.2f"),
+    Boolean(L"Volumetric Fog", PREF_VOLUMETRICFOG, "Graphics", "VolumetricFog"),
 };
 
 static const MenuRow BeyondUltraRows[]
@@ -645,6 +646,7 @@ static const PrefDefault PrefDefaults[]
     { PREF_NORIMLIGHTING,           0   },
     { PREF_NOSPRINTAIMBLUR,         0   },
     { PREF_SATURATION,              50  }, // 0.50
+    { PREF_VOLUMETRICFOG,           0   },
 
     { PREF_BEYONDULTRAGEOMETRY,     0   },
     { PREF_BEYONDULTRASHADOWS,      0   },

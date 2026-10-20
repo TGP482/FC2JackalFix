@@ -31,6 +31,7 @@ import renderconfig;
 import rimlighting;
 import postfx;
 import saturation;
+import volumetrics;
 import borderless;
 import internalres;
 import affinity;

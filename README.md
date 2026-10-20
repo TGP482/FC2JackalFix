@@ -45,6 +45,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 - **No Rim Lighting** - Removes the rim lighting glow on the edges of characters, mainly visible at night.
 - **No Sprint And Aim Blur** - Removes the screen blur while sprinting and while aiming down sights.
 - **Saturation** - Adjust the saturation levels from the game's 0.5 default, range: 0.0 - 1.0.
+- **Volumetric Fog** - Adds volumetric height fog lit by the sun and moon, following the game's fog, weather and day and night cycle.
 
 ### Beyond Ultra
 - **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) 6x, (4) max draw distance.

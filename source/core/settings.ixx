@@ -42,6 +42,7 @@ export enum Pref
     PREF_NORIMLIGHTING,
     PREF_NOSPRINTAIMBLUR,
     PREF_SATURATION,
+    PREF_VOLUMETRICFOG,
     PREF_BEYONDULTRAGEOMETRY,
     PREF_BEYONDULTRASHADOWS,
     PREF_SHADOWRESOLUTION,
@@ -144,6 +145,7 @@ public:
         mPrefs[PREF_NOSPRINTAIMBLUR] = std::clamp(iniReader.ReadInteger("Graphics", "NoSprintAimBlur", 0), 0, 1);
 
         mPrefs[PREF_SATURATION] = std::clamp(iniReader.ReadFloat("Graphics", "Saturation", 0.5f), 0.0f, 4.0f);
+        mPrefs[PREF_VOLUMETRICFOG] = std::clamp(iniReader.ReadInteger("Graphics", "VolumetricFog", 0), 0, 1);
 
         mPrefs[PREF_BEYONDULTRAGEOMETRY] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraGeometry", 4), 0, 4);
         mPrefs[PREF_BEYONDULTRASHADOWS] = std::clamp(iniReader.ReadInteger("BeyondUltra", "BeyondUltraShadows", 1), 0, 1);
