@@ -100,11 +100,11 @@ export inline void ApplyAndWatch(std::function<void()> fn)
 
 // MSVC8 std::string as the game builds it: the buffer sits inline until it outgrows 16 bytes, then
 // the same field holds a pointer to it.
-static constexpr uintptr_t nDuniaStringBuffer = 0x04;
-static constexpr uintptr_t nDuniaStringLength = 0x14;
-static constexpr uintptr_t nDuniaStringCapacity = 0x18;
-static constexpr size_t nDuniaStringSize = 0x1C;
-static constexpr uint32_t nDuniaStringInlineCapacity = 16;
+export constexpr uintptr_t nDuniaStringBuffer = 0x04;
+export constexpr uintptr_t nDuniaStringLength = 0x14;
+export constexpr uintptr_t nDuniaStringCapacity = 0x18;
+export constexpr size_t nDuniaStringSize = 0x1C;
+export constexpr uint32_t nDuniaStringInlineCapacity = 16;
 
 export const char* ReadDuniaString(uintptr_t pStr, char* pBuf, size_t nBufSize)
 {

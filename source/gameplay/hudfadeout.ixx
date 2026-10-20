@@ -17,7 +17,7 @@ static constexpr ptrdiff_t nAmmoState = 0xAC;
 static constexpr ptrdiff_t nGrenadeState = 0xB0;
 static constexpr uint32_t  nStateShown = 2;
 
-// Into each countdown read, past the last top-up of the tick so nothing writes over what we set.
+// Into each countdown read, past the last top up of the tick so nothing writes over the value set here.
 static constexpr uintptr_t nAmmoReadOffset = 7;
 static constexpr uintptr_t nGrenadeReadOffset = 8;
 
@@ -58,9 +58,12 @@ static void ApplyFadeOut(SafetyHookContext& regs, ptrdiff_t nState)
     switch (nMode)
     {
     case nAlwaysHidden:
+    {
         // Zero holds a hidden group down; a group still up needs one tick left to run its hide.
-        *pTimer = *reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(regs.esi) + nState) == nStateShown ? fHideNow : 0.0f;
+        auto nGroupState = *reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(regs.esi) + nState);
+        *pTimer = nGroupState == nStateShown ? fHideNow : 0.0f;
         break;
+    }
 
     case nAlwaysVisible:
         *pTimer = fNeverFades;
@@ -110,14 +113,17 @@ public:
             auto health = dunia_pattern("C6 86 64 02 00 00 00 84 D2 74");
             auto draw = dunia_pattern("F3 0F 11 86 54 02 00 00 F3 0F 10 86 58 02 00 00");
 
-            // The ammo counter fades in from more than the state machine, so its two fade-in entries
+            // The ammo counter fades in from more than the state machine, so its two fade in entries
             // are stubbed out wholesale rather than chased one caller at a time. Both take only this,
             // so a bare return balances.
             auto bullets = dunia_pattern("83 EC 0C 56 8B F1 57 8B 7E 04 85 FF 0F 84 BE 00 00 00 E8 ? ? ? ? "
                                          "83 F8 03 0F 87 84 00 00 00 FF 24 85 ? ? ? ? 8B 46 08");
             auto rockets = dunia_pattern("56 8B F1 E8 ? ? ? ? 8B 4E 2C 85 C9 74 19 6A 00 6A 01 6A 00");
 
-            if (ammo.empty() || grenades.empty() || health.empty() || draw.empty() || bullets.empty() || rockets.empty())
+            if (ammo.empty() || grenades.empty() || health.empty() || draw.empty())
+                return;
+
+            if (bullets.empty() || rockets.empty())
                 return;
 
             nDrawSkip = reinterpret_cast<uintptr_t>(draw.get_first(nDrawSkipOffset));
@@ -127,7 +133,10 @@ public:
                 Hooks.emplace_back(safetyhook::create_mid(ammo.get(i).get<void>(nAmmoReadOffset), ApplyToAmmo));
 
             for (size_t i = 0; i < grenades.size(); i++)
-                Hooks.emplace_back(safetyhook::create_mid(grenades.get(i).get<void>(nGrenadeReadOffset), ApplyToGrenades));
+            {
+                auto* pRead = grenades.get(i).get<void>(nGrenadeReadOffset);
+                Hooks.emplace_back(safetyhook::create_mid(pRead, ApplyToGrenades));
+            }
 
             Hooks.emplace_back(safetyhook::create_mid(health.get_first(nHealthFlagOffset), ApplyToHealth));
             Hooks.emplace_back(safetyhook::create_mid(draw.get_first(nDrawTimerOffset), ApplyToWeaponDraw));

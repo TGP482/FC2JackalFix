@@ -8,25 +8,27 @@ import common;
 import dunia;
 import settings;
 
-static constexpr int32_t SKIP_NONE = 0;
-static constexpr int32_t SKIP_POPUPS = 1;
-static constexpr int32_t SKIP_FLOATING = 2;
+static constexpr int32_t nSkipNone = 0;
+static constexpr int32_t nSkipPopups = 1;
+static constexpr int32_t nSkipFloating = 2;
 
 // Consulted by the hooks, which stay installed either way, so the ini is live.
-static int32_t nSkipTutorials = SKIP_NONE;
+static int32_t nSkipTutorials = nSkipNone;
 
 // CGameMessageBoxHelper::ActiveFloatingId.
-static constexpr uintptr_t HELPER_ACTIVEFLOATINGID = 0x18;
+static constexpr uintptr_t nHelperActiveFloatingId = 0x18;
 
 // The id the manager writes when nothing is up.
-static constexpr uint32_t MSGBOXID_NONE = 0xFFFFFFFF;
+static constexpr uint32_t nMessageBoxIdNone = 0xFFFFFFFF;
 
 // Domino register. Handle comes back in EDX:EAX, id low and a constant 2 high.
-using DominoRegister_t = uint64_t(__fastcall*)(void* pRegistry, void* pEdx, void* pObject, const char* pszMethod);
+using DominoRegister_t = uint64_t(__fastcall*)(void* pRegistry, void* pEdx, void* pObject,
+    const char* pszMethod);
 
 // Domino invoke. The handle goes back as two arguments, which must stay adjacent on the stack:
 // the function takes the address of the first to rebuild the key.
-using DominoInvoke_t = void(__fastcall*)(void* pRegistry, void* pEdx, uint32_t nId, uint32_t nType, const void* pArgument);
+using DominoInvoke_t = void(__fastcall*)(void* pRegistry, void* pEdx, uint32_t nId, uint32_t nType,
+    const void* pArgument);
 
 // Domino release.
 using DominoRelease_t = void(__fastcall*)(void* pRegistry, void* pEdx, uint32_t nId, uint32_t nType);
@@ -52,11 +54,6 @@ struct DuniaString
     uint32_t nCapacity;
 };
 static_assert(sizeof(DuniaString) == 0x1C, "MSVC8 std::string is 0x1C bytes");
-
-static void* CallTarget(uint8_t* pCall)
-{
-    return pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1);
-}
 
 // Answers the script's Event_Continue without a box ever existing.
 static void FireContinue(void* pObject, const char* pszMethod)
@@ -91,12 +88,13 @@ static void HideActiveFloating(void* pHelper)
     if (!pManager)
         return;
 
-    auto& nId = *reinterpret_cast<uint32_t*>(reinterpret_cast<uintptr_t>(pHelper) + HELPER_ACTIVEFLOATINGID);
-    if (nId == MSGBOXID_NONE)
+    auto nHelper = reinterpret_cast<uintptr_t>(pHelper);
+    auto& nId = *reinterpret_cast<uint32_t*>(nHelper + nHelperActiveFloatingId);
+    if (nId == nMessageBoxIdNone)
         return;
 
     HideMessageBox(pManager, nullptr, &nId);
-    nId = MSGBOXID_NONE;
+    nId = nMessageBoxIdNone;
 }
 
 static SafetyHookInline TutorialMessageBoxHook{};
@@ -107,9 +105,10 @@ static SafetyHookInline FloatingTutorialMessageBoxHook{};
 static void __fastcall TutorialMessageBox(void* pHelper, void* pEdx, const char* pszTitle, const char* pszText,
     const char* pszButton, const char* pszActionMap, void* pObject, const char* pszMethod)
 {
-    if (nSkipTutorials < SKIP_POPUPS)
+    if (nSkipTutorials < nSkipPopups)
     {
-        TutorialMessageBoxHook.fastcall(pHelper, pEdx, pszTitle, pszText, pszButton, pszActionMap, pObject, pszMethod);
+        TutorialMessageBoxHook.fastcall(pHelper, pEdx, pszTitle, pszText, pszButton, pszActionMap, pObject,
+            pszMethod);
         return;
     }
 
@@ -117,12 +116,14 @@ static void __fastcall TutorialMessageBox(void* pHelper, void* pEdx, const char*
 }
 
 // The same one argument wider: a hud.mgb page id ahead of the captions. RET 0x1C.
-static void __fastcall CustomTutorialMessageBox(void* pHelper, void* pEdx, const char* pszPage, const char* pszTitle,
-    const char* pszText, const char* pszButton, const char* pszActionMap, void* pObject, const char* pszMethod)
+static void __fastcall CustomTutorialMessageBox(void* pHelper, void* pEdx, const char* pszPage,
+    const char* pszTitle, const char* pszText, const char* pszButton, const char* pszActionMap, void* pObject,
+    const char* pszMethod)
 {
-    if (nSkipTutorials < SKIP_POPUPS)
+    if (nSkipTutorials < nSkipPopups)
     {
-        CustomTutorialMessageBoxHook.fastcall(pHelper, pEdx, pszPage, pszTitle, pszText, pszButton, pszActionMap, pObject, pszMethod);
+        CustomTutorialMessageBoxHook.fastcall(pHelper, pEdx, pszPage, pszTitle, pszText, pszButton, pszActionMap,
+            pObject, pszMethod);
         return;
     }
 
@@ -131,16 +132,28 @@ static void __fastcall CustomTutorialMessageBox(void* pHelper, void* pEdx, const
 
 // Returns an MSVC8 std::string by value, so the caller's buffer is the first stack argument. Run
 // then taken down rather than skipped: the script keeps the string and its later Hide no-ops.
-static void* __fastcall FloatingTutorialMessageBox(void* pHelper, void* pEdx, void* pReturn, const char* pszText,
-    const char* pszActionMap, void* pObject, const char* pszMethod)
+static void* __fastcall FloatingTutorialMessageBox(void* pHelper, void* pEdx, void* pReturn,
+    const char* pszText, const char* pszActionMap, void* pObject, const char* pszMethod)
 {
-    auto* pResult = FloatingTutorialMessageBoxHook.fastcall<void*>(pHelper, pEdx, pReturn, pszText, pszActionMap, pObject, pszMethod);
+    auto* pResult = FloatingTutorialMessageBoxHook.fastcall<void*>(pHelper, pEdx, pReturn, pszText, pszActionMap,
+        pObject, pszMethod);
 
-    if (nSkipTutorials >= SKIP_FLOATING)
+    if (nSkipTutorials >= nSkipFloating)
         HideActiveFloating(pHelper);
 
     return pResult;
 }
+
+// Into the popup prologue: the domino registry global and the register call.
+static constexpr ptrdiff_t nPopupRegistry = 0x2E;
+static constexpr ptrdiff_t nPopupRegisterCall = 0x32;
+
+// Into the release loop: the release call.
+static constexpr ptrdiff_t nReleaseCall = 0x0F;
+
+// Into the floating box replace path: the manager global and the hide call.
+static constexpr ptrdiff_t nHideManager = 0x17;
+static constexpr ptrdiff_t nHideCall = 0x1C;
 
 class TutorialMessages
 {
@@ -151,7 +164,7 @@ public:
         {
             BindInt(nSkipTutorials, PREF_SKIPTUTORIALS);
 
-            // Popup prologue: +0x2E is the domino registry global, +0x32 the register call.
+            // Popup prologue.
             auto* pPopup = static_cast<uint8_t*>(dunia_find(
                 "81 EC 80 01 00 00 8B 84 24 98 01 00 00 53 55 56 57 50 51 89 4C 24 20 "
                 "8B 8C 24 AC 01 00 00 33 DB 3B CB 8B C4 89 08 74 04 83 41 04 01 8B 0D ? ? ? ? E8"));
@@ -170,15 +183,15 @@ public:
                 return;
 
             // Release shares its prologue with other functions, so it is reached through the
-            // release loop at the tail of the helper's result handler; the CALL is at +0x0F.
-            auto* pRelease = static_cast<uint8_t*>(dunia_find("74 19 8B 46 04 8B 0E 50 51 8B 0D ? ? ? ? E8", 0x0F));
+            // release loop at the tail of the helper's result handler.
+            auto* pRelease = dunia_find("74 19 8B 46 04 8B 0E 50 51 8B 0D ? ? ? ? E8", nReleaseCall);
             if (!pRelease)
                 return;
 
-            ppDominoRegistry = *reinterpret_cast<void***>(pPopup + 0x2E);
-            DominoRegister = reinterpret_cast<DominoRegister_t>(CallTarget(pPopup + 0x32));
+            ppDominoRegistry = *reinterpret_cast<void***>(pPopup + nPopupRegistry);
+            DominoRegister = reinterpret_cast<DominoRegister_t>(dunia_call_target(pPopup + nPopupRegisterCall));
             DominoInvoke = reinterpret_cast<DominoInvoke_t>(pInvoke);
-            DominoRelease = reinterpret_cast<DominoRelease_t>(CallTarget(pRelease));
+            DominoRelease = reinterpret_cast<DominoRelease_t>(dunia_call_target(pRelease));
 
             if (!ppDominoRegistry || !DominoRegister || !DominoInvoke || !DominoRelease)
                 return;
@@ -186,18 +199,19 @@ public:
             TutorialMessageBoxHook = safetyhook::create_inline(pPopup, TutorialMessageBox);
             CustomTutorialMessageBoxHook = safetyhook::create_inline(pCustom, CustomTutorialMessageBox);
 
-            // Floating hints below; the pop-up halves stay installed even if this does not resolve.
+            // Floating hints below; the pop up halves stay installed even if this does not resolve.
             auto* pFloating = dunia_find("81 EC AC 01 00 00 53 55 56 57 8D 44 24 13 89 4C 24 18 50 8D 4C 24 24 33 DB BE");
             if (!pFloating)
                 return;
 
-            // The replace half of the same function: manager global at +0x17, hide call at +0x1C.
-            auto* pHide = static_cast<uint8_t*>(dunia_find("8B 7C 24 20 8B 57 18 8D 77 18 83 C4 08 3B 15 ? ? ? ? 74 0C 8B 0D ? ? ? ? 56 E8"));
+            // The replace half of the same function.
+            auto* pHide = static_cast<uint8_t*>(dunia_find(
+                "8B 7C 24 20 8B 57 18 8D 77 18 83 C4 08 3B 15 ? ? ? ? 74 0C 8B 0D ? ? ? ? 56 E8"));
             if (!pHide)
                 return;
 
-            ppMessageBoxManager = *reinterpret_cast<void***>(pHide + 0x17);
-            HideMessageBox = reinterpret_cast<HideMessageBox_t>(CallTarget(pHide + 0x1C));
+            ppMessageBoxManager = *reinterpret_cast<void***>(pHide + nHideManager);
+            HideMessageBox = reinterpret_cast<HideMessageBox_t>(dunia_call_target(pHide + nHideCall));
 
             if (!ppMessageBoxManager || !HideMessageBox)
                 return;

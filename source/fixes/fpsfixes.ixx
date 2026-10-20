@@ -129,7 +129,8 @@ static float UpwardVelocity(uintptr_t nInput)
 }
 
 // hkpCharacterStateInAir::change. Entered __thiscall, so ECX is carried through the trampoline.
-static void __fastcall InAirChange(void* pThis, void* pEdx, void* pContext, void* pInput, void* pOutput)
+static void __fastcall InAirChange(void* pThis, void* pEdx, void* pContext, void* pInput,
+    void* pOutput)
 {
     auto* pSupported = reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(pInput) + nInputIsSupported);
     const auto nSupported = *pSupported;
@@ -139,7 +140,7 @@ static void __fastcall InAirChange(void* pThis, void* pEdx, void* pContext, void
 
     InAirChangeHook.fastcall(pThis, pEdx, pContext, pInput, pOutput);
 
-    // Restored unconditionally: the states at controller+0x64 and +0x68 read the flag again this frame.
+    // Restored either way: the states at controller+0x64 and +0x68 read the flag again this frame.
     *pSupported = nSupported;
 }
 
@@ -173,33 +174,33 @@ public:
     FpsFixes()
     {
         JackalFix::onDuniaInitEvent() += []()
+        {
+            // Matched from entry through the m_isSupported test and the setState it guards.
+            if (auto* p = dunia_find("8B 44 24 08 80 78 31 00 74 14 8B 4C 24 0C 51 8B 4C 24 08 50 6A 00 E8 ? ? ? ? C2 0C 00 80 78 30 00"))
+                InAirChangeHook = safetyhook::create_inline(p, InAirChange);
+
+            // Unique from the this-pointer save on; the prologue's absolutes are wildcarded.
+            if (auto* p = dunia_find("55 8B EC 83 E4 F0 81 EC 14 01 00 00 A1 ? ? ? ? 53 8B 1D ? ? ? ? 56 57 8B F1 50 89 74 24 4C FF D3 8B C8 8B 79 04"))
+                CheckSupportHook = safetyhook::create_inline(p, CheckSupport);
+
+            // Root motion to desired velocity, matched from entry through the two out-parameter LEAs.
+            if (auto* p = dunia_find("83 EC 1C 56 8B 74 24 24 8D 44 24 04 50 8D 4C 24 0C 51 8B CE E8 ? ? ? ? F3 0F 10 54 24 28"))
+                RootMotionSpeedHook = safetyhook::create_mid(p, RootMotionSpeed);
+
+            // The GUI element's play, matched from the id fetch through the call.
+            auto guiSoundPattern = dunia_pattern("56 E8 ? ? ? ? 8B F0 83 C4 04 3B 35 ? ? ? ? 74 1C E8 ? ? ? ? D9 EE 8B 10 51 D9 1C 24 6A 00 6A 0C 8B C8 8B 82 9C 00 00 00 56 FF D0 5E 83 C4 20 C2 04 00");
+            if (!guiSoundPattern.empty())
             {
-                // Matched from entry through the m_isSupported test and the setState it guards.
-                if (auto* p = dunia_find("8B 44 24 08 80 78 31 00 74 14 8B 4C 24 0C 51 8B 4C 24 08 50 6A 00 E8 ? ? ? ? C2 0C 00 80 78 30 00"))
-                    InAirChangeHook = safetyhook::create_inline(p, InAirChange);
+                pGuiSoundNotFound = *guiSoundPattern.get_first<const int32_t*>(nGuiSoundNotFound);
+                GuiSoundHook = safetyhook::create_mid(guiSoundPattern.get_first(nGuiSoundCompare), GuiSound);
+            }
 
-                // Unique from the this-pointer save on; the prologue's absolutes are wildcarded.
-                if (auto* p = dunia_find("55 8B EC 83 E4 F0 81 EC 14 01 00 00 A1 ? ? ? ? 53 8B 1D ? ? ? ? 56 57 8B F1 50 89 74 24 4C FF D3 8B C8 8B 79 04"))
-                    CheckSupportHook = safetyhook::create_inline(p, CheckSupport);
+            // The counter's two step sites, parting only on the sign of the ADD, the last byte of each.
+            if (auto* p = dunia_find("F3 0F 10 86 B8 02 00 00 8B 86 C0 02 00 00 85 C0 F3 0F 5C 44 24 28 F3 0F 11 86 B8 02 00 00 76 50 83 86 CC 02 00 00 01", nCounterStepTest))
+                CounterStepUpHook = safetyhook::create_mid(p, CounterStep);
 
-                // Root motion to desired velocity, matched from entry through the two out-parameter LEAs.
-                if (auto* p = dunia_find("83 EC 1C 56 8B 74 24 24 8D 44 24 04 50 8D 4C 24 0C 51 8B CE E8 ? ? ? ? F3 0F 10 54 24 28"))
-                    RootMotionSpeedHook = safetyhook::create_mid(p, RootMotionSpeed);
-
-                // The GUI element's play, matched from the id fetch through the call.
-                auto guiSoundPattern = dunia_pattern("56 E8 ? ? ? ? 8B F0 83 C4 04 3B 35 ? ? ? ? 74 1C E8 ? ? ? ? D9 EE 8B 10 51 D9 1C 24 6A 00 6A 0C 8B C8 8B 82 9C 00 00 00 56 FF D0 5E 83 C4 20 C2 04 00");
-                if (!guiSoundPattern.empty())
-                {
-                    pGuiSoundNotFound = *guiSoundPattern.get_first<const int32_t*>(nGuiSoundNotFound);
-                    GuiSoundHook = safetyhook::create_mid(guiSoundPattern.get_first(nGuiSoundCompare), GuiSound);
-                }
-
-                // The counter's two step sites, parting only on the sign of the ADD, the last byte of each.
-                if (auto* p = dunia_find("F3 0F 10 86 B8 02 00 00 8B 86 C0 02 00 00 85 C0 F3 0F 5C 44 24 28 F3 0F 11 86 B8 02 00 00 76 50 83 86 CC 02 00 00 01", nCounterStepTest))
-                    CounterStepUpHook = safetyhook::create_mid(p, CounterStep);
-
-                if (auto* p = dunia_find("F3 0F 10 86 B8 02 00 00 8B 86 C0 02 00 00 85 C0 F3 0F 5C 44 24 28 F3 0F 11 86 B8 02 00 00 76 50 83 86 CC 02 00 00 FF", nCounterStepTest))
-                    CounterStepDownHook = safetyhook::create_mid(p, CounterStep);
-            };
+            if (auto* p = dunia_find("F3 0F 10 86 B8 02 00 00 8B 86 C0 02 00 00 85 C0 F3 0F 5C 44 24 28 F3 0F 11 86 B8 02 00 00 76 50 83 86 CC 02 00 00 FF", nCounterStepTest))
+                CounterStepDownHook = safetyhook::create_mid(p, CounterStep);
+        };
     }
 } FpsFixes;

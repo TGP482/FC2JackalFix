@@ -15,6 +15,16 @@ static constexpr uintptr_t nHitBordersOffset = 0x75;
 
 static std::atomic<bool> bNoHitIndicator{ false };
 
+static uintptr_t nHitBordersReturn = 0;
+static SafetyHookMid PlayerDamagedHook{};
+
+// Jumps to the loop's exhausted path, so the refcount release still runs.
+static void SkipHitBorders(SafetyHookContext& regs)
+{
+    if (bNoHitIndicator.load(std::memory_order_relaxed))
+        regs.eip = nHitBordersReturn;
+}
+
 class HitIndicator
 {
 public:
@@ -27,15 +37,10 @@ public:
             if (pattern.empty())
                 return;
 
-            static uintptr_t nHitBordersReturn = reinterpret_cast<uintptr_t>(pattern.get_first(nHitBordersOffset));
+            nHitBordersReturn = reinterpret_cast<uintptr_t>(pattern.get_first(nHitBordersOffset));
 
-            // Installed unconditionally so the toggle flips live; jumps to the loop's exhausted
-            // path, so the refcount release still runs.
-            static auto PlayerDamagedHook = safetyhook::create_mid(pattern.get_first(nLoopHeadOffset), [](SafetyHookContext& regs)
-            {
-                if (bNoHitIndicator.load(std::memory_order_relaxed))
-                    regs.eip = nHitBordersReturn;
-            });
+            // Installed either way so the toggle flips live.
+            PlayerDamagedHook = safetyhook::create_mid(pattern.get_first(nLoopHeadOffset), SkipHitBorders);
 
             BindBool(bNoHitIndicator, PREF_NOHITINDICATOR);
         };

@@ -51,6 +51,13 @@ export void* dunia_find(std::string_view steam, std::string_view gog, ptrdiff_t 
     return dunia_find(ByBuild(steam, gog), offset);
 }
 
+// Target of the E8 call or E9 jump rel32 at pInstruction.
+export uint8_t* dunia_call_target(void* pInstruction)
+{
+    auto* pCode = static_cast<uint8_t*>(pInstruction);
+    return pCode + 5 + *reinterpret_cast<int32_t*>(pCode + 1);
+}
+
 // CPawnInputListener::Update, the per frame input pass. Several modules hook inside this pattern, so
 // it is found once while the bytes are still stock.
 export void* dunia_input_pass()

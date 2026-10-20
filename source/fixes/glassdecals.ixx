@@ -25,7 +25,8 @@ static SafetyHookInline DecalPostLoadHook{};
 static void __fastcall DecalPostLoad(uint8_t* pDescription, void* pEdx)
 {
     // Before the original, so the value reaches both the expiry stamp and the shader constant.
-    if (pDescription != nullptr && *reinterpret_cast<uint32_t*>(pDescription + nDecalNameHash) == nBaseGlass)
+    auto bGlass = pDescription != nullptr && *reinterpret_cast<uint32_t*>(pDescription + nDecalNameHash) == nBaseGlass;
+    if (bGlass)
         *reinterpret_cast<float*>(pDescription + nDecalLifeTime) = fPermanentLifeTime;
 
     DecalPostLoadHook.fastcall(pDescription, pEdx);

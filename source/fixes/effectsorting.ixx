@@ -166,7 +166,8 @@ static bool IsCharacterTransparent(uint8_t* pDrawItem)
     return nHairTechnique != 0 && (nLow & nTechniqueIndexMask) == nHairTechnique;
 }
 
-static void __fastcall QueueDrawItem(void* pDrawList, void* pEdx, uint8_t* pDrawItem, int32_t nSortKey, float fDistance)
+static void __fastcall QueueDrawItem(void* pDrawList, void* pEdx, uint8_t* pDrawItem, int32_t nSortKey,
+    float fDistance)
 {
     // Clamped rather than assigned, so a material that already asks to draw further back keeps it.
     if (nSortKey > nCharacterSortKey && IsCharacterTransparent(pDrawItem))

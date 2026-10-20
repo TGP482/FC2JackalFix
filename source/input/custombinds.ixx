@@ -206,6 +206,15 @@ static uint32_t nControlKey[nBindCount]{};
 // second file redefining the map from doubling the binding and lets the reload put it back.
 static void* pBoundMap[nBindCount]{};
 
+// When the "press a key" capture last took a key, so that press is not also a menu control.
+static constexpr uint64_t nCaptureLife = 250;
+static uint64_t nCaptureTime = 0;
+
+export bool IsBindJustCaptured()
+{
+    return GetTickCount64() - nCaptureTime <= nCaptureLife;
+}
+
 static void SetWideString(uintptr_t pString, const wchar_t* pText)
 {
     if (WideAssign != nullptr)
@@ -465,6 +474,9 @@ private:
     static char __fastcall ApplyBinding(void* pPage, void* pEdx, void* pElement, const uint32_t* pPair,
         char bCheckConflict)
     {
+        if (bCheckConflict != 0)
+            nCaptureTime = GetTickCount64();
+
         if (bCheckConflict != 0 && pPair != nullptr && pPair[0] == nDeviceKeyboard && pPair[1] == nKeyEscape)
         {
             pCapturePage = pPage;

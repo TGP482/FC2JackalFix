@@ -13,7 +13,7 @@ import dunia;
 static constexpr const char* pszChurchAttackMission = "Missions/StoryMissions/A1SM03/A1SM03_ChurchAttack";
 
 // CBaseMission::SetState arm 1.
-static constexpr int32_t MISSIONSTATE_STARTED = 1;
+static constexpr int32_t nMissionStateStarted = 1;
 
 // Five bindings share this function, but their globals are relocated and cannot be in the pattern.
 static constexpr ptrdiff_t nResolveGuardOperand = 0x14;
@@ -58,8 +58,7 @@ static bool PathIs(const char* pszPath, const char* pszExpected)
     return false;
 }
 
-// One dword, either a char* or an MSVC8 std::string*; both are tried, a std::string under 16
-// characters keeping its text inline at +0x04.
+// One dword, either a char* or an MSVC8 std::string*, so both are tried.
 static const char* PathFromArgument(const void* pArg)
 {
     if (pArg == nullptr || IsBadReadPtr(pArg, 4))
@@ -69,16 +68,20 @@ static const char* PathFromArgument(const void* pArg)
     if (!IsBadReadPtr(pszDirect, 1) && *pszDirect >= 0x20 && *pszDirect < 0x7F)
         return pszDirect;
 
-    if (IsBadReadPtr(pArg, 0x1C))
+    if (IsBadReadPtr(pArg, nDuniaStringSize))
         return nullptr;
 
-    const auto nSize = *(const uint32_t*)((uintptr_t)pArg + 0x14);
-    const auto nCapacity = *(const uint32_t*)((uintptr_t)pArg + 0x18);
+    const auto nBase = reinterpret_cast<uintptr_t>(pArg);
+    const auto nSize = *(const uint32_t*)(nBase + nDuniaStringLength);
+    const auto nCapacity = *(const uint32_t*)(nBase + nDuniaStringCapacity);
     if (nSize == 0 || nSize > nMaxPathLength || nCapacity > 0x10000)
         return nullptr;
 
-    auto* pszInline = (const char*)((uintptr_t)pArg + 4);
-    return (nCapacity >= 16) ? *(const char* const*)pszInline : pszInline;
+    auto* pszInline = (const char*)(nBase + nDuniaStringBuffer);
+    if (nCapacity >= nDuniaStringInlineCapacity)
+        return *(const char* const*)pszInline;
+
+    return pszInline;
 }
 
 // __thiscall with one stack argument and a callee cleanup of four bytes.
@@ -94,12 +97,13 @@ static void* __fastcall GetMission(void* pMgr, void* pEdx, const void* pPath)
     return pMission;
 }
 
-// Same shape. Ahead of the original, so the buddies move before the mission starts, as the script has it.
+// Same shape. Runs ahead of the original, so the buddies move before the mission starts, as the
+// script has it.
 static SafetyHookInline SetStateHook{};
 
 static void __fastcall SetState(void* pMission, void* pEdx, int32_t nFlag)
 {
-    if (pMission == pChurchMission && nFlag == MISSIONSTATE_STARTED
+    if (pMission == pChurchMission && nFlag == nMissionStateStarted
         && pBuddiesMgr != nullptr && SetBetrayedBuddiesMissing != nullptr)
     {
         SetBetrayedBuddiesMissing(pBuddiesMgr, nullptr);

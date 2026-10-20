@@ -41,6 +41,12 @@ static NameKey KeyPostCombatMultiplier = { "fPostCombatMultiplier", 0 };
 // NameHash::Set, the engine's own hash, so hashes match the archive.
 using NameHash_t = void(__fastcall*)(uint32_t* pOut, void* pEdx, const char* pszName, int32_t, int32_t);
 
+// Node vtable methods, all __thiscall.
+using GetChildCount_t = uint32_t(__fastcall*)(FCBNode*, void*);
+using GetChild_t = FCBNode*(__fastcall*)(FCBNode*, void*, uint32_t);
+using GetChildByName_t = FCBNode*(__fastcall*)(FCBNode*, void*, const NameKey*);
+using GetProperty_t = uint8_t(__fastcall*)(FCBNode*, void*, const NameKey*, void**);
+
 static NameHash_t NameHash = nullptr;
 
 // Stock values guard against shifting an already-corrected prototype twice.
@@ -72,7 +78,10 @@ static bool NameIs(const char* pszName, const char* pszExpected)
     if (pszName == nullptr)
         return false;
 
-    auto lower = [](uint8_t c) -> uint8_t { return (c >= 'A' && c <= 'Z') ? static_cast<uint8_t>(c + ('a' - 'A')) : c; };
+    auto lower = [](uint8_t c) -> uint8_t
+    {
+        return (c >= 'A' && c <= 'Z') ? static_cast<uint8_t>(c + ('a' - 'A')) : c;
+    };
 
     for (size_t i = 0; i < nMaxNameLength; ++i)
     {
@@ -111,12 +120,14 @@ static Prototype ClassifyPrototype(const char* pszHidName)
 
 static uint32_t GetChildCount(FCBNode* pNode)
 {
-    return reinterpret_cast<uint32_t(__fastcall*)(FCBNode*, void*)>(pNode->ppVTable[nNodeGetChildCount])(pNode, nullptr);
+    auto pfnGet = reinterpret_cast<GetChildCount_t>(pNode->ppVTable[nNodeGetChildCount]);
+    return pfnGet(pNode, nullptr);
 }
 
 static FCBNode* GetChild(FCBNode* pNode, uint32_t nIndex)
 {
-    return reinterpret_cast<FCBNode*(__fastcall*)(FCBNode*, void*, uint32_t)>(pNode->ppVTable[nNodeGetChild])(pNode, nullptr, nIndex);
+    auto pfnGet = reinterpret_cast<GetChild_t>(pNode->ppVTable[nNodeGetChild]);
+    return pfnGet(pNode, nullptr, nIndex);
 }
 
 static FCBNode* GetChildByName(FCBNode* pNode, const NameKey& key)
@@ -124,14 +135,15 @@ static FCBNode* GetChildByName(FCBNode* pNode, const NameKey& key)
     if (pNode == nullptr || pNode->ppVTable == nullptr)
         return nullptr;
 
-    return reinterpret_cast<FCBNode*(__fastcall*)(FCBNode*, void*, const NameKey*)>(pNode->ppVTable[nNodeGetChildByName])(pNode, nullptr, &key);
+    auto pfnGet = reinterpret_cast<GetChildByName_t>(pNode->ppVTable[nNodeGetChildByName]);
+    return pfnGet(pNode, nullptr, &key);
 }
 
 // Pointer into the loaded .fcb buffer, or null if the node lacks the property.
 static void* GetProperty(FCBNode* pNode, const NameKey& key)
 {
     void* pValue = nullptr;
-    const auto pfnGet = reinterpret_cast<uint8_t(__fastcall*)(FCBNode*, void*, const NameKey*, void**)>(pNode->ppVTable[nNodeGetProperty]);
+    auto pfnGet = reinterpret_cast<GetProperty_t>(pNode->ppVTable[nNodeGetProperty]);
     return pfnGet(pNode, nullptr, &key, &pValue) != 0 ? pValue : nullptr;
 }
 
@@ -219,7 +231,8 @@ static void PatchLibrary(FCBNode* pRoot)
             if (pEntity == nullptr || pEntity->ppVTable == nullptr)
                 continue;
 
-            const auto ePrototype = ClassifyPrototype(static_cast<const char*>(GetProperty(pEntity, KeyHidName)));
+            const auto* pszHidName = static_cast<const char*>(GetProperty(pEntity, KeyHidName));
+            const auto ePrototype = ClassifyPrototype(pszHidName);
             if (ePrototype != Prototype::None)
                 ApplyToSubtree(ePrototype, pPrototype, 0);
         }

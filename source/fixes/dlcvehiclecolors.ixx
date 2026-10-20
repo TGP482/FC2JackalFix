@@ -27,8 +27,12 @@ static constexpr MaterialRedirect Redirects[] =
 static constexpr ptrdiff_t nFindCallOpcode = 0x09;
 static constexpr ptrdiff_t nCreateCallOpcode = 0x29;
 static constexpr ptrdiff_t nClassDescriptorOperand = 0x22;
+
 // The descriptor moved in the GOG build.
-static uintptr_t MaterialClassDescriptorRva() { return ByBuild<uintptr_t>(0x1607AE0, 0x1556ED0); }
+static uintptr_t MaterialClassDescriptorRva()
+{
+    return ByBuild<uintptr_t>(0x1607AE0, 0x1556ED0);
+}
 
 // Prologues of the two resolved targets, checked before hooking.
 //   Find:   PUSH ECX / MOV EAX,[ESP+8] / PUSH ESI / MOV ESI,ECX
@@ -64,16 +68,12 @@ static void* __fastcall FindContainerResource(void* pContainer, void* pEdx, cons
     return FindContainerResourceHook.fastcall<void*>(pContainer, pEdx, Redirect(pId, nRedirected));
 }
 
-static void* __fastcall CreateContainerResource(void* pContainer, void* pEdx, const uint32_t* pId, void* pClassDescriptor)
+static void* __fastcall CreateContainerResource(void* pContainer, void* pEdx, const uint32_t* pId,
+    void* pClassDescriptor)
 {
     uint32_t nRedirected = 0;
-    return CreateContainerResourceHook.fastcall<void*>(pContainer, pEdx, Redirect(pId, nRedirected), pClassDescriptor);
-}
-
-// Decodes an E8 rel32 at pCall into its target.
-static uint8_t* ResolveCall(uint8_t* pCall)
-{
-    return pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1);
+    auto* pRedirected = Redirect(pId, nRedirected);
+    return CreateContainerResourceHook.fastcall<void*>(pContainer, pEdx, pRedirected, pClassDescriptor);
 }
 
 static bool StartsWith(const uint8_t* pCode, const uint8_t* pBytes, size_t nCount)
@@ -105,11 +105,12 @@ public:
             for (size_t i = 0; i < pattern.size(); ++i)
             {
                 auto* pFunction = pattern.get(i).get<uint8_t>(0);
-                if (*reinterpret_cast<uintptr_t*>(pFunction + nClassDescriptorOperand) != nMaterialClassDescriptor)
+                auto nClassDescriptor = *reinterpret_cast<uintptr_t*>(pFunction + nClassDescriptorOperand);
+                if (nClassDescriptor != nMaterialClassDescriptor)
                     continue;
 
-                auto* pFind = ResolveCall(pFunction + nFindCallOpcode);
-                auto* pCreate = ResolveCall(pFunction + nCreateCallOpcode);
+                auto* pFind = dunia_call_target(pFunction + nFindCallOpcode);
+                auto* pCreate = dunia_call_target(pFunction + nCreateCallOpcode);
 
                 if (!StartsWith(pFind, FindPrologue, sizeof(FindPrologue))
                     || !StartsWith(pCreate, CreatePrologue, sizeof(CreatePrologue)))
