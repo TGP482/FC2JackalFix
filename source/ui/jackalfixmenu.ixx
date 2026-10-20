@@ -14,6 +14,7 @@ import settings;
 import borderless;    // game window, for measuring render resolution percentages
 import renderconfig;  // the game's own quality presets
 import debug;         // network session state, which locks the debug rows
+import custombinds;   // the key capture, which must not also back out
 
 static constexpr ptrdiff_t nPageList          = 0x0C;  // row list widget
 static constexpr ptrdiff_t nPageDocument      = 0x14;  // page's MAGMA document
@@ -3378,11 +3379,121 @@ static void __fastcall BuildEntries(void* pPage, void* pEdx)
     AddEntry(pPage, nullptr, L"Jackal Fix Options", pDelegate != nullptr, pDelegate);
 }
 
+// Menu controls: Backspace and the right mouse button back out of a page, like Escape. Only when the
+// page leaves them unhandled, so a name field still deletes and a widget that takes the right button keeps it.
+
+// UI key codes are virtual keys: FUN_104F1A90 maps kb backspace to 8 and mouse rb to button 2.
+static constexpr uint32_t nUiKeyBackspace = VK_BACK;
+static constexpr uint32_t nUiKeyEscape = VK_ESCAPE;
+static constexpr uint32_t nUiRightButton = 2;
+
+// The screen manager's per device cursor bits, clear outside the menus.
+static constexpr ptrdiff_t nCursorEnabledMask = 0x29;
+
+// Key event as FUN_104F0FB0 builds it.
+struct UiKeyEvent
+{
+    uint32_t nCode;
+    uint16_t nChar;
+    uint8_t nDevice;
+    uint8_t nUnused;
+    uint32_t nRepeat;
+    uint32_t nCount;
+};
+
+// Pointer event: button, packed position, device.
+struct UiPointerEvent
+{
+    uint32_t nButton;
+    uint32_t nPosition;
+    uint8_t nDevice;
+};
+
+// The three CALLs into the screen manager's key down, key up and pointer down dispatch.
+static constexpr auto szKeyDownCall = "66 0F D6 40 10 8B 0D ? ? ? ? 56 83 C1 04 E8 ? ? ? ? 5E 83 C4 18 C2 0C 00";
+static constexpr ptrdiff_t nKeyDownCall = 15;
+static constexpr auto szKeyUpCall = "52 50 E8 ? ? ? ? 8B 0D ? ? ? ? 56 83 C1 04 E8 ? ? ? ? 5E C2 08 00";
+static constexpr ptrdiff_t nKeyUpCall = 17;
+static constexpr auto szPointerDownCall = "8B 76 08 3B 35 ? ? ? ? 75 1E 8B 0D ? ? ? ? 8D 54 24 10 52 83 C1 04 E8";
+static constexpr ptrdiff_t nPointerDownCall = 25;
+
+static SafetyHookInline UiKeyDownHook{};
+static SafetyHookInline UiKeyUpHook{};
+static SafetyHookInline UiPointerDownHook{};
+
+// One Escape a press: held Backspace repeats through the same dispatch.
+static bool bBackspaceHeld = false;
+
+static bool IsMenuCursorShown(uint8_t* pManager, uint8_t nDevice)
+{
+    return (pManager[nCursorEnabledMask] & (1u << nDevice)) != 0;
+}
+
+static bool WantsMenuBack(uint8_t* pManager, uint8_t nDevice)
+{
+    return IsMenuCursorShown(pManager, nDevice) && !IsBindJustCaptured();
+}
+
+// A whole tap, since pages back out on either edge.
+static void SendMenuEscape(uint8_t* pManager, void* pEdx, uint8_t nDevice)
+{
+    UiKeyEvent escape{ nUiKeyEscape, 0, nDevice, 0, 0, 1 };
+    UiKeyDownHook.fastcall<char>(pManager, pEdx, &escape);
+    UiKeyUpHook.fastcall<char>(pManager, pEdx, &escape);
+}
+
+static char __fastcall UiKeyDown(uint8_t* pManager, void* pEdx, UiKeyEvent* pEvent)
+{
+    auto bHandled = UiKeyDownHook.fastcall<char>(pManager, pEdx, pEvent);
+    if (bHandled || pEvent->nCode != nUiKeyBackspace || bBackspaceHeld)
+        return bHandled;
+
+    bBackspaceHeld = true;
+    if (!WantsMenuBack(pManager, pEvent->nDevice))
+        return bHandled;
+
+    SendMenuEscape(pManager, pEdx, pEvent->nDevice);
+    return 1;
+}
+
+static char __fastcall UiKeyUp(uint8_t* pManager, void* pEdx, UiKeyEvent* pEvent)
+{
+    if (pEvent->nCode == nUiKeyBackspace)
+        bBackspaceHeld = false;
+
+    return UiKeyUpHook.fastcall<char>(pManager, pEdx, pEvent);
+}
+
+static char __fastcall UiPointerDown(uint8_t* pManager, void* pEdx, UiPointerEvent* pEvent)
+{
+    auto bHandled = UiPointerDownHook.fastcall<char>(pManager, pEdx, pEvent);
+    if (bHandled || pEvent->nButton != nUiRightButton || !WantsMenuBack(pManager, pEvent->nDevice))
+        return bHandled;
+
+    SendMenuEscape(pManager, pEdx, pEvent->nDevice);
+    return 1;
+}
+
+static void InstallMenuControls()
+{
+    auto* pKeyDown = static_cast<uint8_t*>(dunia_find(szKeyDownCall, nKeyDownCall));
+    auto* pKeyUp = static_cast<uint8_t*>(dunia_find(szKeyUpCall, nKeyUpCall));
+    auto* pPointerDown = static_cast<uint8_t*>(dunia_find(szPointerDownCall, nPointerDownCall));
+    if (pKeyDown == nullptr || pKeyUp == nullptr || pPointerDown == nullptr)
+        return;
+
+    UiKeyDownHook = safetyhook::create_inline(CallTarget(pKeyDown), UiKeyDown);
+    UiKeyUpHook = safetyhook::create_inline(CallTarget(pKeyUp), UiKeyUp);
+    UiPointerDownHook = safetyhook::create_inline(CallTarget(pPointerDown), UiPointerDown);
+}
+
 class JackalFixMenu
 {
 public:
     JackalFixMenu()
     {
+        JackalFix::onDuniaInitEvent() += InstallMenuControls;
+
         JackalFix::onDuniaInitEvent() += []()
         {
 
