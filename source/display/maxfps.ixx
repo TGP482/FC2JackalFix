@@ -4,6 +4,7 @@ module;
 
 export module maxfps;
 
+import borderless;
 import common;
 import dunia;
 import settings;
@@ -17,6 +18,12 @@ static constexpr int32_t nUnlockedFps = 9999;
 // What EnumDisplaySettings answers for a display with no fixed rate; 0 and 1 both mean "default".
 static constexpr DWORD nUnknownRefreshRate = 1;
 static constexpr int32_t nFallbackFps = 60;
+
+// A few under the refresh, so a variable refresh display stays in its range and vsync never waits a whole refresh.
+static constexpr int32_t nRefreshMargin = 3;
+
+// The window can move to another monitor or the mode can change, so the rate is read again this often.
+static constexpr ULONGLONG nRefreshPollMs = 1000;
 
 enum MaxFrameRateSetting
 {
@@ -54,21 +61,26 @@ static bool ContainsSwitch(std::string_view cmdLine, std::string_view name)
 }
 
 // ENUM_CURRENT_SETTINGS is the mode the display is running now, which is what a limiter has to match;
-// the adapter's supported-mode list would give its highest rate instead. Primary display: RunGame
-// runs before any window exists, and Dunia creates its device there anyway.
+// the adapter's supported-mode list would give its highest rate instead. The game window's monitor,
+// or the primary one before RunGame has made the window.
 static int32_t GetDisplayRefreshRate()
 {
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    auto hMonitor = MonitorFromWindow(JackalFixGameWindow(), MONITOR_DEFAULTTOPRIMARY);
+    const wchar_t* pszDevice = GetMonitorInfoW(hMonitor, &mi) ? mi.szDevice : nullptr;
+
     DEVMODEW dm{};
     dm.dmSize = sizeof(dm);
 
-    if (!EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm))
+    if (!EnumDisplaySettingsW(pszDevice, ENUM_CURRENT_SETTINGS, &dm))
         return nFallbackFps;
 
     if ((dm.dmFields & DM_DISPLAYFREQUENCY) == 0 || dm.dmDisplayFrequency <= nUnknownRefreshRate)
         return nFallbackFps;
 
-    // Whole hertz, so a 59.94Hz mode arrives as 59 and the cap lands just under the refresh.
-    return static_cast<int32_t>(dm.dmDisplayFrequency);
+    const auto nRate = static_cast<int32_t>(dm.dmDisplayFrequency);
+    return nRate > nRefreshMargin * 2 ? nRate - nRefreshMargin : nRate;
 }
 
 // MaxFrameRate 1 resolves here, not in the ini reader, so the stored setting stays the number the
@@ -86,6 +98,8 @@ static int32_t ResolveMaxFps()
     return nSetting;
 }
 
+static int32_t nAppliedFps = 0;
+
 // No-op before the render profile exists; start-up is the command line's job.
 static void ApplyMaxFps()
 {
@@ -96,10 +110,28 @@ static void ApplyMaxFps()
     if (pProfile == nullptr)
         return;
 
-    *reinterpret_cast<int32_t*>(static_cast<uint8_t*>(pProfile) + nProfileMaxFps) = ResolveMaxFps();
+    nAppliedFps = ResolveMaxFps();
+    *reinterpret_cast<int32_t*>(static_cast<uint8_t*>(pProfile) + nProfileMaxFps) = nAppliedFps;
 
     if (NotifyRenderSettings != nullptr && GetCurrentThreadId() == nEngineThread)
         NotifyRenderSettings(pProfile);
+}
+
+// Follows a refresh change or a move to another monitor while the cap is the screen's.
+static void FollowRefreshRate()
+{
+    static ULONGLONG nNextPoll = 0;
+
+    const auto nNow = GetTickCount64();
+    if (nNow < nNextPoll)
+        return;
+
+    nNextPoll = nNow + nRefreshPollMs;
+    if (JackalFixSettings.GetInt(PREF_MAXFRAMERATE) != MAXFPS_DISPLAY)
+        return;
+
+    if (ResolveMaxFps() != nAppliedFps)
+        ApplyMaxFps();
 }
 
 static bool __cdecl RunGame(HINSTANCE hInstance, const char* pCmdLine)
@@ -148,6 +180,8 @@ public:
                     pJump + 5 + *reinterpret_cast<int32_t*>(pJump + 1));
 
                 JackalFix::onIniFileChange() += []() { ApplyMaxFps(); };
+                JackalFix::onFrameEndDX9Event() += [](void*) { FollowRefreshRate(); };
+                JackalFix::onFrameEndDX10Event() += [](void*, void*) { FollowRefreshRate(); };
             }
         };
     }
