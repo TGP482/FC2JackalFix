@@ -1,6 +1,9 @@
 module;
 
 #include <common.hxx>
+#include <d3d9.h>
+#include <d3d10.h>
+#include <dxgi.h>
 
 export module maxfps;
 
@@ -134,6 +137,62 @@ static void FollowRefreshRate()
         ApplyMaxFps();
 }
 
+// A GPU bound frame rate then paces the game like a frame cap: the CPU never queues more than one
+// frame ahead of the GPU, so the frame times the game measures match the frames shown.
+static constexpr int nFrameEndLastPriority = 1000;
+
+static IDirect3DDevice9* pPacedDevice9 = nullptr;
+static IDirect3DQuery9* pFrameQuery = nullptr;
+
+static void ReleaseFrameQuery()
+{
+    if (pFrameQuery != nullptr)
+        pFrameQuery->Release();
+
+    pFrameQuery = nullptr;
+    pPacedDevice9 = nullptr;
+}
+
+static void WaitForPreviousFrameDX9(void* pDevice)
+{
+    auto pDevice9 = static_cast<IDirect3DDevice9*>(pDevice);
+    if (pDevice9 != pPacedDevice9)
+    {
+        ReleaseFrameQuery();
+        if (FAILED(pDevice9->CreateQuery(D3DQUERYTYPE_EVENT, &pFrameQuery)))
+            return;
+
+        pPacedDevice9 = pDevice9;
+    }
+    else if (pFrameQuery != nullptr)
+    {
+        // S_FALSE until the GPU is past last frame's marker; a lost device answers an error and ends the wait.
+        while (pFrameQuery->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_FALSE)
+            SwitchToThread();
+    }
+
+    if (pFrameQuery != nullptr)
+        pFrameQuery->Issue(D3DISSUE_END);
+}
+
+static void LimitFrameLatencyDX10(void* pDevice)
+{
+    static void* pPacedDevice10 = nullptr;
+    if (pDevice == pPacedDevice10)
+        return;
+
+    pPacedDevice10 = pDevice;
+
+    auto pDevice10 = static_cast<ID3D10Device*>(pDevice);
+    IDXGIDevice1* pDxgiDevice = nullptr;
+    auto hr = pDevice10->QueryInterface(__uuidof(IDXGIDevice1), reinterpret_cast<void**>(&pDxgiDevice));
+    if (FAILED(hr))
+        return;
+
+    pDxgiDevice->SetMaximumFrameLatency(1);
+    pDxgiDevice->Release();
+}
+
 static bool __cdecl RunGame(HINSTANCE hInstance, const char* pCmdLine)
 {
     // RunGame is the engine thread and does not return until the game does.
@@ -183,6 +242,11 @@ public:
                 JackalFix::onFrameEndDX9Event() += [](void*) { FollowRefreshRate(); };
                 JackalFix::onFrameEndDX10Event() += [](void*, void*) { FollowRefreshRate(); };
             }
+
+            JackalFix::onFrameEndDX9Event().add(WaitForPreviousFrameDX9, nFrameEndLastPriority);
+            JackalFix::onFrameEndDX10Event().add([](void* pDevice, void*) { LimitFrameLatencyDX10(pDevice); },
+                nFrameEndLastPriority);
+            JackalFix::onDeviceResetEvent() += []() { ReleaseFrameQuery(); };
         };
     }
 } MaxFrameRate;
