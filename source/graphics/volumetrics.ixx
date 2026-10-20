@@ -4,24 +4,24 @@ module;
 #include <atomic>
 #include <cmath>
 #include <cstring>
-#include <format>
 
 export module volumetrics;
 
 import common;
 import dunia;
-import logging;
 import settings;
+import volumetricclouds;
 import volumetricdevice;
 import volumetricshaders;
 
-// Volumetric fog ported from the Far Cry Instincts recomp. Drawn inside the scene renders (FUN_10342360,
-// the one gameplay runs, and FUN_10355F60) once the opaque passes and the sky are done, just before
-// the BlendedNoWater pass (0x20), so particles and water still land on top. That pass carries the
-// scene colour target and the main viewport parameter provider, whose DepthVPSampler is the view
-// depth the soft particles read. Camera, fog and depth unpacking come from the provider, the sun and
-// moon from the time of day state the sky render fetches (FUN_1033E9E0), so the fog follows the day
-// and night cycle and the weather. No sun shadow map is read, so there are no light shafts.
+// Volumetric fog ported from the Far Cry Instincts recomp, with the clouds (volumetricclouds.ixx)
+// drawn just before it. Both run inside the scene renders (FUN_10342360, the one gameplay runs, and
+// FUN_10355F60) once the opaque passes and the sky are done, just before the BlendedNoWater pass
+// (0x20), so particles and water still land on top. That pass carries the scene colour target and
+// the main viewport parameter provider, whose DepthVPSampler is the view depth the soft particles
+// read. Camera, fog and depth unpacking come from the provider, the sun and moon from the time of day
+// state the sky render fetches (FUN_1033E9E0), so the fog follows the day and night cycle and the
+// weather. No sun shadow map is read, so there are no light shafts.
 
 // Scene pass, as FUN_103671D0 sets it up and FUN_1039D900 runs it.
 static constexpr uintptr_t nPassTarget = 0x24;
@@ -55,8 +55,6 @@ static constexpr size_t nEnvironmentSize = 0x240;
 static constexpr float fPackedSkyShare = 0.998f;
 static constexpr float fFloatSkyShare = 0.98f;
 
-static constexpr uint32_t nTraceInterval = 60;
-
 enum class Renderer
 {
     None,
@@ -81,10 +79,6 @@ struct Light
 static std::atomic<bool> bVolumetricFog{ false };
 static Renderer eRenderer = Renderer::None;
 static uintptr_t nEnvironment = 0;
-
-static bool bTrace = false;
-static bool bTraceKeyDown = false;
-static uint32_t nTraceFrame = 0;
 
 static Float4 ReadFloat4(uintptr_t nAddress)
 {
@@ -112,11 +106,6 @@ static Float4 Normalised(Float4 v)
     if (fLength < 1e-6f)
         return { 0.0f, 0.0f, -1.0f, 0.0f };
     return { v.x / fLength, v.y / fLength, v.z / fLength, 0.0f };
-}
-
-static std::string Format(Float4 v)
-{
-    return std::format("{:.3f} {:.3f} {:.3f} {:.3f}", v.x, v.y, v.z, v.w);
 }
 
 static VolumetricDevice* ActiveDevice()
@@ -211,80 +200,30 @@ static void RunFog(VolumetricDevice& device, VolConstants constants)
     device.Draw({ VolShader::FogComposite, VolTexture::FogA, VolTexture::None, VolBlend::Over }, constants);
 }
 
-static void PollTraceKey()
-{
-    const bool bDown = (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
-    if (bDown && !bTraceKeyDown)
-    {
-        bTrace = !bTrace;
-        LogInfo("volumetrics: trace {}", bTrace ? "on" : "off");
-    }
-    bTraceKeyDown = bDown;
-}
-
-static void TraceFrame(VolumetricDevice& device, uintptr_t nProvider, const VolConstants& constants)
-{
-    if (!bTrace || nTraceFrame++ % nTraceInterval != 0)
-        return;
-
-    const auto scene = device.SceneSize();
-    const auto& c = constants.c;
-    LogInfo("volumetrics: {} scene {}x{} packed depth {} near {:.3f} far {:.1f} proj {:.3f} {:.3f}",
-            eRenderer == Renderer::DX9 ? "D3D9" : "D3D10", scene.w, scene.h, device.DepthPacked(), c[kRegProj][2],
-            c[kRegProj][3], c[kRegProj][0], c[kRegProj][1]);
-    LogInfo("volumetrics: {}", device.Status());
-    LogInfo("volumetrics: eye {} forward {} up {}", Format(ReadFloat4(nProvider + nViewPoint)),
-            Format(ReadFloat4(nProvider + nCameraDirection)), Format(ReadFloat4(nProvider + nCameraUp)));
-    LogInfo("volumetrics: fog values {} height {} colour {}", Format(ReadFloat4(nProvider + nFogValues)),
-            Format(ReadFloat4(nProvider + nFogHeightValues)), Format(ReadFloat4(nProvider + nFogColor)));
-    LogInfo("volumetrics: fog colour vector {} range {} exposure {:.3f}", Format(ReadFloat4(nProvider + nFogColorVector)),
-            Format(ReadFloat4(nProvider + nFogColorRange)), c[kRegExposure][0]);
-
-    if (Readable(nEnvironment, nEnvironmentSize))
-        LogInfo("volumetrics: sun {} colour {} moon {} colour {}", Format(ReadFloat4(nEnvironment + nSunDirection)),
-                Format(ReadFloat4(nEnvironment + nSunColor)), Format(ReadFloat4(nEnvironment + nMoonDirection)),
-                Format(ReadFloat4(nEnvironment + nMoonColor)));
-
-    float rgb[3]{};
-    if (device.ReadDepthCentre(rgb))
-        LogInfo("volumetrics: depth centre raw {:.5f} {:.5f} {:.5f} unpacked {:.2f} m, depth unpack {}", rgb[0],
-                rgb[1], rgb[2], rgb[0] * c[kRegDepth][0] + rgb[1] * c[kRegDepth][1] + rgb[2] * c[kRegDepth][2],
-                Format({ c[kRegDepth][0], c[kRegDepth][1], c[kRegDepth][2], c[kRegDepth][3] }));
-}
-
-static void TraceFailure(std::string_view reason)
-{
-    if (bTrace && nTraceFrame++ % nTraceInterval == 0)
-        LogInfo("volumetrics: skipped, {}", reason);
-}
-
 static void RenderVolumetrics(uintptr_t nPass)
 {
-    PollTraceKey();
-    if (!bVolumetricFog.load(std::memory_order_relaxed))
+    const bool bFog = bVolumetricFog.load(std::memory_order_relaxed);
+    const bool bClouds = VolumetricCloudsEnabled();
+    if (!bFog && !bClouds)
         return;
 
     auto* pDevice = ActiveDevice();
     const auto nProvider = ReadPointer<uintptr_t>(nPass + nPassProvider);
     if (!pDevice || !Readable(nProvider, nProviderSize))
-    {
-        TraceFailure(pDevice ? "no viewport provider" : "renderer not known yet");
         return;
-    }
 
     const auto nSceneTarget = ReadPointer<uintptr_t>(nPass + nPassTarget);
     const auto nDepthTexture = ReadPointer<uintptr_t>(nProvider + nDepthVPSampler);
     if (!nSceneTarget || !nDepthTexture || !pDevice->Begin(nSceneTarget, nDepthTexture))
-    {
-        TraceFailure(nSceneTarget && nDepthTexture ? pDevice->Status() : "no scene target or depth texture");
         return;
-    }
 
     VolConstants constants;
     if (BuildConstants(nProvider, pDevice->SceneSize(), pDevice->DepthPacked(), constants))
     {
-        RunFog(*pDevice, constants);
-        TraceFrame(*pDevice, nProvider, constants);
+        if (bClouds)
+            RunVolumetricClouds(*pDevice, constants, nEnvironment);
+        if (bFog)
+            RunFog(*pDevice, constants);
     }
 
     pDevice->End();
@@ -308,10 +247,7 @@ public:
                 "FF D0 8B 46 14 8B 48 04 6A 20 E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8B 46 14 8B 48 04 6A 21", 15);
 
             if (!pSkyEnvironment || !pGameplayBlended || !pResolveBlended)
-            {
-                LogWarn("volumetrics: hook sites not found");
                 return;
-            }
 
             static auto SkyEnvironmentHook = safetyhook::create_mid(pSkyEnvironment, [](SafetyHookContext& regs)
             {

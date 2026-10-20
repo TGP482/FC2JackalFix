@@ -23,6 +23,13 @@ export enum VolRegister : size_t
     kRegFogColorVector,
     kRegFogColorRange,
     kRegExposure,
+    kRegFrame,
+    kRegCloudShift,
+    kRegCloudLight,
+    kRegPrevRight,
+    kRegPrevUp,
+    kRegPrevForward,
+    kRegPrevProj,
     nVolRegisters,
 };
 
@@ -75,6 +82,13 @@ float4 g_Blur REG(12);       // tap step in uv
 float4 g_FogColorVector REG(13);
 float4 g_FogColorRange REG(14);
 float4 g_Exposure REG(15);   // BloomAdaptationFactor, which the game's lighting and fog are scaled by
+float4 g_Frame REG(16);      // frame, ray offset in the 4x4 block, history weight (0 without one)
+float4 g_CloudShift REG(17); // world xy to cloud xy, weather and detail noise slices
+float4 g_CloudLight REG(18); // the cloud layer's ambient colour, coverage
+float4 g_PrevRight REG(19);  // last frame's camera
+float4 g_PrevUp REG(20);
+float4 g_PrevForward REG(21);
+float4 g_PrevProj REG(22);   // last frame's P00, P11
 END_CONSTANTS
 
 sampler2D g_DepthTex : register(s0);
@@ -84,7 +98,7 @@ static const float kFogReach = 250.0;
 static const int kFogSteps = 16;
 // Thinner than FCIP: the game's own distance fog is already in the scene, and with no sun shadow
 // map the forward glow is not broken up by trees, so it is held near the fog colour's brightness.
-static const float kFogDensity = 0.5;
+static const float kFogDensity = 0.6;
 static const float kSunScatter = 0.15;
 
 float4 Fetch(sampler2D s, float2 uv) { return tex2Dlod(s, float4(uv, 0.0, 0.0)); }
@@ -202,6 +216,231 @@ float4 main(float2 uv : TEXCOORD0) : TARGET
         weight += w;
     }
     return sum / weight;
+}
+#endif
+
+
+#if defined(CLOUD_MARCH) || defined(CLOUD_COMPOSITE)
+// A layer high over the land, marched at quarter resolution into a history, then laid over the sky.
+static const float kBase = 1500.0;  // over the ground, metres
+static const float kTop = 2700.0;
+static const float kShapeTile = 3072.0;  // noise periods, each divides the cloud space wrap
+static const float kDetailTile = 384.0;
+static const float kWeatherTile = 24576.0;
+static const float kFar = 40000.0;  // no layer entered beyond
+static const float kSpan = 8000.0;  // longest stretch marched
+static const float kSigma = 0.05;   // extinction at full density, per metre
+// Optical depth of the horizon haze looking straight up. FC2's distance fog is far too dense to stand
+// for it (FogValues.x 0.006, the land fogs out by 170 m) and the sky dome is drawn without it.
+static const float kHaze = 0.15;
+static const int kSteps = 40;
+
+sampler3D g_Noise : register(s3);  // perlin worley, worley octaves from 4, 8 and 16 cells
+
+float Remap(float v, float a, float b, float c, float d) { return c + (v - a) * (d - c) / (b - a); }
+bool Finite(float4 v) { return all(v == v) && all(abs(v) < 1e30); }
+
+// Base and top, at least a kilometre over the camera.
+float2 Layer()
+{
+    float base = max(0.0, g_Eye.z - 500.0) + kBase;
+    return float2(base, base + kTop - kBase);
+}
+
+float3 RayDir(float2 pixel) { return normalize(ViewRay(pixel / g_Size.xy)); }
+
+// Where a ray from the camera enters and leaves the layer, x >= y when it misses.
+float2 LayerHit(float3 dir)
+{
+    float2 t = (Layer() - g_Eye.z) / max(dir.z, 1e-4);
+    return dir.z > 0.0 && t.x < kFar ? float2(t.x, min(t.y, t.x + kSpan)) : float2(1.0, 0.0);
+}
+#endif
+
+#ifdef CLOUD_MARCH
+float4 Noise3(float3 p) { return tex3Dlod(g_Noise, float4(p, 0.0)); }
+
+// Clouded share of the sky at cloud xy, up to 0.6; g_CloudLight.w scales it by the weather.
+float Coverage(float2 xy)
+{
+    float w = Noise3(float3(xy / kWeatherTile, g_CloudShift.z)).r;
+    return saturate(Remap(w, 0.45, 0.8, 0.0, 1.0)) * 0.6 * g_CloudLight.w;
+}
+
+// Density at cloud space c (z over the base), hf the height in the layer, before the detail.
+float Shape(float3 c, float hf, float cov)
+{
+    float4 n = Noise3(c / kShapeTile);
+    float low = dot(n.gba, float3(0.625, 0.25, 0.125));
+    float shape = saturate((saturate(Remap(n.r, low - 1.0, 1.0, 0.0, 1.0)) - 0.6) / 0.28);
+    float top = 0.35 + 1.0833 * cov;
+    shape *= saturate(hf * 10.0) * saturate((top - hf) / (0.6 * top));
+    return saturate(Remap(shape, 1.0 - cov, 1.0, 0.0, 1.0)) * cov;
+}
+
+// Detail eats the edges: wisps at the bottom, billows on top.
+float Erode(float d, float3 c, float hf, float amount)
+{
+    float3 n = Noise3(c / kDetailTile + float3(0.0, 0.0, g_CloudShift.w)).gba;
+    float f = dot(n, float3(0.625, 0.25, 0.125));
+    f = lerp(f, 1.0 - f, saturate(hf * 4.0));
+    return saturate(Remap(d, f * amount, 1.0, 0.0, 1.0));
+}
+
+// Henyey Greenstein over the isotropic phase.
+float Hg(float g, float mu) { return (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * mu, 1e-4), 1.5); }
+
+// Optical depth toward the light over 30, 60, 120 and 240 m steps, cheap density.
+float LightDepth(float3 c, float3 toLight, float thick, float cov)
+{
+    float depth = 0.0;
+    float len = 30.0;
+    [unroll] for (int j = 0; j < 4; j++)
+    {
+        c += toLight * len;
+        float hf = c.z / thick;
+        if (hf < 1.0)
+            depth += Shape(c, hf, cov) * len;
+        len *= 2.0;
+    }
+    return depth * kSigma;
+}
+
+// Horizon haze: low clouds take the fog colour and fade into the sky, never past the level's most
+// fog. Dark skies fade them.
+float4 Haze(float3 dir, float3 scatter, float trans)
+{
+    float most = saturate(g_Fog.z);
+    float path = kHaze / max(dir.z, 0.02);
+    float haze = most * (1.0 - exp(-path));
+    float a = 1.0 - trans;
+    float3 fog = FogColorAlong(dir);
+    scatter = lerp(scatter, fog * a, haze);
+    float lum = dot(g_LightColor.rgb + fog, float3(0.3, 0.59, 0.11));
+    float keep = saturate(dir.z * 12.0) * (1.0 - haze * haze) * saturate(lum * 3.0);
+    return float4(scatter * keep * g_Exposure.x, 1.0 - a * keep);
+}
+
+// In scatter in rgb, transmittance in a, along the unit ray dir over [t.x, t.y].
+float4 March(float3 dir, float2 t, float jitter)
+{
+    float2 layer = Layer();
+    float thick = layer.y - layer.x;
+    float3 start = float3(g_Eye.xy + g_CloudShift.xy, g_Eye.z - layer.x);
+    float3 toLight = -g_LightDir.xyz;
+    bool lit = dot(g_LightColor.rgb, float3(1.0, 1.0, 1.0)) > 1e-3;
+    float mu = dot(dir, toLight);
+    float3 lightColor = g_LightColor.rgb * (0.8 * lerp(Hg(0.6, mu), Hg(-0.25, mu), 0.3));
+    float silver = saturate(mu * 0.5 + 0.5);
+    float ds = (t.y - t.x) / kSteps;
+    float detail = 0.35 * saturate(1.0 - t.x / 12000.0);
+    float3 scatter = 0.0;
+    float trans = 1.0;
+    [loop] for (int i = 0; i < kSteps && trans > 0.03; i++)
+    {
+        float3 c = start + dir * (t.x + (i + jitter) * ds);
+        float hf = c.z / thick;
+        float cov = Coverage(c.xy);
+        float d = cov > 0.0 ? Shape(c, hf, cov) : 0.0;
+        if (d <= 0.0)
+            continue;
+        d = Erode(d, c, hf, detail);
+        if (d <= 0.0)
+            continue;
+        float sigma = d * kSigma;
+        float3 light = g_CloudLight.rgb * (0.45 + 0.45 * saturate(hf));
+        if (lit)
+        {
+            float depth = LightDepth(c, toLight, thick, cov);
+            float beer = max(exp(-depth), 0.4 * exp(-0.25 * depth));
+            float powder = lerp(1.0 - exp(-sigma * 80.0), 1.0, silver);
+            light += lightColor * beer * powder;
+        }
+        float st = exp(-sigma * ds);
+        scatter += trans * light * (1.0 - st);
+        trans *= st;
+    }
+    return Haze(dir, scatter, trans);
+}
+
+// Last frame's history where the direction was then, over the texels that marched. a < 0 without one.
+float4 History(float3 dir)
+{
+    if (g_Frame.w <= 0.0)
+        return -1.0;
+    float3 v = float3(dot(dir, g_PrevRight.xyz), dot(dir, g_PrevUp.xyz), dot(dir, g_PrevForward.xyz));
+    if (v.z < 1e-3)
+        return -1.0;
+    float2 ndc = v.xy / v.z * g_PrevProj.xy;
+    float2 q = (ndc * float2(0.5, -0.5) + 0.5) * g_Size.zw - 0.5;
+    float2 base = floor(q);
+    float2 f = q - base;
+    float4 sum = 0.0;
+    float weight = 0.0;
+    [unroll] for (int i = 0; i < 4; i++)
+    {
+        float2 o = float2(i % 2, i / 2);
+        float2 p = base + o;
+        float4 h = Fetch(g_Input, (p + 0.5) / g_Size.zw);
+        float2 bw = lerp(1.0 - f, f, o);
+        bool inside = all(p >= 0.0) && all(p < g_Size.zw);
+        float w = inside && h.a >= 0.0 && Finite(h) ? bw.x * bw.y + 1e-4 : 0.0;
+        sum += h * w;
+        weight += w;
+    }
+    return weight > 0.0 ? sum / weight : -1.0;
+}
+
+// One ray per 4x4 block through this frame's pixel of it, blended into last frame's history seen
+// through the block centre. Blocks with nothing past the layer's entry hold a below 0.
+float4 main(float2 uv : TEXCOORD0) : TARGET
+{
+    float2 q = floor(uv * g_Size.zw);
+    float2 block = q * 4.0;
+    float3 centre = RayDir(block + 2.0);
+    float farthest = 0.0;
+    [unroll] for (int i = 0; i < 4; i++)
+        farthest = max(farthest, SceneDepth((block + float2(i % 2, i / 2) * 2.0 + 1.0) / g_Size.xy));
+
+    float2 v = ViewSlope((block + 2.0) / g_Size.xy);
+    if (!(farthest * sqrt(1.0 + dot(v, v)) >= LayerHit(centre).x))
+        return float4(0.0, 0.0, 0.0, -1.0);
+
+    float3 dir = RayDir(block + g_Frame.yz + 0.5);
+    float2 t = LayerHit(dir);
+    float jitter = frac(Noise(q) + g_Frame.x * 0.618034);
+    float4 cur = t.x < t.y ? March(dir, t, jitter) : float4(0.0, 0.0, 0.0, 1.0);
+    if (!Finite(cur))
+        cur = float4(0.0, 0.0, 0.0, 1.0);
+    float4 last = History(centre);
+    return last.a >= 0.0 ? lerp(last, cur, g_Frame.w) : cur;
+}
+#endif
+
+#ifdef CLOUD_COMPOSITE
+// Over the sky and whatever lies past the layer's entry: the texels around the pixel that marched.
+float4 main(float2 uv : TEXCOORD0) : TARGET
+{
+    float depth = SceneDepth(uv);
+    float2 v = ViewSlope(uv);
+    float2 t = LayerHit(RayDir(uv * g_Size.xy));
+    if (t.x >= t.y || depth * sqrt(1.0 + dot(v, v)) < t.x)
+        return float4(0.0, 0.0, 0.0, 1.0);
+    float2 q = uv * g_Size.zw - 0.5;
+    float2 base = floor(q);
+    float2 f = q - base;
+    float4 sum = 0.0;
+    float weight = 0.0;
+    [unroll] for (int i = 0; i < 4; i++)
+    {
+        float2 o = float2(i % 2, i / 2);
+        float4 c = Fetch(g_Input, (base + o + 0.5) / g_Size.zw);
+        float2 bw = lerp(1.0 - f, f, o);
+        float w = c.a >= 0.0 ? bw.x * bw.y + 1e-4 : 0.0;
+        sum += c * w;
+        weight += w;
+    }
+    return weight > 0.0 ? sum / weight : float4(0.0, 0.0, 0.0, 1.0);
 }
 #endif
 

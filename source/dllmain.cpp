@@ -32,6 +32,7 @@ import rimlighting;
 import postfx;
 import saturation;
 import volumetrics;
+import volumetricclouds;
 import borderless;
 import internalres;
 import affinity;

@@ -2,8 +2,6 @@ module;
 
 #include <common.hxx>
 #include <array>
-#include <format>
-#include <string>
 #include <cstring>
 #include <vector>
 #include <d3d9.h>
@@ -12,7 +10,6 @@ module;
 
 export module volumetricdevice;
 
-import logging;
 import volumetricshaders;
 
 // Draws the volumetric passes on whichever renderer is running. The scene colour and the resolved
@@ -24,6 +21,8 @@ export enum class VolTexture : uint32_t
     None,
     FogA,
     FogB,
+    CloudsA,
+    CloudsB,
     Count,
 };
 
@@ -32,6 +31,8 @@ export enum class VolShader : uint32_t
     FogMarch,
     FogBlur,
     FogComposite,
+    CloudMarch,
+    CloudComposite,
     Count,
 };
 
@@ -73,10 +74,9 @@ public:
     // RGB8 packed depth, which wants the provider's unpack weights; float depth is metres.
     virtual bool DepthPacked() const = 0;
     virtual bool EnsureTarget(VolTexture eTexture, VolSize size) = 0;
+    // The cloud noise, RGBA8 texels in x, y, z order; bound to s3 from then on.
+    virtual bool EnsureNoise(const std::vector<uint32_t>& vTexels, uint32_t nSide) = 0;
     virtual void Draw(const VolDraw& draw, const VolConstants& constants) = 0;
-    virtual bool ReadDepthCentre(float rgb[3]) = 0;
-    // Where the depth was found, or why Begin failed.
-    virtual const std::string& Status() const = 0;
     virtual void Release() = 0;
 };
 
@@ -112,7 +112,7 @@ static HMODULE VTableModule(uintptr_t nObject)
 static constexpr uintptr_t EngineWrappers[] = { 0x00, 0x08, 0x0C };
 static constexpr uintptr_t nEngineScanBytes = 0x40;
 
-static IUnknown* FindD3DObject(uintptr_t nEngineObject, HMODULE hRuntime, REFIID iid, std::string& where)
+static IUnknown* FindD3DObject(uintptr_t nEngineObject, HMODULE hRuntime, REFIID iid)
 {
     for (const auto nWrapper : EngineWrappers)
     {
@@ -127,7 +127,6 @@ static IUnknown* FindD3DObject(uintptr_t nEngineObject, HMODULE hRuntime, REFIID
             if (FAILED(reinterpret_cast<IUnknown*>(nCandidate)->QueryInterface(iid, reinterpret_cast<void**>(&pFound))))
                 continue;
 
-            where = std::format("wrapper +0x{:X} offset +0x{:X}", nWrapper, nOffset);
             return pFound;
         }
     }
@@ -139,6 +138,8 @@ static constexpr std::array<const char*, static_cast<size_t>(VolShader::Count)> 
     "FOG_MARCH",
     "FOG_BLUR",
     "FOG_COMPOSITE",
+    "CLOUD_MARCH",
+    "CLOUD_COMPOSITE",
 };
 
 // System d3dcompiler_47, so nothing is linked against a redistributable.
@@ -159,10 +160,7 @@ static bool CompileShader(const char* szEntry, const char* szProfile, std::initi
 {
     auto pCompile = Compiler();
     if (!pCompile)
-    {
-        LogWarn("volumetrics: no d3dcompiler_47.dll");
         return false;
-    }
 
     std::vector<D3D_SHADER_MACRO> vMacros;
     for (auto* szName : defines)
@@ -180,32 +178,10 @@ static bool CompileShader(const char* szEntry, const char* szProfile, std::initi
         const auto* pStart = static_cast<const uint8_t*>(pCode->GetBufferPointer());
         vCode.assign(pStart, pStart + pCode->GetBufferSize());
     }
-    else
-    {
-        const char* szError = pErrors ? static_cast<const char*>(pErrors->GetBufferPointer()) : "unknown error";
-        LogWarn("volumetrics: {} {} failed: {}", szProfile, *defines.begin(), szError);
-    }
 
     SafeRelease(pErrors);
     SafeRelease(pCode);
     return !vCode.empty();
-}
-
-static float HalfToFloat(uint16_t nHalf)
-{
-    const uint32_t nSign = (nHalf & 0x8000u) << 16;
-    const uint32_t nExponent = (nHalf >> 10) & 0x1Fu;
-    const uint32_t nMantissa = nHalf & 0x3FFu;
-    uint32_t nBits = nSign;
-
-    if (nExponent == 0x1F)
-        nBits |= 0x7F800000u | (nMantissa << 13);
-    else if (nExponent != 0)
-        nBits |= ((nExponent + 112) << 23) | (nMantissa << 13);
-
-    float fValue = 0.0f;
-    std::memcpy(&fValue, &nBits, sizeof(fValue));
-    return fValue;
 }
 
 static VolSize LowResSize(VolTexture eTexture, VolSize scene)
@@ -215,6 +191,9 @@ static VolSize LowResSize(VolTexture eTexture, VolSize scene)
     case VolTexture::FogA:
     case VolTexture::FogB:
         return { (scene.w + 1) / 2, (scene.h + 1) / 2 };
+    case VolTexture::CloudsA:
+    case VolTexture::CloudsB:
+        return { (scene.w + 3) / 4, (scene.h + 3) / 4 };
     default:
         return scene;
     }
@@ -229,6 +208,7 @@ namespace dx9
 static constexpr uintptr_t nTargetSurface = 0x1C;
 
 static constexpr DWORD nMaxTargets = 4;
+static constexpr DWORD nNoiseStage = 3;
 
 struct Target
 {
@@ -292,12 +272,9 @@ class Device final : public VolumetricDevice
     IDirect3DPixelShader9* pShaders[static_cast<size_t>(VolShader::Count)]{};
     Target Targets[static_cast<size_t>(VolTexture::Count)];
 
-    IDirect3DSurface9* pProbeTarget = nullptr;
-    IDirect3DSurface9* pProbeCopy = nullptr;
-    D3DFORMAT eProbeFormat = D3DFMT_UNKNOWN;
+    IDirect3DVolumeTexture9* pNoise = nullptr;
 
     bool bSetupFailed = false;
-    std::string szStatus;
 
     bool EnsureSetup()
     {
@@ -329,18 +306,12 @@ class Device final : public VolumetricDevice
 
     bool BindDepth(uintptr_t nDepthTexture)
     {
-        std::string where;
         auto* pFound = FindD3DObject(nDepthTexture, VTableModule(reinterpret_cast<uintptr_t>(pScene)),
-                                     __uuidof(IDirect3DTexture9), where);
+                                     __uuidof(IDirect3DTexture9));
         pDepth = static_cast<IDirect3DTexture9*>(pFound);
         if (!pDepth || FAILED(pDepth->GetSurfaceLevel(0, &pDepthSurface)) || FAILED(pDepthSurface->GetDesc(&DepthDesc)))
-        {
-            szStatus = "no depth texture in the DepthVPSampler object";
             return false;
-        }
 
-        szStatus = std::format("depth texture {}x{} format {} at {}", DepthDesc.Width, DepthDesc.Height,
-                               static_cast<uint32_t>(DepthDesc.Format), where);
         return IsPackedDepth(DepthDesc.Format) || IsFloatDepth(DepthDesc.Format);
     }
 
@@ -388,6 +359,15 @@ class Device final : public VolumetricDevice
             pDevice->SetSamplerState(i, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             pDevice->SetSamplerState(i, D3DSAMP_SRGBTEXTURE, FALSE);
         }
+
+        pDevice->SetSamplerState(nNoiseStage, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        pDevice->SetSamplerState(nNoiseStage, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        pDevice->SetSamplerState(nNoiseStage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        pDevice->SetSamplerState(nNoiseStage, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+        pDevice->SetSamplerState(nNoiseStage, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+        pDevice->SetSamplerState(nNoiseStage, D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP);
+        pDevice->SetSamplerState(nNoiseStage, D3DSAMP_SRGBTEXTURE, FALSE);
+        pDevice->SetTexture(nNoiseStage, pNoise);
 
         pDevice->SetVertexShader(pVertexShader);
         pDevice->SetFVF(D3DFVF_XYZ);
@@ -437,50 +417,13 @@ class Device final : public VolumetricDevice
         pScene = nullptr;
     }
 
-    bool EnsureProbe()
-    {
-        if (pProbeTarget && pProbeCopy && eProbeFormat == DepthDesc.Format)
-            return true;
-
-        SafeRelease(pProbeTarget);
-        SafeRelease(pProbeCopy);
-        eProbeFormat = DepthDesc.Format;
-        return SUCCEEDED(pDevice->CreateRenderTarget(1, 1, DepthDesc.Format, D3DMULTISAMPLE_NONE, 0, FALSE,
-                                                     &pProbeTarget, nullptr)) &&
-               SUCCEEDED(pDevice->CreateOffscreenPlainSurface(1, 1, DepthDesc.Format, D3DPOOL_SYSTEMMEM,
-                                                              &pProbeCopy, nullptr));
-    }
-
-    static void DecodeTexel(const uint8_t* pTexel, D3DFORMAT eFormat, float rgb[3])
-    {
-        if (IsPackedDepth(eFormat))
-        {
-            // BGRA in memory.
-            rgb[0] = pTexel[2] / 255.0f;
-            rgb[1] = pTexel[1] / 255.0f;
-            rgb[2] = pTexel[0] / 255.0f;
-        }
-        else if (eFormat == D3DFMT_R16F || eFormat == D3DFMT_G16R16F || eFormat == D3DFMT_A16B16G16R16F)
-            rgb[0] = HalfToFloat(*reinterpret_cast<const uint16_t*>(pTexel));
-        else
-            std::memcpy(&rgb[0], pTexel, sizeof(float));
-    }
-
 public:
     bool Begin(uintptr_t nSceneTarget, uintptr_t nDepthTexture) override
     {
         pScene = ReadPointer<IDirect3DSurface9*>(nSceneTarget + nTargetSurface);
-        if (!pScene || FAILED(pScene->GetDesc(&SceneDesc)) || FAILED(pScene->GetDevice(&pDevice)))
+        if (!pScene || FAILED(pScene->GetDesc(&SceneDesc)) || FAILED(pScene->GetDevice(&pDevice)) ||
+            !BindDepth(nDepthTexture) || !EnsureSetup())
         {
-            szStatus = "no scene surface";
-            ReleaseFrame();
-            return false;
-        }
-
-        if (!BindDepth(nDepthTexture) || !EnsureSetup())
-        {
-            if (bSetupFailed)
-                szStatus = "shader setup failed";
             ReleaseFrame();
             return false;
         }
@@ -495,6 +438,7 @@ public:
     {
         pDevice->SetTexture(0, nullptr);
         pDevice->SetTexture(1, nullptr);
+        pDevice->SetTexture(nNoiseStage, nullptr);
         RestoreTargets();
         pStateBlock->Apply();
         ReleaseFrame();
@@ -507,6 +451,39 @@ public:
     bool EnsureTarget(VolTexture eTexture, VolSize size) override
     {
         return Targets[static_cast<size_t>(eTexture)].Ensure(pDevice, LowResSize(eTexture, size));
+    }
+
+    bool EnsureNoise(const std::vector<uint32_t>& vTexels, uint32_t nSide) override
+    {
+        if (pNoise)
+            return true;
+        if (FAILED(pDevice->CreateVolumeTexture(nSide, nSide, nSide, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &pNoise,
+                                                nullptr)))
+            return false;
+
+        D3DLOCKED_BOX box{};
+        if (FAILED(pNoise->LockBox(0, &box, nullptr, 0)))
+        {
+            SafeRelease(pNoise);
+            return false;
+        }
+
+        auto* pBytes = static_cast<uint8_t*>(box.pBits);
+        for (uint32_t z = 0; z < nSide; z++)
+        {
+            for (uint32_t y = 0; y < nSide; y++)
+            {
+                auto* pRow = reinterpret_cast<uint32_t*>(pBytes + z * box.SlicePitch + y * box.RowPitch);
+                const auto* pSource = &vTexels[(size_t(z) * nSide + y) * nSide];
+                // RGBA in, BGRA in memory.
+                for (uint32_t x = 0; x < nSide; x++)
+                    pRow[x] = (pSource[x] & 0xFF00FF00u) | ((pSource[x] & 0xFFu) << 16) | ((pSource[x] >> 16) & 0xFFu);
+            }
+        }
+
+        pNoise->UnlockBox(0);
+        pDevice->SetTexture(nNoiseStage, pNoise);
+        return true;
     }
 
     void Draw(const VolDraw& draw, const VolConstants& constants) override
@@ -531,34 +508,11 @@ public:
         pDevice->SetTexture(1, nullptr);
     }
 
-    bool ReadDepthCentre(float rgb[3]) override
-    {
-        if (!EnsureProbe())
-            return false;
-
-        const RECT centre = { static_cast<LONG>(DepthDesc.Width / 2), static_cast<LONG>(DepthDesc.Height / 2),
-                              static_cast<LONG>(DepthDesc.Width / 2 + 1), static_cast<LONG>(DepthDesc.Height / 2 + 1) };
-        if (FAILED(pDevice->StretchRect(pDepthSurface, &centre, pProbeTarget, nullptr, D3DTEXF_POINT)) ||
-            FAILED(pDevice->GetRenderTargetData(pProbeTarget, pProbeCopy)))
-            return false;
-
-        D3DLOCKED_RECT locked{};
-        if (FAILED(pProbeCopy->LockRect(&locked, nullptr, D3DLOCK_READONLY)))
-            return false;
-
-        DecodeTexel(static_cast<const uint8_t*>(locked.pBits), DepthDesc.Format, rgb);
-        pProbeCopy->UnlockRect();
-        return true;
-    }
-
-    const std::string& Status() const override { return szStatus; }
-
     void Release() override
     {
         for (auto& target : Targets)
             target.Release();
-        SafeRelease(pProbeTarget);
-        SafeRelease(pProbeCopy);
+        SafeRelease(pNoise);
         SafeRelease(pStateBlock);
         SafeRelease(pVertexShader);
         for (auto*& pShader : pShaders)
@@ -579,7 +533,7 @@ static constexpr uintptr_t nTargetWrapper = 0x08;
 static constexpr uintptr_t nWrapperTargetView = 0x1C;
 
 static constexpr UINT nMaxTargets = D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT;
-static constexpr UINT nSavedSlots = 2;
+static constexpr UINT nSavedSlots = 4;
 
 struct Target
 {
@@ -747,12 +701,13 @@ class Device final : public VolumetricDevice
     ID3D10DepthStencilState* pNoDepth = nullptr;
     ID3D10RasterizerState* pRasterizer = nullptr;
     ID3D10SamplerState* pPoint = nullptr;
+    ID3D10SamplerState* pLinearWrap = nullptr;
     ID3D10Buffer* pConstants = nullptr;
+    ID3D10Texture3D* pNoiseTexture = nullptr;
+    ID3D10ShaderResourceView* pNoise = nullptr;
     Target Targets[static_cast<size_t>(VolTexture::Count)];
-    ID3D10Texture2D* pProbe = nullptr;
 
     bool bSetupFailed = false;
-    std::string szStatus;
 
     bool CreateShaders()
     {
@@ -806,6 +761,12 @@ class Device final : public VolumetricDevice
         sampler.AddressW = D3D10_TEXTURE_ADDRESS_CLAMP;
         sampler.MaxLOD = D3D10_FLOAT32_MAX;
 
+        D3D10_SAMPLER_DESC wrap = sampler;
+        wrap.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+        wrap.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
+        wrap.AddressV = D3D10_TEXTURE_ADDRESS_WRAP;
+        wrap.AddressW = D3D10_TEXTURE_ADDRESS_WRAP;
+
         D3D10_BUFFER_DESC buffer{};
         buffer.ByteWidth = sizeof(VolConstants);
         buffer.Usage = D3D10_USAGE_DYNAMIC;
@@ -815,6 +776,7 @@ class Device final : public VolumetricDevice
         return SUCCEEDED(pDevice->CreateDepthStencilState(&depth, &pNoDepth)) &&
                SUCCEEDED(pDevice->CreateRasterizerState(&raster, &pRasterizer)) &&
                SUCCEEDED(pDevice->CreateSamplerState(&sampler, &pPoint)) &&
+               SUCCEEDED(pDevice->CreateSamplerState(&wrap, &pLinearWrap)) &&
                SUCCEEDED(pDevice->CreateBuffer(&buffer, nullptr, &pConstants));
     }
 
@@ -853,15 +815,11 @@ class Device final : public VolumetricDevice
     // Held by the view kept across frames, so the address cannot be reused while it is cached.
     bool BindDepth(uintptr_t nDepthTexture)
     {
-        std::string where;
         auto* pFound = FindD3DObject(nDepthTexture, VTableModule(reinterpret_cast<uintptr_t>(pScene)),
-                                     __uuidof(ID3D10Texture2D), where);
+                                     __uuidof(ID3D10Texture2D));
         auto* pTexture = static_cast<ID3D10Texture2D*>(pFound);
         if (!pTexture)
-        {
-            szStatus = "no depth texture in the DepthVPSampler object";
             return false;
-        }
 
         // The view holds its own reference.
         pTexture->Release();
@@ -869,12 +827,9 @@ class Device final : public VolumetricDevice
             return true;
 
         SafeRelease(pDepth);
-        SafeRelease(pProbe);
         pDepthTexture = pTexture;
         pTexture->GetDesc(&DepthDesc);
         eDepthView = DepthViewFormat(DepthDesc.Format);
-        szStatus = std::format("depth texture {}x{} format {} bind {:X} at {}", DepthDesc.Width, DepthDesc.Height,
-                               static_cast<uint32_t>(DepthDesc.Format), DepthDesc.BindFlags, where);
 
         if (eDepthView == DXGI_FORMAT_UNKNOWN || !(DepthDesc.BindFlags & D3D10_BIND_SHADER_RESOURCE))
             return false;
@@ -896,7 +851,7 @@ class Device final : public VolumetricDevice
         pDevice->GSSetShader(nullptr);
         pDevice->PSSetConstantBuffers(0, 1, &pConstants);
 
-        ID3D10SamplerState* pSamplers[nSavedSlots] = { pPoint, pPoint };
+        ID3D10SamplerState* pSamplers[nSavedSlots] = { pPoint, pPoint, pPoint, pLinearWrap };
         pDevice->PSSetSamplers(0, nSavedSlots, pSamplers);
     }
 
@@ -938,47 +893,10 @@ class Device final : public VolumetricDevice
         pScene = nullptr;
     }
 
-    bool EnsureProbe()
-    {
-        if (pProbe)
-            return true;
-
-        D3D10_TEXTURE2D_DESC desc = DepthDesc;
-        desc.Width = 1;
-        desc.Height = 1;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.SampleDesc.Count = 1;
-        desc.SampleDesc.Quality = 0;
-        desc.Usage = D3D10_USAGE_STAGING;
-        desc.BindFlags = 0;
-        desc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
-        desc.MiscFlags = 0;
-        return SUCCEEDED(pDevice->CreateTexture2D(&desc, nullptr, &pProbe));
-    }
-
-    void DecodeTexel(const uint8_t* pTexel, float rgb[3]) const
-    {
-        if (eDepthView == DXGI_FORMAT_R8G8B8A8_UNORM)
-        {
-            for (size_t i = 0; i < 3; i++)
-                rgb[i] = pTexel[i] / 255.0f;
-        }
-        else if (eDepthView == DXGI_FORMAT_R16_FLOAT || eDepthView == DXGI_FORMAT_R16G16B16A16_FLOAT)
-            rgb[0] = HalfToFloat(*reinterpret_cast<const uint16_t*>(pTexel));
-        else
-            std::memcpy(&rgb[0], pTexel, sizeof(float));
-    }
-
 public:
     bool Begin(uintptr_t nSceneTarget, uintptr_t nDepthTexture) override
     {
-        if (!ReadScene(nSceneTarget))
-            szStatus = "no scene target view";
-        else if (!EnsureSetup())
-            szStatus = "shader setup failed";
-
-        if (!pDevice || bSetupFailed || !BindDepth(nDepthTexture))
+        if (!ReadScene(nSceneTarget) || !EnsureSetup() || !BindDepth(nDepthTexture))
         {
             ReleaseFrame();
             return false;
@@ -1005,6 +923,34 @@ public:
         return Targets[static_cast<size_t>(eTexture)].Ensure(pDevice, LowResSize(eTexture, size));
     }
 
+    bool EnsureNoise(const std::vector<uint32_t>& vTexels, uint32_t nSide) override
+    {
+        if (pNoise)
+            return true;
+
+        D3D10_TEXTURE3D_DESC desc{};
+        desc.Width = nSide;
+        desc.Height = nSide;
+        desc.Depth = nSide;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.Usage = D3D10_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+
+        D3D10_SUBRESOURCE_DATA data{};
+        data.pSysMem = vTexels.data();
+        data.SysMemPitch = nSide * sizeof(uint32_t);
+        data.SysMemSlicePitch = nSide * nSide * sizeof(uint32_t);
+
+        if (FAILED(pDevice->CreateTexture3D(&desc, &data, &pNoiseTexture)) ||
+            FAILED(pDevice->CreateShaderResourceView(pNoiseTexture, nullptr, &pNoise)))
+        {
+            SafeRelease(pNoiseTexture);
+            return false;
+        }
+        return true;
+    }
+
     void Draw(const VolDraw& draw, const VolConstants& constants) override
     {
         UnbindResources();
@@ -1014,40 +960,22 @@ public:
 
         UploadConstants(constants);
         auto* pInput = draw.eInput == VolTexture::None ? nullptr : Targets[static_cast<size_t>(draw.eInput)].pSrv;
-        ID3D10ShaderResourceView* pResources[nSavedSlots] = { pDepth, pInput };
+        ID3D10ShaderResourceView* pResources[nSavedSlots] = { pDepth, pInput, nullptr, pNoise };
         pDevice->PSSetShaderResources(0, nSavedSlots, pResources);
         pDevice->PSSetShader(pShaders[static_cast<size_t>(draw.eShader)]);
         pDevice->Draw(3, 0);
     }
 
-    bool ReadDepthCentre(float rgb[3]) override
-    {
-        if (!EnsureProbe())
-            return false;
-
-        const D3D10_BOX centre = { DepthDesc.Width / 2, DepthDesc.Height / 2, 0,
-                                   DepthDesc.Width / 2 + 1, DepthDesc.Height / 2 + 1, 1 };
-        pDevice->CopySubresourceRegion(pProbe, 0, 0, 0, 0, pDepthTexture, 0, &centre);
-
-        D3D10_MAPPED_TEXTURE2D mapped{};
-        if (FAILED(pProbe->Map(0, D3D10_MAP_READ, 0, &mapped)))
-            return false;
-
-        DecodeTexel(static_cast<const uint8_t*>(mapped.pData), rgb);
-        pProbe->Unmap(0);
-        return true;
-    }
-
-    const std::string& Status() const override { return szStatus; }
-
     void Release() override
     {
         for (auto& target : Targets)
             target.Release();
-        SafeRelease(pProbe);
         SafeRelease(pDepth);
         pDepthTexture = nullptr;
+        SafeRelease(pNoise);
+        SafeRelease(pNoiseTexture);
         SafeRelease(pConstants);
+        SafeRelease(pLinearWrap);
         SafeRelease(pPoint);
         SafeRelease(pRasterizer);
         SafeRelease(pNoDepth);
