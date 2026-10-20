@@ -175,9 +175,8 @@ public:
             {
                 ppRenderProfile = *tail.get_first<void**>(nProfileTailPointer);
 
-                auto pJump = tail.get_first<uint8_t>(nProfileTailNotify);
-                NotifyRenderSettings = reinterpret_cast<NotifyRenderSettings_t>(
-                    pJump + 5 + *reinterpret_cast<int32_t*>(pJump + 1));
+                auto* pNotify = dunia_call_target(tail.get_first(nProfileTailNotify));
+                NotifyRenderSettings = reinterpret_cast<NotifyRenderSettings_t>(pNotify);
 
                 JackalFix::onIniFileChange() += []() { ApplyMaxFps(); };
                 JackalFix::onFrameEndDX9Event() += [](void*) { FollowRefreshRate(); };

@@ -91,7 +91,8 @@ static void ApplyWindowMode(HWND hWnd)
 
     const auto bBorderlessNow = IsBorderless();
     const auto nStyle = GetWindowLongA(hWnd, GWL_STYLE);
-    const auto nWanted = (nStyle & ~nModeStyles) | (bBorderlessNow ? nBorderlessStyle : nWindowedStyle);
+    const auto nModeStyle = bBorderlessNow ? nBorderlessStyle : nWindowedStyle;
+    const auto nWanted = (nStyle & ~nModeStyles) | nModeStyle;
 
     SetWindowLongA(hWnd, GWL_STYLE, nWanted);
 
@@ -149,7 +150,8 @@ static void ReenterFullscreen(uint8_t* pRenderer)
 
     auto** ppVtbl = *reinterpret_cast<void***>(pSwapChain);
 
-    if (FAILED(reinterpret_cast<SetFullscreenState_t>(ppVtbl[nSetFullscreenState / 4])(pSwapChain, TRUE, nullptr)))
+    auto pSetFullscreenState = reinterpret_cast<SetFullscreenState_t>(ppVtbl[nSetFullscreenState / 4]);
+    if (FAILED(pSetFullscreenState(pSwapChain, TRUE, nullptr)))
         return;
 
     // The two steps SetMode runs after its own transition; without them the render target view
@@ -271,7 +273,7 @@ static void InstallModeReapply()
     if (!modeCheck.empty())
     {
         auto* pCall = modeCheck.get_first<uint8_t>(nModeCheckCall);
-        auto* pDiffers = pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1);
+        auto* pDiffers = dunia_call_target(pCall);
         pModeCheckReturn = pCall + 5;
         ModeDiffersHook = safetyhook::create_inline(pDiffers, ModeDiffers);
     }
@@ -329,6 +331,270 @@ static void InstallFpsCounter()
     JackalFix::onIniFileChange() += ApplyFpsCounter;
 }
 
+// SetWindowMode(hWnd, title, x, y, width, height, hideCursor, maximized), stack at its entry.
+static constexpr uintptr_t nWindowModeHwnd = 0x04;
+static constexpr uintptr_t nWindowModeX = 0x0C;
+static constexpr uintptr_t nWindowModeY = 0x10;
+static constexpr uintptr_t nWindowModeWidth = 0x14;
+static constexpr uintptr_t nWindowModeHeight = 0x18;
+static constexpr uintptr_t nWindowModeHideCursor = 0x1C;
+
+// SetResolution's device config, by pointer in its fourth stack argument.
+static constexpr uintptr_t nSetResolutionConfig = 0x264;
+static constexpr uintptr_t nDeviceConfigFullscreen = 8;
+static constexpr uintptr_t nDeviceConfigMaximized = 9;
+
+// Into each pattern: where its hook or call sits.
+static constexpr ptrdiff_t nModeFlagStore = 0x0D;
+static constexpr ptrdiff_t nPumpDemandFlag = 0x02;
+static constexpr ptrdiff_t nRebuildViewsCall = 0x02;
+static constexpr ptrdiff_t nResizeDemandCompare = 0x1A;
+static constexpr ptrdiff_t nPresentParamsOperand = 5;
+
+static SafetyHookMid BorderlessSwitchHook{};
+static SafetyHookMid ModeFlagHook{};
+static SafetyHookMid SetWindowModeHook{};
+static SafetyHookMid DeviceConfigHook{};
+static SafetyHookMid ResetWindowSizeHook{};
+static SafetyHookMid FullscreenLatchHook{};
+static SafetyHookMid PumpDemandHook{};
+static SafetyHookMid ResizeTargetHook{};
+static SafetyHookMid FrameTailHook{};
+static SafetyHookMid ResizeDemandHook{};
+static SafetyHookMid PresentTailHook{};
+static SafetyHookMid MaximizedHook{};
+
+// The relocated TEST EAX,EAX runs on this value and the SETNZ reads its flags.
+static void OverrideBorderlessSwitch(SafetyHookContext& regs)
+{
+    regs.eax = IsBorderless() ? 1 : 0;
+}
+
+static void OverrideModeFlag(SafetyHookContext& regs)
+{
+    regs.ecx = (regs.ecx & ~0xFFu) | (IsFullscreen() ? 1u : 0u);
+}
+
+static void LatchGameWindow(SafetyHookContext& regs)
+{
+    hGameWindow = *(HWND*)(regs.esp + nWindowModeHwnd);
+
+    if (!IsBorderless())
+        return;
+
+    *(int32_t*)(regs.esp + nWindowModeX) = 0;
+    *(int32_t*)(regs.esp + nWindowModeY) = 0;
+    *(int32_t*)(regs.esp + nWindowModeWidth) = GetSystemMetrics(SM_CXSCREEN);
+    *(int32_t*)(regs.esp + nWindowModeHeight) = GetSystemMetrics(SM_CYSCREEN);
+
+    // The cursor argument would follow the mode flag borderless just cleared for the windowed
+    // resolution path; set back so borderless still feels like fullscreen.
+    *(int32_t*)(regs.esp + nWindowModeHideCursor) = 1;
+}
+
+// The relocated MOV loads the device config into EBP.
+static void OverrideDeviceConfig(SafetyHookContext& regs)
+{
+    auto* pConfig = *reinterpret_cast<uint8_t**>(regs.esp + nSetResolutionConfig);
+    if (!pConfig)
+        return;
+
+    pConfig[nDeviceConfigFullscreen] = IsFullscreen() ? 1 : 0;
+
+    // Maximized overwrites the requested resolution with the largest mode and takes an unscaled top
+    // left blit path; borderless wants the plain windowed branch.
+    pConfig[nDeviceConfigMaximized] = 0;
+}
+
+// Restyles before the engine's own resize, so that one lands on a window already wearing the right
+// frame.
+static void OverrideResetWindowSize(SafetyHookContext& regs)
+{
+    if (nWindowMode != nDisplayMode)
+        ApplyWindowMode(hGameWindow);
+
+    if (!IsBorderless())
+        return;
+
+    regs.edx = static_cast<uintptr_t>(GetSystemMetrics(SM_CXSCREEN));
+    regs.ecx = static_cast<uintptr_t>(GetSystemMetrics(SM_CYSCREEN));
+}
+
+static void OverrideFullscreenLatch(SafetyHookContext& regs)
+{
+    regs.eax = (regs.eax & ~0xFFu) | (IsFullscreen() ? 1u : 0u);
+}
+
+static void ClearPumpDemand(SafetyHookContext& regs)
+{
+    if (IsBorderless())
+        regs.ebx &= ~0xFFu;
+}
+
+static void StubResizeTarget(SafetyHookContext& regs)
+{
+    if (!IsBorderless())
+        return;
+
+    regs.eax = reinterpret_cast<uintptr_t>(pStubSwapChain);
+}
+
+// ESI is the renderer.
+static void KeepFullscreen(SafetyHookContext& regs)
+{
+    auto* pRenderer = reinterpret_cast<uint8_t*>(regs.esi);
+
+    if (IsFullscreen() && *(pRenderer + nRendererFullscreen) == 0)
+        ReenterFullscreen(pRenderer);
+}
+
+// Zero extents pass both halves of the comparison, so the function returns "nothing to do"; both
+// registers are dead afterwards.
+static void ClearResizeDemand(SafetyHookContext& regs)
+{
+    regs.edi = 0;
+    regs.ebp = 0;
+}
+
+// EBP is still the device config here.
+static void ApplyWindowedPresent(SafetyHookContext& regs)
+{
+    if (!pPresentParams)
+        return;
+
+    const bool bWindowedDevice = *reinterpret_cast<uint8_t*>(regs.ebp + nDeviceConfigFullscreen) == 0;
+
+    if (nDisplayMode == DISPLAY_WINDOWED && bWindowedDevice)
+    {
+        pPresentParams->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+        pPresentParams->BackBufferCount = 2;
+    }
+}
+
+static void SkipMaximized(SafetyHookContext& regs)
+{
+    if (IsBorderless())
+        regs.ecx = reinterpret_cast<uintptr_t>(pZeroedSettingsManager);
+}
+
+static void ApplyDisplayMode()
+{
+    nDisplayMode = JackalFixSettings.GetInt(PREF_DISPLAYMODE);
+}
+
+// Window creation and the first device: false when any of them is missing, which leaves the whole
+// display mode alone.
+static bool InstallWindowCreationHooks()
+{
+    // The strstr result for "-borderless" on its way to the window creator's ninth argument, which
+    // picks the style. Overwriting the result, not the SETNZ, keeps both directions.
+    auto borderlessSwitch = dunia_pattern("85 C0 8B 84 24 50 04 00 00 0F 95 C1 3B C3 88 4C 24 30");
+    if (borderlessSwitch.empty())
+        return false;
+
+    // Where the mode flag is born, one instruction before the store everything downstream reads.
+    // EAX holds the render config, ECX's low byte the flag.
+    auto modeFlag = dunia_pattern("39 58 28 89 5C 24 78 0F 95 C1 39 58 2C 88 4C 24 30 0F 95 C0 3A CB");
+    if (modeFlag.empty())
+        return false;
+
+    // SetWindowMode: sizes the 640x480 window once during init, and the only place the HWND is free.
+    auto setWindowMode = dunia_pattern("83 EC 10 8B 44 24 18 56 8B 74 24 18 57 50 56 FF 15 ? ? ? ?");
+    if (setWindowMode.empty())
+        return false;
+
+    // SetResolution loading its device config, one instruction before the three branch.
+    auto deviceConfig = dunia_pattern("8B AC 24 64 02 00 00 80 7D 08 00 74 24 8B 8C 24 5C 02 00 00");
+    if (deviceConfig.empty())
+        return false;
+
+    BorderlessSwitchHook = safetyhook::create_mid(borderlessSwitch.get_first(), OverrideBorderlessSwitch);
+    ModeFlagHook = safetyhook::create_mid(modeFlag.get_first(nModeFlagStore), OverrideModeFlag);
+    SetWindowModeHook = safetyhook::create_mid(setWindowMode.get_first(), LatchGameWindow);
+    DeviceConfigHook = safetyhook::create_mid(deviceConfig.get_first(), OverrideDeviceConfig);
+    return true;
+}
+
+// Shared between the two renderers.
+static void InstallResetHooks()
+{
+    // Renderer vtable+0x134, prologue through the null device test.
+    auto isDeviceFullscreen = dunia_pattern("83 EC 3C 83 79 38 00 74 45 8B 41 38 8D 14 24 52");
+    if (!isDeviceFullscreen.empty())
+        IsDeviceFullscreenHook = safetyhook::create_inline(isDeviceFullscreen.get_first(), IsDeviceFullscreen);
+
+    // D3D9 resizes the window to BackBufferWidth/Height after every Reset, which on WS_POPUP
+    // collapsed borderless to a box at the top left. At that SetWindowPos, ECX/EDX.
+    auto resetWindowSize = dunia_pattern("68 06 02 00 00 51 52 55 55 55 50 FF D3");
+    if (!resetWindowSize.empty())
+        ResetWindowSizeHook = safetyhook::create_mid(resetWindowSize.get_first(), OverrideResetWindowSize);
+
+    // The store writing the device config's fullscreen byte from the renderer's answer; the
+    // relocated MOV reads AL. Alt+Enter reaches the same store.
+    auto fullscreenLatch = dunia_pattern("88 86 60 03 00 00 8B 0D ? ? ? ? 8B 11 8B 82 34 01 00 00");
+    if (!fullscreenLatch.empty())
+        FullscreenLatchHook = safetyhook::create_mid(fullscreenLatch.get_first(), OverrideFullscreenLatch);
+
+    // One instruction past the "window and configured resolution disagree" flag, which borderless
+    // makes permanent.
+    auto pumpDemand = dunia_pattern("B3 01 C6 44 24 34 00 8B 44 24 14 83 F8 01");
+    if (!pumpDemand.empty())
+        PumpDemandHook = safetyhook::create_mid(pumpDemand.get_first(nPumpDemandFlag), ClearPumpDemand);
+}
+
+static void InstallD3D10Hooks()
+{
+    // The same collapse here: SetMode calls IDXGISwapChain::ResizeTarget, which resizes the output
+    // window. EAX is reloaded from renderer+0x40, so a stub reaches this call only.
+    auto resizeTarget = dunia_pattern("8B 08 8B 51 38 8D 7E 4C 57 50 FF D2");
+    if (!resizeTarget.empty())
+    {
+        pStubSwapChainVtbl[nResizeTarget / 4] = reinterpret_cast<void*>(&NullResizeTarget);
+        ResizeTargetHook = safetyhook::create_mid(resizeTarget.get_first(), StubResizeTarget);
+    }
+
+    // SetMode again, at the call rebuilding the render target views; only the displacement.
+    auto rebuildViews = dunia_pattern("8B CE E8 ? ? ? ? 80 7C 24 13 00 75 0B");
+    if (!rebuildViews.empty())
+        pRebuildViews = reinterpret_cast<RebuildViews_t>(dunia_call_target(rebuildViews.get_first(nRebuildViewsCall)));
+
+    // Tail of the D3D10 end of frame function, S_OK path after the destroy queues drain.
+    auto frameTail = dunia_pattern("8B 86 5C 01 00 00 A3 ? ? ? ? 8B 8E 74 01 00 00");
+    if (!frameTail.empty())
+        FrameTailHook = safetyhook::create_mid(frameTail.get_first(), KeepFullscreen);
+}
+
+static void InstallWindowedHooks()
+{
+    // Endless reset demand on a bordered window at the desktop resolution (the erratic windowed
+    // frame rate): the clamp lands in a field zeroed on entry, the comparison stays unclamped.
+    // Hooked after AdjustWindowRectEx, adjusted extents live in EDI and EBP.
+    auto resizeDemand = dunia_pattern("2B 7C 24 28 2B 6C 24 2C 89 44 24 18 8B 01 8B 90 34 01 00 00 FF D2 84 C0 75 75 81 E3 00 00 00 80");
+    if (!resizeDemand.empty())
+        ResizeDemandHook = safetyhook::create_mid(resizeDemand.get_first(nResizeDemandCompare), ClearResizeDemand);
+
+    // SetResolution hardcodes IMMEDIATE and BackBufferCount 0 for any windowed device; only a
+    // bordered window takes the composed blit path, where that buys nothing.
+    auto presentParams = dunia_pattern("8B 56 1C 89 15 ? ? ? ? 8B 46 20 A3 ? ? ? ? 8A 4D 08 F6 D9");
+    auto presentTail = dunia_pattern("8B 94 24 7C 02 00 00 8B 84 24 78 02 00 00 8B 8C 24 74 02 00 00");
+
+    if (!presentParams.empty() && !presentTail.empty())
+    {
+        auto* pParams = *presentParams.get_first<uint32_t*>(nPresentParamsOperand);
+        pPresentParams = reinterpret_cast<D3DPRESENT_PARAMETERS*>(pParams);
+
+        // After SetResolution has finished with the present parameters, before the multisample
+        // check; runs again on every resolution change.
+        PresentTailHook = safetyhook::create_mid(presentTail.get_first(), ApplyWindowedPresent);
+    }
+
+    // The last thing InitDuniaEngine does, and the only raw Maximized read. Maximising a popup that
+    // already covers the display snaps it to the work area.
+    auto maximized = dunia_pattern("8B 51 08 39 5A 2C 74 0A A1 ? ? ? ? 6A 03 50 EB 09");
+    if (!maximized.empty())
+        MaximizedHook = safetyhook::create_mid(maximized.get_first(), SkipMaximized);
+}
+
 class Borderless
 {
 public:
@@ -348,220 +614,12 @@ public:
 
         JackalFix::onDuniaInitEvent() += []()
         {
-            // The strstr result for "-borderless" on its way to the window creator's ninth argument,
-            // which picks the style. Overwriting the result, not the SETNZ, keeps both directions.
-
-            auto borderlessSwitch = dunia_pattern("85 C0 8B 84 24 50 04 00 00 0F 95 C1 3B C3 88 4C 24 30");
-            if (borderlessSwitch.empty())
+            if (!InstallWindowCreationHooks())
                 return;
 
-            // Where the mode flag is born, one instruction before the store everything downstream
-            // reads. EAX holds the render config, ECX's low byte the flag.
-            auto modeFlag = dunia_pattern("39 58 28 89 5C 24 78 0F 95 C1 39 58 2C 88 4C 24 30 0F 95 C0 3A CB");
-            if (modeFlag.empty())
-                return;
-
-            // SetWindowMode(hWnd, title, x, y, width, height, hideCursor, maximized): sizes the
-            // 640x480 window once during init, and the only place the HWND is free.
-            auto setWindowMode = dunia_pattern("83 EC 10 8B 44 24 18 56 8B 74 24 18 57 50 56 FF 15 ? ? ? ?");
-            if (setWindowMode.empty())
-                return;
-
-            // SetResolution loading its device config, one instruction before the three-branch.
-            auto deviceConfig = dunia_pattern("8B AC 24 64 02 00 00 80 7D 08 00 74 24 8B 8C 24 5C 02 00 00");
-            if (deviceConfig.empty())
-                return;
-
-            static auto BorderlessSwitchHook = safetyhook::create_mid(borderlessSwitch.get_first(), [](SafetyHookContext& regs)
-            {
-                // The relocated TEST EAX,EAX runs on this value and the SETNZ reads its flags.
-                regs.eax = IsBorderless() ? 1 : 0;
-            });
-
-            static auto ModeFlagHook = safetyhook::create_mid(modeFlag.get_first(0x0D), [](SafetyHookContext& regs)
-            {
-                regs.ecx = (regs.ecx & ~0xFFu) | (IsFullscreen() ? 1u : 0u);
-            });
-
-            static auto SetWindowModeHook = safetyhook::create_mid(setWindowMode.get_first(), [](SafetyHookContext& regs)
-            {
-                hGameWindow = *(HWND*)(regs.esp + 0x04);
-
-                if (!IsBorderless())
-                    return;
-
-                *(int32_t*)(regs.esp + 0x0C) = 0;                             // x
-                *(int32_t*)(regs.esp + 0x10) = 0;                             // y
-                *(int32_t*)(regs.esp + 0x14) = GetSystemMetrics(SM_CXSCREEN); // width
-                *(int32_t*)(regs.esp + 0x18) = GetSystemMetrics(SM_CYSCREEN); // height
-
-                // The cursor argument would follow the mode flag borderless just cleared for the
-                // windowed resolution path; set back so borderless still feels like fullscreen.
-                *(int32_t*)(regs.esp + 0x1C) = 1;
-            });
-
-            static auto DeviceConfigHook = safetyhook::create_mid(deviceConfig.get_first(), [](SafetyHookContext& regs)
-            {
-                // Device config by pointer in SetResolution's fourth stack argument; the relocated
-                // MOV loads it into EBP.
-                auto* pConfig = *reinterpret_cast<uint8_t**>(regs.esp + 0x264);
-                if (!pConfig)
-                    return;
-
-                pConfig[8] = IsFullscreen() ? 1 : 0;
-
-                // Maximized overwrites the requested resolution with the largest mode and takes an
-                // unscaled top-left blit path; borderless wants the plain windowed branch.
-                pConfig[9] = 0;
-            });
-
-            // Renderer vtable+0x134, prologue through the null-device test.
-            auto isDeviceFullscreen = dunia_pattern("83 EC 3C 83 79 38 00 74 45 8B 41 38 8D 14 24 52");
-            if (!isDeviceFullscreen.empty())
-                IsDeviceFullscreenHook = safetyhook::create_inline(isDeviceFullscreen.get_first(), IsDeviceFullscreen);
-
-            // D3D9 resizes the window to BackBufferWidth/Height after every Reset, which on
-            // WS_POPUP collapsed borderless to a box at the top left. At that SetWindowPos, ECX/EDX.
-            auto resetWindowSize = dunia_pattern("68 06 02 00 00 51 52 55 55 55 50 FF D3");
-            if (!resetWindowSize.empty())
-            {
-                static auto ResetWindowSizeHook = safetyhook::create_mid(resetWindowSize.get_first(), [](SafetyHookContext& regs)
-                {
-                    // Restyle before the engine's own resize, so that one lands on a window already
-                    // wearing the right frame.
-                    if (nWindowMode != nDisplayMode)
-                        ApplyWindowMode(hGameWindow);
-
-                    if (!IsBorderless())
-                        return;
-
-                    regs.edx = static_cast<uintptr_t>(GetSystemMetrics(SM_CXSCREEN));
-                    regs.ecx = static_cast<uintptr_t>(GetSystemMetrics(SM_CYSCREEN));
-                });
-            }
-
-            // Shared between the two renderers
-
-            // The store writing the device config's fullscreen byte from the renderer's answer;
-            // relocated MOV reads AL. Alt+Enter reaches the same store.
-            auto fullscreenLatch = dunia_pattern("88 86 60 03 00 00 8B 0D ? ? ? ? 8B 11 8B 82 34 01 00 00");
-            if (!fullscreenLatch.empty())
-            {
-                static auto FullscreenLatchHook = safetyhook::create_mid(fullscreenLatch.get_first(), [](SafetyHookContext& regs)
-                {
-                    regs.eax = (regs.eax & ~0xFFu) | (IsFullscreen() ? 1u : 0u);
-                });
-            }
-
-            // One instruction past the "window and configured resolution disagree" flag, which
-            // borderless makes permanent.
-            auto pumpDemand = dunia_pattern("B3 01 C6 44 24 34 00 8B 44 24 14 83 F8 01");
-            if (!pumpDemand.empty())
-            {
-                static auto PumpDemandHook = safetyhook::create_mid(pumpDemand.get_first(0x02), [](SafetyHookContext& regs)
-                {
-                    if (IsBorderless())
-                        regs.ebx &= ~0xFFu;
-                });
-            }
-
-            // Direct3D 10
-
-            // The same collapse here: SetMode calls IDXGISwapChain::ResizeTarget, which resizes the
-            // output window. EAX is reloaded from renderer+0x40, so a stub reaches this call only.
-            auto resizeTarget = dunia_pattern("8B 08 8B 51 38 8D 7E 4C 57 50 FF D2");
-            if (!resizeTarget.empty())
-            {
-                pStubSwapChainVtbl[nResizeTarget / 4] = reinterpret_cast<void*>(&NullResizeTarget);
-
-                static auto ResizeTargetHook = safetyhook::create_mid(resizeTarget.get_first(), [](SafetyHookContext& regs)
-                {
-                    if (!IsBorderless())
-                        return;
-
-                    regs.eax = reinterpret_cast<uintptr_t>(pStubSwapChain);
-                });
-            }
-
-            // SetMode again, at the call rebuilding the render target views; only the displacement.
-            auto rebuildViews = dunia_pattern("8B CE E8 ? ? ? ? 80 7C 24 13 00 75 0B");
-            if (!rebuildViews.empty())
-            {
-                auto* pCall = rebuildViews.get_first<uint8_t>(0x02);
-                pRebuildViews = reinterpret_cast<RebuildViews_t>(pCall + 5 + *reinterpret_cast<int32_t*>(pCall + 1));
-            }
-
-            // Tail of the D3D10 end-of-frame function, S_OK path after the destroy queues drain.
-            auto frameTail = dunia_pattern("8B 86 5C 01 00 00 A3 ? ? ? ? 8B 8E 74 01 00 00");
-            if (!frameTail.empty())
-            {
-                static auto FrameTailHook = safetyhook::create_mid(frameTail.get_first(), [](SafetyHookContext& regs)
-                {
-                    auto* pRenderer = reinterpret_cast<uint8_t*>(regs.esi);
-
-                    if (IsFullscreen() && *(pRenderer + nRendererFullscreen) == 0)
-                        ReenterFullscreen(pRenderer);
-                });
-            }
-
-            // Endless reset demand on a bordered window at the desktop resolution (the erratic
-            // windowed frame rate): the clamp lands in a field zeroed on entry, the comparison stays
-            // unclamped. Hooked after AdjustWindowRectEx, adjusted extents live in EDI and EBP.
-            auto resizeDemand = dunia_pattern("2B 7C 24 28 2B 6C 24 2C 89 44 24 18 8B 01 8B 90 34 01 00 00 FF D2 84 C0 75 75 81 E3 00 00 00 80");
-            if (!resizeDemand.empty())
-            {
-                static auto ResizeDemandHook = safetyhook::create_mid(resizeDemand.get_first(0x1A), [](SafetyHookContext& regs)
-                {
-                    // Zero extents pass both halves of the comparison, so the function returns
-                    // "nothing to do"; both registers are dead afterwards.
-                    regs.edi = 0;
-                    regs.ebp = 0;
-                });
-            }
-
-            // SetResolution hardcodes IMMEDIATE and BackBufferCount 0 for any windowed device; only
-            // a bordered window takes the composed blit path, where that buys nothing.
-            auto presentParams = dunia_pattern("8B 56 1C 89 15 ? ? ? ? 8B 46 20 A3 ? ? ? ? 8A 4D 08 F6 D9");
-            auto presentTail = dunia_pattern("8B 94 24 7C 02 00 00 8B 84 24 78 02 00 00 8B 8C 24 74 02 00 00");
-
-            if (!presentParams.empty() && !presentTail.empty())
-            {
-                pPresentParams = reinterpret_cast<D3DPRESENT_PARAMETERS*>(*presentParams.get_first<uint32_t*>(5));
-
-                // After SetResolution has finished with the present parameters, before the
-                // multisample check; runs again on every resolution change.
-                static auto PresentTailHook = safetyhook::create_mid(presentTail.get_first(), [](SafetyHookContext& regs)
-                {
-                    if (!pPresentParams)
-                        return;
-
-                    // EBP is still the device config here.
-                    const bool bWindowedDevice = *reinterpret_cast<uint8_t*>(regs.ebp + 8) == 0;
-
-                    if (nDisplayMode == DISPLAY_WINDOWED && bWindowedDevice)
-                    {
-                        pPresentParams->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
-                        pPresentParams->BackBufferCount = 2;
-                    }
-                });
-            }
-
-            // The last thing InitDuniaEngine does, and the only raw Maximized read. Maximising a
-            // popup that already covers the display snaps it to the work area.
-            auto maximized = dunia_pattern("8B 51 08 39 5A 2C 74 0A A1 ? ? ? ? 6A 03 50 EB 09");
-            if (!maximized.empty())
-            {
-                static auto MaximizedHook = safetyhook::create_mid(maximized.get_first(), [](SafetyHookContext& regs)
-                {
-                    if (IsBorderless())
-                        regs.ecx = reinterpret_cast<uintptr_t>(pZeroedSettingsManager);
-                });
-            }
-
-            static constexpr auto ApplyDisplayMode = []()
-            {
-                nDisplayMode = JackalFixSettings.GetInt(PREF_DISPLAYMODE);
-            };
+            InstallResetHooks();
+            InstallD3D10Hooks();
+            InstallWindowedHooks();
 
             ApplyDisplayMode();
 

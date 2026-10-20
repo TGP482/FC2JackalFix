@@ -45,9 +45,61 @@ static uint32_t nOutputH = 0;
 static IDirect3DSurface9* pKnownBackBuffer = nullptr;
 static bool bSubstituted = false;
 
-// The present-parameter globals, from the pattern's own operands; ASLR moves them.
+// The present parameter globals, from the pattern's own operands; ASLR moves them.
 static uint32_t* pBackBufferWidth = nullptr;
 static uint32_t* pBackBufferHeight = nullptr;
+
+// Renderer fields off DAT_11609668; both renderers share the global and the vtable layout.
+static constexpr uintptr_t nRendererDevice = 0x38;
+static constexpr uintptr_t nRendererAspect = 0x24;
+
+// The device config SetResolution is handed.
+static constexpr uintptr_t nDeviceConfigFallbackWindow = 0x04;
+static constexpr uintptr_t nDeviceConfigFullscreen = 8;
+static constexpr uintptr_t nDeviceConfigMaximized = 9;
+static constexpr uintptr_t nDeviceConfigWindow = 0x18;
+
+// The largest rect of the frame's shape inside the backbuffer, centred: 4:3 on 16:9 gets bars, not
+// a stretch.
+struct FitRect
+{
+    int32_t nX;
+    int32_t nY;
+    UINT nWidth;
+    UINT nHeight;
+};
+
+static FitRect FitInside(UINT nFrameW, UINT nFrameH, UINT nWidth, UINT nHeight)
+{
+    UINT nFitW = nWidth;
+    UINT nFitH = nHeight;
+
+    const auto w = static_cast<uint64_t>(nFrameW);
+    const auto h = static_cast<uint64_t>(nFrameH);
+
+    if (w * nHeight > h * nWidth)
+        nFitH = (std::max)(1u, static_cast<UINT>((nWidth * h + w / 2) / w));
+    else if (h * nWidth > w * nHeight)
+        nFitW = (std::max)(1u, static_cast<UINT>((nHeight * w + h / 2) / h));
+
+    const auto nFitX = static_cast<int32_t>((nWidth - nFitW) / 2);
+    const auto nFitY = static_cast<int32_t>((nHeight - nFitH) / 2);
+    return { nFitX, nFitY, nFitW, nFitH };
+}
+
+// One halving stage on an axis still at 2:1 or more, never below the fit.
+static UINT HalvingStep(UINT nSource, UINT nFit)
+{
+    if (nSource < nFit * 2)
+        return nSource;
+
+    return (std::max)(nSource / 2, nFit);
+}
+
+static bool IsFullFrame(const FitRect& fit, UINT nWidth, UINT nHeight)
+{
+    return fit.nWidth == nWidth && fit.nHeight == nHeight;
+}
 
 // The resolve pass
 
@@ -105,27 +157,9 @@ class CResolver
     static inline Target Chain[nMaxChain];
 
     static inline IDirect3DStateBlock9* pStateBlock = nullptr;
-    // One textured quad pSrc into a rect of pDst: whole target for each halving stage, the
-    // aspect-preserving fit inside the backbuffer for the final pass.
-    static bool Blit(IDirect3DDevice9* pDevice, IDirect3DSurface9* pDst, UINT nTargetW, UINT nTargetH,
-                     int32_t nDstX, int32_t nDstY, UINT nDstW, UINT nDstH,
-                     IDirect3DTexture9* pSrc, int32_t eFilter)
+
+    static void SetBlitState(IDirect3DDevice9* pDevice, IDirect3DTexture9* pSrc, int32_t eFilter)
     {
-        // Depth first: D3D9 rejects a render target smaller than the bound depth-stencil, and while
-        // supersampling the engine's depth buffer is the larger.
-        pDevice->SetDepthStencilSurface(nullptr);
-
-        if (FAILED(pDevice->SetRenderTarget(0, pDst)))
-            return false;
-
-        // Viewport is the whole target, not the fitted rect, so the clear reaches the bars.
-        const D3DVIEWPORT9 viewport = { 0, 0, nTargetW, nTargetH, 0.0f, 1.0f };
-        pDevice->SetViewport(&viewport);
-
-        // D3DSWAPEFFECT_DISCARD: the bars hold stale driver content unless written every frame.
-        if (nDstX != 0 || nDstY != 0 || nDstW != nTargetW || nDstH != nTargetH)
-            pDevice->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0);
-
         pDevice->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
         pDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
         pDevice->SetRenderState(D3DRS_STENCILENABLE, FALSE);
@@ -170,11 +204,34 @@ class CResolver
         pDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
         pDevice->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
         pDevice->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    }
 
-        const auto fLeft = static_cast<float>(nDstX) - 0.5f;
-        const auto fTop = static_cast<float>(nDstY) - 0.5f;
-        const auto fRight = fLeft + static_cast<float>(nDstW);
-        const auto fBottom = fTop + static_cast<float>(nDstH);
+    // One textured quad pSrc into a rect of pDst: whole target for each halving stage, the aspect
+    // preserving fit inside the backbuffer for the final pass.
+    static bool Blit(IDirect3DDevice9* pDevice, IDirect3DSurface9* pDst, UINT nTargetW, UINT nTargetH,
+                     const FitRect& dst, IDirect3DTexture9* pSrc, int32_t eFilter)
+    {
+        // Depth first: D3D9 rejects a render target smaller than the bound depth stencil, and while
+        // supersampling the engine's depth buffer is the larger.
+        pDevice->SetDepthStencilSurface(nullptr);
+
+        if (FAILED(pDevice->SetRenderTarget(0, pDst)))
+            return false;
+
+        // Viewport is the whole target, not the fitted rect, so the clear reaches the bars.
+        const D3DVIEWPORT9 viewport = { 0, 0, nTargetW, nTargetH, 0.0f, 1.0f };
+        pDevice->SetViewport(&viewport);
+
+        // D3DSWAPEFFECT_DISCARD: the bars hold stale driver content unless written every frame.
+        if (dst.nX != 0 || dst.nY != 0 || !IsFullFrame(dst, nTargetW, nTargetH))
+            pDevice->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0);
+
+        SetBlitState(pDevice, pSrc, eFilter);
+
+        const auto fLeft = static_cast<float>(dst.nX) - 0.5f;
+        const auto fTop = static_cast<float>(dst.nY) - 0.5f;
+        const auto fRight = fLeft + static_cast<float>(dst.nWidth);
+        const auto fBottom = fTop + static_cast<float>(dst.nHeight);
 
         // D3D9's half-pixel texel-centre offset, folded into the rect's own origin.
         const ScreenVertex verts[4] =
@@ -200,6 +257,53 @@ public:
         return Substitute.Ensure(pDevice, w, h, fmt);
     }
 
+    // StretchRect when no state block can be made: driver's filter, but it needs no device state.
+    static void StretchFallback(IDirect3DDevice9* pDevice, IDirect3DSurface9* pBackBuffer,
+                                const D3DSURFACE_DESC& desc, const FitRect& fit)
+    {
+        // ColorFill, not Clear: no device state can be saved and restored on this path.
+        if (!IsFullFrame(fit, desc.Width, desc.Height))
+            pDevice->ColorFill(pBackBuffer, nullptr, D3DCOLOR_ARGB(255, 0, 0, 0));
+
+        const auto nRight = fit.nX + static_cast<LONG>(fit.nWidth);
+        const auto nBottom = fit.nY + static_cast<LONG>(fit.nHeight);
+        const RECT rect = { fit.nX, fit.nY, nRight, nBottom };
+        pDevice->StretchRect(Substitute.pSurf, nullptr, pBackBuffer, &rect, D3DTEXF_LINEAR);
+    }
+
+    // A bilinear tap is an exact 2x2 box average only at half size, so anything past 2:1 is halved
+    // through scratch targets first. The chain targets the fitted rect. Returns the last stage.
+    static IDirect3DTexture9* RunHalvingChain(IDirect3DDevice9* pDevice, const FitRect& fit)
+    {
+        IDirect3DTexture9* pSrc = Substitute.pTex;
+        UINT nSrcW = Substitute.nWidth;
+        UINT nSrcH = Substitute.nHeight;
+
+        for (size_t stage = 0; stage < nMaxChain; ++stage)
+        {
+            // Either axis at 2:1 is enough; requiring both leaves a one axis reduction on four taps.
+            if (nSrcW < fit.nWidth * 2 && nSrcH < fit.nHeight * 2)
+                break;
+
+            const UINT dw = HalvingStep(nSrcW, fit.nWidth);
+            const UINT dh = HalvingStep(nSrcH, fit.nHeight);
+
+            if (!Chain[stage].Ensure(pDevice, dw, dh, Substitute.eFormat))
+                break;
+
+            // A stage that did not run still holds the previous frame.
+            const FitRect whole = { 0, 0, dw, dh };
+            if (!Blit(pDevice, Chain[stage].pSurf, dw, dh, whole, pSrc, FILTER_BILINEAR))
+                break;
+
+            pSrc = Chain[stage].pTex;
+            nSrcW = dw;
+            nSrcH = dh;
+        }
+
+        return pSrc;
+    }
+
     // Top of the frame function, before the screenshot block and Present. Present is outside the
     // scene bracket (no DAT_11609D78 write inside 0x10424150), so draw work here is legal.
     static void Resolve(IDirect3DDevice9* pDevice)
@@ -215,33 +319,14 @@ public:
         D3DSURFACE_DESC desc{};
         pBackBuffer->GetDesc(&desc);
 
-        // Largest backbuffer rect with the internal frame's shape, centred: 4:3 on 16:9 gets bars,
-        // not a stretch. From the substitute, not the chain's output, since the halvings round.
-        UINT nFitW = desc.Width;
-        UINT nFitH = desc.Height;
-        {
-            const auto w = static_cast<uint64_t>(Substitute.nWidth);
-            const auto h = static_cast<uint64_t>(Substitute.nHeight);
-
-            if (w * desc.Height > h * desc.Width)
-                nFitH = (std::max)(1u, static_cast<UINT>((desc.Width * h + w / 2) / w));
-            else if (h * desc.Width > w * desc.Height)
-                nFitW = (std::max)(1u, static_cast<UINT>((desc.Height * w + h / 2) / h));
-        }
-
-        const auto nFitX = static_cast<int32_t>((desc.Width - nFitW) / 2);
-        const auto nFitY = static_cast<int32_t>((desc.Height - nFitH) / 2);
+        // From the substitute, not the chain's output, since the halvings round.
+        const auto fit = FitInside(Substitute.nWidth, Substitute.nHeight, desc.Width, desc.Height);
 
         // Nothing else puts a frame in front of the player, so no path out may leave the backbuffer
-        // untouched. StretchRect is the fallback: driver's filter, but it needs no device state.
+        // untouched.
         if (!pStateBlock && FAILED(pDevice->CreateStateBlock(D3DSBT_ALL, &pStateBlock)))
         {
-            // ColorFill, not Clear: no device state can be saved and restored on this path.
-            if (nFitW != desc.Width || nFitH != desc.Height)
-                pDevice->ColorFill(pBackBuffer, nullptr, D3DCOLOR_ARGB(255, 0, 0, 0));
-
-            const RECT fit = { nFitX, nFitY, nFitX + static_cast<LONG>(nFitW), nFitY + static_cast<LONG>(nFitH) };
-            pDevice->StretchRect(Substitute.pSurf, nullptr, pBackBuffer, &fit, D3DTEXF_LINEAR);
+            StretchFallback(pDevice, pBackBuffer, desc, fit);
             SafeRelease(pBackBuffer);
             return;
         }
@@ -256,34 +341,8 @@ public:
 
         const bool bOpenedScene = SUCCEEDED(pDevice->BeginScene());
 
-        IDirect3DTexture9* pSrc = Substitute.pTex;
-        UINT nSrcW = Substitute.nWidth;
-        UINT nSrcH = Substitute.nHeight;
-
-        // A bilinear tap is an exact 2x2 box average only at half size, so anything past 2:1 is
-        // halved through scratch targets first. The chain targets the fitted rect.
-        for (size_t stage = 0; stage < nMaxChain; ++stage)
-        {
-            // Either axis at 2:1 is enough; requiring both leaves a one-axis reduction on four taps.
-            if (nSrcW < nFitW * 2 && nSrcH < nFitH * 2)
-                break;
-
-            const UINT dw = (nSrcW >= nFitW * 2) ? (std::max)(nSrcW / 2, nFitW) : nSrcW;
-            const UINT dh = (nSrcH >= nFitH * 2) ? (std::max)(nSrcH / 2, nFitH) : nSrcH;
-
-            if (!Chain[stage].Ensure(pDevice, dw, dh, Substitute.eFormat))
-                break;
-
-            // A stage that did not run still holds the previous frame.
-            if (!Blit(pDevice, Chain[stage].pSurf, dw, dh, 0, 0, dw, dh, pSrc, FILTER_BILINEAR))
-                break;
-
-            pSrc = Chain[stage].pTex;
-            nSrcW = dw;
-            nSrcH = dh;
-        }
-
-        Blit(pDevice, pBackBuffer, desc.Width, desc.Height, nFitX, nFitY, nFitW, nFitH, pSrc, nFilter);
+        auto* pSrc = RunHalvingChain(pDevice, fit);
+        Blit(pDevice, pBackBuffer, desc.Width, desc.Height, fit, pSrc, nFilter);
 
         if (bOpenedScene)
             pDevice->EndScene();
@@ -315,7 +374,8 @@ public:
             pDevice->SetDepthStencilSurface(nullptr);
 
             IDirect3DSurface9* pBackBuffer = nullptr;
-            if (SUCCEEDED(pDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer)
+            auto hr = pDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer);
+            if (SUCCEEDED(hr) && pBackBuffer)
             {
                 pDevice->SetRenderTarget(0, pBackBuffer);
                 pBackBuffer->Release();
@@ -351,13 +411,13 @@ public:
 
 // Hook bodies
 
-// Renderer vtable +0x40, end of frame. `this` in ECX, renderer+0x38 the IDirect3DDevice9*.
+// Renderer vtable +0x40, end of frame. `this` in ECX.
 static void OnFrameEnd(uintptr_t nRenderer)
 {
     if (!nRenderer)
         return;
 
-    auto* pDevice = *reinterpret_cast<IDirect3DDevice9**>(nRenderer + 0x38);
+    auto* pDevice = *reinterpret_cast<IDirect3DDevice9**>(nRenderer + nRendererDevice);
     if (bSubstituted)
         CResolver::Resolve(pDevice);
 
@@ -433,6 +493,172 @@ static void OnSetWrapperSurface(IDirect3DSurface9** ppSurface)
     pDevice->Release();
 }
 
+// SetResolution's arguments at its first instruction, [esp+0] still the return address.
+static constexpr uintptr_t nSetResolutionWidth = 0x04;
+static constexpr uintptr_t nSetResolutionHeight = 0x08;
+static constexpr uintptr_t nSetResolutionConfig = 0x0C;
+
+// Into the present parameters pattern: the two globals' operands and the fullscreen byte read.
+static constexpr ptrdiff_t nBackBufferWidthOperand = 5;
+static constexpr ptrdiff_t nBackBufferHeightOperand = 13;
+static constexpr ptrdiff_t nPresentFullscreenRead = 0x11;
+
+static SafetyHookMid SetResolutionHook{};
+static SafetyHookMid OutputSizeHook{};
+static SafetyHookMid WrapperSetterHook{};
+static SafetyHookMid FrameEndHook{};
+static SafetyHookMid PreResetHook{};
+
+static HWND DeviceConfigWindow(const uint8_t* pConfig)
+{
+    auto hWnd = *reinterpret_cast<const HWND*>(pConfig + nDeviceConfigWindow);
+    if (!hWnd)
+        hWnd = *reinterpret_cast<const HWND*>(pConfig + nDeviceConfigFallbackWindow);
+
+    return hWnd;
+}
+
+// Only once window and resolution differ: at the desktop resolution the split costs a fullscreen
+// blit per frame for nothing. Measured, not assumed.
+static bool ClientDiffers(const uint8_t* pConfig, uint32_t nWidth, uint32_t nHeight)
+{
+    auto hWnd = DeviceConfigWindow(pConfig);
+
+    RECT client{};
+    if (!hWnd || !GetClientRect(hWnd, &client))
+        return false;
+
+    return client.right - client.left != static_cast<LONG>(nWidth)
+        || client.bottom - client.top != static_cast<LONG>(nHeight);
+}
+
+static void OverrideSetResolution(SafetyHookContext& regs)
+{
+    auto* pWidth = *reinterpret_cast<uint32_t**>(regs.esp + nSetResolutionWidth);
+    auto* pHeight = *reinterpret_cast<uint32_t**>(regs.esp + nSetResolutionHeight);
+    auto* pConfig = *reinterpret_cast<uint8_t**>(regs.esp + nSetResolutionConfig);
+
+    nInternalW = 0;
+    nInternalH = 0;
+
+    if (!pWidth || !pHeight || !pConfig)
+        return;
+
+    auto nWantW = nRequestedW;
+    auto nWantH = nRequestedH;
+
+    // Borderless has already split frame from output; routing it here gets the fit and the filter
+    // instead of the runtime's point sample at the wrong shape.
+    if ((nWantW <= 0 || nWantH <= 0) && bBorderless && ClientDiffers(pConfig, *pWidth, *pHeight))
+    {
+        nWantW = static_cast<int32_t>(*pWidth);
+        nWantH = static_cast<int32_t>(*pHeight);
+    }
+
+    const bool bWanted = nWantW > 0 && nWantH > 0;
+
+    // Present at what the engine was about to render at; windowed, replaced with the measured client
+    // rect once the branch is known.
+    nOutputW = *pWidth;
+    nOutputH = *pHeight;
+
+    if (!bWanted || nOutputW == 0 || nOutputH == 0)
+        return;
+
+    // "Use the desktop resolution" makes GetScreenSize return the client rect instead of the stored
+    // pair, undoing the split. Clearing it costs nothing.
+    pConfig[nDeviceConfigMaximized] = 0;
+
+    nInternalW = static_cast<uint32_t>(nWantW);
+    nInternalH = static_cast<uint32_t>(nWantH);
+
+    *pWidth = nInternalW;
+    *pHeight = nInternalH;
+}
+
+// Measure, not recompute, so backbuffer and client area cannot drift apart.
+static void UpdateWindowedOutput(const uint8_t* pConfig)
+{
+    HWND hWnd = DeviceConfigWindow(pConfig);
+
+    RECT client{};
+    if (!hWnd || !GetClientRect(hWnd, &client))
+        return;
+
+    if (client.right <= client.left || client.bottom <= client.top)
+        return;
+
+    nOutputW = static_cast<uint32_t>(client.right - client.left);
+    nOutputH = static_cast<uint32_t>(client.bottom - client.top);
+}
+
+// EBP is the device config, ESI the renderer. Hooked on the fullscreen byte read; DAT_11609D40
+// (Windowed) came from the same byte, so one read answers both.
+static void ApplyOutputSize(SafetyHookContext& regs)
+{
+    if (nInternalW == 0 || nInternalH == 0 || nOutputW == 0 || nOutputH == 0)
+        return;
+
+    if (!pBackBufferWidth || !pBackBufferHeight)
+        return;
+
+    auto* pConfig = reinterpret_cast<uint8_t*>(regs.ebp);
+    const bool bFullscreen = pConfig[nDeviceConfigFullscreen] != 0;
+
+    if (!bFullscreen)
+        UpdateWindowedOutput(pConfig);
+
+    *pBackBufferWidth = nOutputW;
+    *pBackBufferHeight = nOutputH;
+
+    // Letterboxed, so the engine must compose for the internal frame's shape. Fullscreen only; left
+    // alone when the shapes agree, so forced aspect still holds.
+    const auto fInternal = static_cast<float>(nInternalW) / static_cast<float>(nInternalH);
+    const auto fOutput = static_cast<float>(nOutputW) / static_cast<float>(nOutputH);
+
+    if (bFullscreen && std::fabs(fInternal - fOutput) > 0.0001f)
+        *reinterpret_cast<float*>(regs.esi + nRendererAspect) = fInternal;
+}
+
+// __thiscall f(this in ECX, surface at [esp+4]), callee cleaned; the relocated MOV EAX,[ESP+4]
+// reads the slot back.
+static void SetWrapperSurface(SafetyHookContext& regs)
+{
+    OnSetWrapperSurface(reinterpret_cast<IDirect3DSurface9**>(regs.esp + 0x04));
+}
+
+static void FrameEnd(SafetyHookContext& regs)
+{
+    OnFrameEnd(regs.ecx);
+}
+
+// Unconditional: nothing here may outlive the Reset four instructions away.
+static void ReleaseBeforeReset(SafetyHookContext& regs)
+{
+    IDirect3DDevice9* pDevice = nullptr;
+    if (regs.ecx)
+        pDevice = *reinterpret_cast<IDirect3DDevice9**>(regs.ecx + nRendererDevice);
+
+    CResolver::ReleaseForReset(pDevice);
+    bSubstituted = false;
+    JackalFix::onDeviceResetEvent().executeAll();
+}
+
+static void ApplyInternalResolutionSettings()
+{
+    nRequestedW = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONX);
+    nRequestedH = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONY);
+    nFilter = JackalFixSettings.GetInt(PREF_SCALINGFILTER);
+    bBorderless = JackalFixSettings.GetInt(PREF_DISPLAYMODE) == 2;
+
+    // One axis without the other is a typo rather than a request.
+    if (nRequestedW <= 0 || nRequestedH <= 0)
+    {
+        nRequestedW = 0;
+        nRequestedH = 0;
+    }
+}
+
 class InternalResolution
 {
 public:
@@ -467,146 +693,21 @@ public:
             if (preReset.empty())
                 return;
 
-            pBackBufferWidth = *presentParams.get_first<uint32_t*>(5);
-            pBackBufferHeight = *presentParams.get_first<uint32_t*>(13);
+            pBackBufferWidth = *presentParams.get_first<uint32_t*>(nBackBufferWidthOperand);
+            pBackBufferHeight = *presentParams.get_first<uint32_t*>(nBackBufferHeightOperand);
 
-            static auto SetResolutionHook = safetyhook::create_mid(setResolution.get_first(), [](SafetyHookContext& regs)
-            {
-                // At the first instruction [esp+0] is still the return address.
-                auto* pWidth = *reinterpret_cast<uint32_t**>(regs.esp + 0x04);
-                auto* pHeight = *reinterpret_cast<uint32_t**>(regs.esp + 0x08);
-                auto* pConfig = *reinterpret_cast<uint8_t**>(regs.esp + 0x0C);
+            SetResolutionHook = safetyhook::create_mid(setResolution.get_first(), OverrideSetResolution);
+            OutputSizeHook = safetyhook::create_mid(presentParams.get_first(nPresentFullscreenRead), ApplyOutputSize);
+            WrapperSetterHook = safetyhook::create_mid(wrapperSetter.get_first(), SetWrapperSurface);
+            FrameEndHook = safetyhook::create_mid(frameEnd.get_first(), FrameEnd);
+            PreResetHook = safetyhook::create_mid(preReset.get_first(), ReleaseBeforeReset);
 
-                nInternalW = 0;
-                nInternalH = 0;
-
-                if (!pWidth || !pHeight || !pConfig)
-                    return;
-
-                auto nWantW = nRequestedW;
-                auto nWantH = nRequestedH;
-
-                // Borderless has already split frame from output; routing it here gets the fit and
-                // the filter instead of the runtime's point sample at the wrong shape.
-                if ((nWantW <= 0 || nWantH <= 0) && bBorderless)
-                {
-                    // Only once the two differ: at the desktop resolution the split costs a
-                    // fullscreen blit per frame for nothing. Measured, not assumed.
-                    RECT client{};
-                    auto hWnd = *reinterpret_cast<HWND*>(pConfig + 0x18);
-                    if (!hWnd)
-                        hWnd = *reinterpret_cast<HWND*>(pConfig + 0x04);
-
-                    if (hWnd && GetClientRect(hWnd, &client) &&
-                        (client.right - client.left != static_cast<LONG>(*pWidth) ||
-                         client.bottom - client.top != static_cast<LONG>(*pHeight)))
-                    {
-                        nWantW = static_cast<int32_t>(*pWidth);
-                        nWantH = static_cast<int32_t>(*pHeight);
-                    }
-                }
-
-                const bool bWanted = nWantW > 0 && nWantH > 0;
-
-                // Present at what the engine was about to render at; windowed, replaced with the
-                // measured client rect once the branch is known.
-                nOutputW = *pWidth;
-                nOutputH = *pHeight;
-
-                if (!bWanted || nOutputW == 0 || nOutputH == 0)
-                    return;
-
-                // "Use the desktop resolution" makes GetScreenSize return the client rect instead of
-                // the stored pair, undoing the split. Clearing it costs nothing.
-                pConfig[9] = 0;
-
-                nInternalW = static_cast<uint32_t>(nWantW);
-                nInternalH = static_cast<uint32_t>(nWantH);
-
-                *pWidth = nInternalW;
-                *pHeight = nInternalH;
-            });
-
-            static auto BackBufferSizeHook = safetyhook::create_mid(presentParams.get_first(0x11), [](SafetyHookContext& regs)
-            {
-                if (nInternalW == 0 || nInternalH == 0 || nOutputW == 0 || nOutputH == 0 ||
-                    !pBackBufferWidth || !pBackBufferHeight)
-                    return;
-
-                // EBP is the device config, ESI the renderer. Hooked on the fullscreen-byte read;
-                // DAT_11609D40 (Windowed) came from the same byte, so one read answers both.
-                auto* pConfig = reinterpret_cast<uint8_t*>(regs.ebp);
-                const bool bFullscreen = pConfig[8] != 0;
-
-                if (!bFullscreen)
-                {
-                    // Measure, not recompute, so backbuffer and client area cannot drift apart.
-                    HWND hWnd = *reinterpret_cast<HWND*>(pConfig + 0x18);
-                    if (!hWnd)
-                        hWnd = *reinterpret_cast<HWND*>(pConfig + 0x04);
-
-                    RECT client{};
-                    if (hWnd && GetClientRect(hWnd, &client) &&
-                        client.right > client.left && client.bottom > client.top)
-                    {
-                        nOutputW = static_cast<uint32_t>(client.right - client.left);
-                        nOutputH = static_cast<uint32_t>(client.bottom - client.top);
-                    }
-                }
-
-                *pBackBufferWidth = nOutputW;
-                *pBackBufferHeight = nOutputH;
-
-                // Letterboxed, so the engine must compose for the internal frame's shape. Fullscreen
-                // only; left alone when the shapes agree, so forced-aspect still holds.
-                const auto fInternal = static_cast<float>(nInternalW) / static_cast<float>(nInternalH);
-                const auto fOutput = static_cast<float>(nOutputW) / static_cast<float>(nOutputH);
-
-                if (bFullscreen && std::fabs(fInternal - fOutput) > 0.0001f)
-                    *reinterpret_cast<float*>(regs.esi + 0x24) = fInternal;
-            });
-
-            static auto WrapperSetterHook = safetyhook::create_mid(wrapperSetter.get_first(), [](SafetyHookContext& regs)
-            {
-                // __thiscall f(this in ECX, surface at [esp+4]), callee-cleaned; the relocated
-                // MOV EAX,[ESP+4] reads the slot back.
-                OnSetWrapperSurface(reinterpret_cast<IDirect3DSurface9**>(regs.esp + 0x04));
-            });
-
-            static auto FrameEndHook = safetyhook::create_mid(frameEnd.get_first(), [](SafetyHookContext& regs)
-            {
-                OnFrameEnd(regs.ecx);
-            });
-
-            static auto PreResetHook = safetyhook::create_mid(preReset.get_first(), [](SafetyHookContext& regs)
-            {
-                // Unconditional: nothing here may outlive the Reset four instructions away.
-                CResolver::ReleaseForReset(regs.ecx ? *reinterpret_cast<IDirect3DDevice9**>(regs.ecx + 0x38) : nullptr);
-                bSubstituted = false;
-                JackalFix::onDeviceResetEvent().executeAll();
-            });
-
-            static auto InternalResolutionCB = []()
-            {
-                nRequestedW = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONX);
-                nRequestedH = JackalFixSettings.GetInt(PREF_INTERNALRESOLUTIONY);
-                nFilter = JackalFixSettings.GetInt(PREF_SCALINGFILTER);
-                bBorderless = JackalFixSettings.GetInt(PREF_DISPLAYMODE) == 2;
-
-                // One axis without the other is a typo rather than a request.
-                if (nRequestedW <= 0 || nRequestedH <= 0)
-                {
-                    nRequestedW = 0;
-                    nRequestedH = 0;
-                }
-            };
-
-            InternalResolutionCB();
+            ApplyInternalResolutionSettings();
 
             // An ini change lands on the next launch or resolution change.
             JackalFix::onIniFileChange() += []()
             {
-                InternalResolutionCB();
+                ApplyInternalResolutionSettings();
             };
         };
 
@@ -634,10 +735,9 @@ public:
 namespace dx10
 {
 
-// Renderer fields off DAT_11609668; the D3D9 renderer shares the global and the vtable layout.
+// D3D10 renderer fields; the device sits at nRendererDevice as in the D3D9 renderer.
 static constexpr uintptr_t nRendererModeWidth = 0x1C;
 static constexpr uintptr_t nRendererModeHeight = 0x20;
-static constexpr uintptr_t nRendererDevice = 0x38;
 static constexpr uintptr_t nRendererSwapChain = 0x40;
 static constexpr uintptr_t nDescWidth = 0x4C;
 static constexpr uintptr_t nDescOutputWindow = 0x78;
@@ -750,7 +850,8 @@ class CResolver
         if (!hModule)
             return false;
 
-        auto pCompile = reinterpret_cast<D3D10CompileShader_t>(GetProcAddress(hModule, "D3D10CompileShader"));
+        auto* pProc = GetProcAddress(hModule, "D3D10CompileShader");
+        auto pCompile = reinterpret_cast<D3D10CompileShader_t>(pProc);
         if (!pCompile)
             return false;
 
@@ -807,18 +908,17 @@ class CResolver
         return true;
     }
 
-    // As the D3D9 Blit, with a full-screen triangle.
-    static void Blit(ID3D10Device* pDevice, ID3D10RenderTargetView* pDst,
-                     int32_t nDstX, int32_t nDstY, UINT nDstW, UINT nDstH,
+    // As the D3D9 Blit, with a full screen triangle.
+    static void Blit(ID3D10Device* pDevice, ID3D10RenderTargetView* pDst, const FitRect& dst,
                      ID3D10ShaderResourceView* pSrc, int32_t eFilter)
     {
         pDevice->OMSetRenderTargets(1, &pDst, nullptr);
 
         D3D10_VIEWPORT viewport{};
-        viewport.TopLeftX = nDstX;
-        viewport.TopLeftY = nDstY;
-        viewport.Width = nDstW;
-        viewport.Height = nDstH;
+        viewport.TopLeftX = dst.nX;
+        viewport.TopLeftY = dst.nY;
+        viewport.Width = dst.nWidth;
+        viewport.Height = dst.nHeight;
         viewport.MinDepth = 0.0f;
         viewport.MaxDepth = 1.0f;
         pDevice->RSSetViewports(1, &viewport);
@@ -860,6 +960,35 @@ public:
         return pDevice && EnsureSetup(pDevice) && Substitute.Ensure(pDevice, w, h, fmt);
     }
 
+    // As the D3D9 chain. Returns the last stage.
+    static ID3D10ShaderResourceView* RunHalvingChain(ID3D10Device* pDevice, const FitRect& fit)
+    {
+        auto* pSrc = Substitute.pSrv;
+        UINT nSrcW = Substitute.nWidth;
+        UINT nSrcH = Substitute.nHeight;
+
+        for (size_t stage = 0; stage < nMaxChain; ++stage)
+        {
+            if (nSrcW < fit.nWidth * 2 && nSrcH < fit.nHeight * 2)
+                break;
+
+            const UINT dw = HalvingStep(nSrcW, fit.nWidth);
+            const UINT dh = HalvingStep(nSrcH, fit.nHeight);
+
+            if (!Chain[stage].Ensure(pDevice, dw, dh, Substitute.eFormat))
+                break;
+
+            const FitRect whole = { 0, 0, dw, dh };
+            Blit(pDevice, Chain[stage].pRtv, whole, pSrc, FILTER_BILINEAR);
+
+            pSrc = Chain[stage].pSrv;
+            nSrcW = dw;
+            nSrcH = dh;
+        }
+
+        return pSrc;
+    }
+
     static void Resolve(ID3D10Device* pDevice, IDXGISwapChain* pSwapChain)
     {
         if (!pDevice || !pSwapChain || !Substitute.pSrv || !pVertexShader || !pBlitShader)
@@ -867,8 +996,8 @@ public:
 
         // Fetched fresh: a held reference to buffer zero fails the next ResizeBuffers.
         ID3D10Texture2D* pBackBuffer = nullptr;
-        if (FAILED(pSwapChain->GetBuffer(0, __uuidof(ID3D10Texture2D),
-                                         reinterpret_cast<void**>(&pBackBuffer))) || !pBackBuffer)
+        auto hr = pSwapChain->GetBuffer(0, __uuidof(ID3D10Texture2D), reinterpret_cast<void**>(&pBackBuffer));
+        if (FAILED(hr) || !pBackBuffer)
             return;
 
         D3D10_TEXTURE2D_DESC desc{};
@@ -881,52 +1010,17 @@ public:
             return;
         }
 
-        // Largest backbuffer rect with the internal frame's shape, centred, as above.
-        UINT nFitW = desc.Width;
-        UINT nFitH = desc.Height;
-        {
-            const auto w = static_cast<uint64_t>(Substitute.nWidth);
-            const auto h = static_cast<uint64_t>(Substitute.nHeight);
-
-            if (w * desc.Height > h * desc.Width)
-                nFitH = (std::max)(1u, static_cast<UINT>((desc.Width * h + w / 2) / w));
-            else if (h * desc.Width > w * desc.Height)
-                nFitW = (std::max)(1u, static_cast<UINT>((desc.Height * w + h / 2) / h));
-        }
-
-        const auto nFitX = static_cast<int32_t>((desc.Width - nFitW) / 2);
-        const auto nFitY = static_cast<int32_t>((desc.Height - nFitH) / 2);
-
-        auto* pSrc = Substitute.pSrv;
-        UINT nSrcW = Substitute.nWidth;
-        UINT nSrcH = Substitute.nHeight;
-
-        for (size_t stage = 0; stage < nMaxChain; ++stage)
-        {
-            if (nSrcW < nFitW * 2 && nSrcH < nFitH * 2)
-                break;
-
-            const UINT dw = (nSrcW >= nFitW * 2) ? (std::max)(nSrcW / 2, nFitW) : nSrcW;
-            const UINT dh = (nSrcH >= nFitH * 2) ? (std::max)(nSrcH / 2, nFitH) : nSrcH;
-
-            if (!Chain[stage].Ensure(pDevice, dw, dh, Substitute.eFormat))
-                break;
-
-            Blit(pDevice, Chain[stage].pRtv, 0, 0, dw, dh, pSrc, FILTER_BILINEAR);
-
-            pSrc = Chain[stage].pSrv;
-            nSrcW = dw;
-            nSrcH = dh;
-        }
+        const auto fit = FitInside(Substitute.nWidth, Substitute.nHeight, desc.Width, desc.Height);
+        auto* pSrc = RunHalvingChain(pDevice, fit);
 
         // DXGI_SWAP_EFFECT_DISCARD: the bars hold stale driver content unless written.
-        if (nFitW != desc.Width || nFitH != desc.Height)
+        if (!IsFullFrame(fit, desc.Width, desc.Height))
         {
             const float fBlack[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
             pDevice->ClearRenderTargetView(pTargetView, fBlack);
         }
 
-        Blit(pDevice, pTargetView, nFitX, nFitY, nFitW, nFitH, pSrc, nFilter);
+        Blit(pDevice, pTargetView, fit, pSrc, nFilter);
 
         // Exceptions to the state shadow: next wanted value is also null, so the call is skipped
         // and the binding would stay live.
@@ -950,6 +1044,54 @@ static IDXGISwapChain* SwapChain(uintptr_t nRenderer)
     return *reinterpret_cast<IDXGISwapChain**>(nRenderer + nRendererSwapChain);
 }
 
+// False when there is nothing to measure.
+static bool UpdateOutputSize(uintptr_t nRenderer, const DXGI_SWAP_CHAIN_DESC& scd, bool bWindowed)
+{
+    if (bWindowed)
+    {
+        // What DXGI stretches the backbuffer to: the window, not the video options.
+        const auto hWnd = *reinterpret_cast<HWND*>(nRenderer + nDescOutputWindow);
+        RECT client{};
+        if (!hWnd || !GetClientRect(hWnd, &client))
+            return false;
+
+        nOutputW = static_cast<uint32_t>(client.right - client.left);
+        nOutputH = static_cast<uint32_t>(client.bottom - client.top);
+    }
+    else
+    {
+        // Exclusive fullscreen: the swapchain is the authority, not the window, which disagrees for
+        // a frame across a mode transition.
+        nOutputW = scd.BufferDesc.Width;
+        nOutputH = scd.BufferDesc.Height;
+    }
+
+    return nOutputW != 0 && nOutputH != 0;
+}
+
+// False when no split is asked for.
+static bool UpdateInternalSize(uintptr_t nRenderer)
+{
+    if (nRequestedW > 0 && nRequestedH > 0)
+    {
+        nInternalW = static_cast<uint32_t>(nRequestedW);
+        nInternalH = static_cast<uint32_t>(nRequestedH);
+    }
+    else if (bBorderless)
+    {
+        // From the pair FUN_1041FB00 writes out of SetMode's arguments, not the swapchain
+        // description, which EndFrame rewrites from the client rect.
+        nInternalW = *reinterpret_cast<uint32_t*>(nRenderer + nRendererModeWidth);
+        nInternalH = *reinterpret_cast<uint32_t*>(nRenderer + nRendererModeHeight);
+    }
+    else
+    {
+        return false;
+    }
+
+    return nInternalW != 0 && nInternalH != 0;
+}
+
 // Once per swapchain: is the split on, and at what sizes. Entry of FUN_1041FE80, the only
 // backbuffer fetch, reached after creation and after resize.
 static void PrepareSplit(uintptr_t nRenderer)
@@ -967,46 +1109,10 @@ static void PrepareSplit(uintptr_t nRenderer)
 
     const bool bWindowed = *reinterpret_cast<uint32_t*>(nRenderer + nDescWindowed) != 0;
 
-    if (bWindowed)
-    {
-        // What DXGI stretches the backbuffer to: the window, not the video options.
-        const auto hWnd = *reinterpret_cast<HWND*>(nRenderer + nDescOutputWindow);
-        RECT client{};
-        if (!hWnd || !GetClientRect(hWnd, &client))
-            return;
-
-        nOutputW = static_cast<uint32_t>(client.right - client.left);
-        nOutputH = static_cast<uint32_t>(client.bottom - client.top);
-    }
-    else
-    {
-        // Exclusive fullscreen: the swapchain is the authority, not the window, which disagrees for
-        // a frame across a mode transition.
-        nOutputW = scd.BufferDesc.Width;
-        nOutputH = scd.BufferDesc.Height;
-    }
-
-    if (nOutputW == 0 || nOutputH == 0)
+    if (!UpdateOutputSize(nRenderer, scd, bWindowed))
         return;
 
-    if (nRequestedW > 0 && nRequestedH > 0)
-    {
-        nInternalW = static_cast<uint32_t>(nRequestedW);
-        nInternalH = static_cast<uint32_t>(nRequestedH);
-    }
-    else if (bBorderless)
-    {
-        // From the pair FUN_1041FB00 writes out of SetMode's arguments, not the swapchain
-        // description, which EndFrame rewrites from the client rect.
-        nInternalW = *reinterpret_cast<uint32_t*>(nRenderer + nRendererModeWidth);
-        nInternalH = *reinterpret_cast<uint32_t*>(nRenderer + nRendererModeHeight);
-    }
-    else
-    {
-        return;
-    }
-
-    if (nInternalW == 0 || nInternalH == 0)
+    if (!UpdateInternalSize(nRenderer))
         return;
 
     // Nothing to split while the two agree.
@@ -1050,6 +1156,49 @@ static void __fastcall BackBufferSize(uint8_t* pRenderer, void* pEdx, HWND hWnd,
     BackBufferSizeHook.fastcall(pRenderer, pEdx, hWnd, pWidth, pHeight);
 }
 
+// Into the viewport pattern: past the two description loads.
+static constexpr ptrdiff_t nViewportSizeLoaded = 0x08;
+
+static SafetyHookMid BackBufferViewsHook{};
+static SafetyHookMid ViewportHook{};
+static SafetyHookMid AttachTextureHook{};
+static SafetyHookMid ResolveFrameHook{};
+
+// ECX is the renderer.
+static void PrepareSplitHook(SafetyHookContext& regs)
+{
+    PrepareSplit(regs.ecx);
+}
+
+// Description width and height in EBX and EBP on their way to SetViewport.
+static void OverrideViewport(SafetyHookContext& regs)
+{
+    if (!bActive)
+        return;
+
+    regs.ebx = nInternalW;
+    regs.ebp = nInternalH;
+}
+
+// Backbuffer texture in ECX.
+static void SubstituteTexture(SafetyHookContext& regs)
+{
+    if (!bActive)
+        return;
+
+    if (auto* pTexture = CResolver::Texture())
+        regs.ecx = reinterpret_cast<uintptr_t>(pTexture);
+}
+
+// ESI is the renderer.
+static void ResolveFrame(SafetyHookContext& regs)
+{
+    if (bActive)
+        CResolver::Resolve(Device(regs.esi), SwapChain(regs.esi));
+
+    JackalFix::onFrameEndDX10Event().executeAll(Device(regs.esi), SwapChain(regs.esi));
+}
+
 class InternalResolutionDX10
 {
 public:
@@ -1074,43 +1223,17 @@ public:
             // The end of the frame function, after the drawing and before the Present argument loads.
             auto frameEnd = dunia_pattern("BD 01 00 00 00 55 6A 02 E8 ? ? ? ? 8B 46 40 8B 96 8C 00 00 00");
 
-            if (backBufferViews.empty() || viewport.empty() || attachTexture.empty() ||
-                backBufferSize.empty() || frameEnd.empty())
+            if (backBufferViews.empty() || viewport.empty() || attachTexture.empty())
+                return;
+
+            if (backBufferSize.empty() || frameEnd.empty())
                 return;
 
             BackBufferSizeHook = safetyhook::create_inline(backBufferSize.get_first(), BackBufferSize);
-
-            static auto BackBufferViewsHook = safetyhook::create_mid(backBufferViews.get_first(), [](SafetyHookContext& regs)
-            {
-                // ECX is the renderer.
-                PrepareSplit(regs.ecx);
-            });
-
-            static auto ViewportHook = safetyhook::create_mid(viewport.get_first(0x08), [](SafetyHookContext& regs)
-            {
-                if (!bActive)
-                    return;
-
-                regs.ebx = nInternalW;
-                regs.ebp = nInternalH;
-            });
-
-            static auto AttachTextureHook = safetyhook::create_mid(attachTexture.get_first(), [](SafetyHookContext& regs)
-            {
-                if (!bActive)
-                    return;
-
-                if (auto* pTexture = CResolver::Texture())
-                    regs.ecx = reinterpret_cast<uintptr_t>(pTexture);
-            });
-
-            static auto FrameEndHook = safetyhook::create_mid(frameEnd.get_first(), [](SafetyHookContext& regs)
-            {
-                if (bActive)
-                    CResolver::Resolve(Device(regs.esi), SwapChain(regs.esi));
-
-                JackalFix::onFrameEndDX10Event().executeAll(Device(regs.esi), SwapChain(regs.esi));
-            });
+            BackBufferViewsHook = safetyhook::create_mid(backBufferViews.get_first(), PrepareSplitHook);
+            ViewportHook = safetyhook::create_mid(viewport.get_first(nViewportSizeLoaded), OverrideViewport);
+            AttachTextureHook = safetyhook::create_mid(attachTexture.get_first(), SubstituteTexture);
+            ResolveFrameHook = safetyhook::create_mid(frameEnd.get_first(), ResolveFrame);
 
             JackalFix::onShutdownEvent() += []()
             {

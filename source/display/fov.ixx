@@ -876,6 +876,400 @@ static void OnSeatFieldOfView(SafetyHookContext& regs)
 // Near pass routing is the engine's own: renderContext+0x24 & node+0x90 (CGraphicComponent+0x12C).
 // Not promoted at the routing tests: the node cannot name its owner, and world geometry follows.
 
+// Camera aspect, ESI at the near pass projection.
+static constexpr uintptr_t nCameraAspect = 0x18;
+
+// The Widescreen option's blend weight, EDI at the widescreen test.
+static constexpr uintptr_t nWidescreenWeight = 0x58;
+static constexpr uintptr_t nZeroFlag = 0x40;
+
+// Into each pattern: where its hook or call sits.
+static constexpr ptrdiff_t nViewmodelProjectionCall = 9;
+static constexpr ptrdiff_t nFirstPersonMaskCall = 0x12;
+static constexpr ptrdiff_t nMuzzleSystemMove = 0x22;
+static constexpr ptrdiff_t nWidescreenBranch = 10;
+static constexpr ptrdiff_t nPawnCameraFovStored = 10;
+static constexpr ptrdiff_t nGliderFovPush = 0x19;
+static constexpr ptrdiff_t nGliderSeatFovPush = 0x1D;
+
+static SafetyHookMid FieldOfViewHook{};
+static SafetyHookMid ViewmodelFovHook{};
+static SafetyHookMid MuzzleFirstHook{};
+static SafetyHookMid MuzzleSecondHook{};
+static SafetyHookMid LayerCensusHook{};
+static SafetyHookMid LayerToggleHook{};
+static SafetyHookMid CompassMarkerHook{};
+static SafetyHookMid WidescreenFovHook{};
+static SafetyHookMid CinematicFovHook{};
+static SafetyHookMid BeautifierUpdateHook{};
+static SafetyHookMid CameraFovBlendHook{};
+static SafetyHookMid NarrowFovHook{};
+static SafetyHookMid GliderFovHook{};
+static SafetyHookMid GliderSeatFovHook{};
+static SafetyHookMid IronsightFovHook{};
+
+static void ApplyFieldOfViewSettings()
+{
+    fFieldOfView = JackalFixSettings.GetFloat(PREF_FIELDOFVIEW);
+    fViewmodelFieldOfView = JackalFixSettings.GetFloat(PREF_VIEWMODELFIELDOFVIEW);
+    fIronsightFieldOfView = JackalFixSettings.GetFloat(PREF_IRONSIGHTFIELDOFVIEW);
+    fVehicleFieldOfView = JackalFixSettings.GetFloat(PREF_VEHICLEFIELDOFVIEW);
+    fGliderFieldOfView = std::clamp(fFieldOfView, fFieldOfViewFloor, fGliderFieldOfViewMax);
+    fNarrowFieldOfView = std::clamp(fFieldOfView, fFieldOfViewFloor, fNarrowFieldOfViewMax);
+
+    // Straight into the pawn, not waiting for the next weapon setup or seat.
+    PushPawnFieldOfView();
+}
+
+// Image bounds for the beautifier name walk: everything past the instance is inside Dunia, so a
+// stray pointer fails closed.
+static void LatchDuniaBounds()
+{
+    nDuniaBase = reinterpret_cast<uintptr_t>(hDunia);
+    if (nDuniaBase == 0)
+        return;
+
+    auto pDos = (const IMAGE_DOS_HEADER*)nDuniaBase;
+    auto pNt = (const IMAGE_NT_HEADERS*)(nDuniaBase + pDos->e_lfanew);
+    nDuniaEnd = nDuniaBase + pNt->OptionalHeader.SizeOfImage;
+}
+
+static void OverrideFieldOfView(SafetyHookContext& regs)
+{
+    *(float*)(regs.esp + 4) = fFieldOfView;
+}
+
+// Map open in a vehicle: NearPassFieldOfView hands the camera FOV back, so the markers keep their
+// alignment.
+static void ApplyViewmodelFieldOfView(SafetyHookContext& regs)
+{
+    ReleaseWithheldLayerIfStale();
+
+    auto pFov = (float*)regs.esp;
+    auto fNear = NearPassFieldOfView(*pFov, *(float*)(regs.esi + nCameraAspect));
+
+    *pFov = fNear;
+}
+
+// ECX is the owning CCompassObjectives.
+static void LatchMarkersInVehicle(SafetyHookContext& regs)
+{
+    bMarkersInVehicle.store(*(bool*)(regs.ecx + nCompassInVehicleOffset), std::memory_order_relaxed);
+    nMarkersStamp.store(GetTickCount(), std::memory_order_relaxed);
+}
+
+// Forces the branch and pins the weight to 1.0; the weight is recomputed every frame.
+static void ForceWidescreenBlend(SafetyHookContext& regs)
+{
+    regs.eflags &= ~nZeroFlag;
+    *(float*)(regs.edi + nWidescreenWeight) = 1.0f;
+}
+
+static void NarrowCinematicFieldOfView(SafetyHookContext& regs)
+{
+    NarrowFieldOfView((float*)(regs.edi + nBoneCameraFieldOfView), DegreesToRadians(fNarrowFieldOfView));
+}
+
+static uint32_t NarrowContextFor(uint32_t nKind)
+{
+    switch (nKind)
+    {
+    case KIND_LADDER:
+        return NARROW_LADDER;
+    case KIND_CUTSCENE:
+        return NARROW_CUTSCENE;
+    default:
+        return NARROW_NONE;
+    }
+}
+
+// ECX-4 is the primary base.
+static void UpdateNarrowContext(SafetyHookContext& regs)
+{
+    auto nComponent = regs.ecx - 4;
+
+    // Every AI updates through here, so the type half is checked first.
+    if (KindOf(*(uintptr_t*)(nComponent + nTypeBeautifier)) != KIND_PLAYER)
+        return;
+
+    auto nContext = NarrowContextFor(KindOf(*(uintptr_t*)(nComponent + nContextBeautifier)));
+
+    nNarrowContext.store(nContext, std::memory_order_relaxed);
+    nNarrowStamp.store(GetTickCount(), std::memory_order_relaxed);
+}
+
+// ESI the camera, EAX the CPawnFOV.
+static void ApplyCameraFieldOfView(SafetyHookContext& regs)
+{
+    // Before the MOVSS this stands on, so the blend uses it on this frame.
+    *(float*)(regs.esi + nPawnCameraFieldOfView) = DegreesToRadians(fFieldOfView);
+
+    RememberPawnFieldOfView(regs.eax);
+    fIronsightBlend.store(*(float*)(regs.eax + nPawnFovIronsightWeight), std::memory_order_relaxed);
+    fVehicleFovWeight.store(*(float*)(regs.eax + nPawnFovBaseWeight), std::memory_order_relaxed);
+
+    // The swing deadline: the one hook running every frame on the gameplay thread.
+    ReleaseWithheldLayerIfStale();
+
+    // Same reason, and required: moving the set allocates through a first use branch only reached
+    // from the gameplay tick; from the near pass hook it faulted.
+    UpdateFirstPersonSetForScene();
+}
+
+// The pawn that owned the state is gone: the clamp is dropped outright.
+static void ResetNarrowBlend()
+{
+    fNarrowBlend = 0.0f;
+    nNarrowBlendCamera = 0;
+    nNarrowBlendContext = NARROW_NONE;
+    ClearNarrowViewmodel();
+    bNearPassFollowsCamera.store(false, std::memory_order_relaxed);
+}
+
+// Steps the blend in or out; false once it has blended all the way out.
+static bool UpdateNarrowBlend(float fDelta, bool bNarrow)
+{
+    auto fStep = fDelta / fNarrowBlendSeconds;
+
+    fNarrowBlend = std::clamp(fNarrowBlend + (bNarrow ? fStep : -fStep), 0.0f, 1.0f);
+    if (fNarrowBlend > 0.0f)
+        return true;
+
+    nNarrowBlendContext = NARROW_NONE;
+    ClearNarrowViewmodel();
+    bNearPassFollowsCamera.store(false, std::memory_order_relaxed);
+    return false;
+}
+
+static void ApplyNarrowBlend(uintptr_t nCameraState)
+{
+    // Smoothstep, so the move leaves and arrives at rest.
+    auto fWeight = fNarrowBlend * fNarrowBlend * (3.0f - 2.0f * fNarrowBlend);
+    auto fFov = DegreesToRadians(fNarrowBlendCap);
+
+    auto pWorldFov = (float*)(nCameraState + nCameraStateFieldOfView);
+    auto fBefore = *pWorldFov;
+
+    BlendFieldOfView(pWorldFov, fFov, fWeight);
+    BlendFieldOfView((float*)(nCameraState + nCameraStateViewmodelFieldOfView), fFov, fWeight);
+
+    // Off the world FOV, not the blend, so an unmoved frame carries a scale of one.
+    auto fBeforeTan = std::tan(fBefore * 0.5f);
+    auto fScale = 1.0f;
+    if (fBeforeTan > 0.0f)
+        fScale = std::tan(*pWorldFov * 0.5f) / fBeforeTan;
+
+    fNarrowTangentScale.store(fScale, std::memory_order_relaxed);
+    fNarrowViewmodelCeiling.store(fFov, std::memory_order_relaxed);
+}
+
+// ESI the camera state, EDI the camera, EBP the update's arguments.
+static void NarrowCameraFieldOfView(SafetyHookContext& regs)
+{
+    // Only the camera actually driving the view. An inactive one still updates.
+    if (*(uint8_t*)(regs.edi + nCameraActive) == 0)
+        return;
+
+    // On the update's own delta, so a paused game does not age the hold.
+    auto fDelta = std::clamp(*(float*)(regs.ebp + nCameraDeltaTime), 0.0f, fNarrowBlendMaxStep);
+
+    StepWithheldLayer(fDelta);
+
+    if (NarrowStateIsStale())
+    {
+        ResetNarrowBlend();
+        return;
+    }
+
+    auto nContext = nNarrowContext.load(std::memory_order_relaxed);
+    auto bNarrow = nContext != NARROW_NONE;
+
+    // A different active camera: start again rather than carry a weight across views, and never
+    // hold a pointer that is not coming back.
+    if (nNarrowBlendCamera != regs.edi)
+    {
+        nNarrowBlendCamera = regs.edi;
+        fNarrowBlend = 0.0f;
+    }
+
+    // So the near pass follows the camera on exactly the frames the world is clamped. The blend out
+    // counts, or the viewmodel jumps out of every scene.
+    if (nContext == NARROW_CUTSCENE)
+        nNarrowBlendContext = NARROW_CUTSCENE;
+
+    auto bLeavingScene = fNarrowBlend > 0.0f && nNarrowBlendContext == NARROW_CUTSCENE;
+    bNearPassFollowsCamera.store(nContext == NARROW_CUTSCENE || bLeavingScene, std::memory_order_relaxed);
+
+    if (!bNarrow && fNarrowBlend <= 0.0f)
+    {
+        ClearNarrowViewmodel();
+        return;
+    }
+
+    // Both contexts take the same ceiling; NarrowContext still tells them apart.
+    if (bNarrow)
+        fNarrowBlendCap = fNarrowFieldOfView;
+
+    if (!UpdateNarrowBlend(fDelta, bNarrow))
+        return;
+
+    ApplyNarrowBlend(regs.esi);
+}
+
+// EDI the pawn's FOV channels, EAX the weapon property object.
+static void ApplyIronsightFieldOfView(SafetyHookContext& regs)
+{
+    // Every pawn arms itself through here, so the player's channel is picked out first. An unset
+    // handle is accepted, the session's first setup being his.
+    const auto nPlayer = nPawnFieldOfView.load(std::memory_order_relaxed);
+    if (nPlayer != 0 && regs.edi != nPlayer)
+        return;
+
+    // Taken whether or not the setting is in use: it is the handle a later change needs.
+    RememberPawnFieldOfView(regs.edi);
+
+    // The player's melee weapon, for the swing.
+    RememberMeleeWeapon(*(uint32_t*)(regs.eax + nWeaponClass));
+
+    // Degrees for the comparison, both ends of this path being radians. Decided either way: the push
+    // needs the answer for whatever is in hand.
+    const auto fWeapon = *(const float*)(regs.eax + nWeaponIronsightFieldOfView);
+    const auto bOptic = RadiansToDegrees(fWeapon) < fMagnifiedOpticCutoff;
+
+    bIronsightIsMagnifiedOptic.store(bOptic, std::memory_order_relaxed);
+
+    if (fIronsightFieldOfView <= 0.0f || bOptic)
+        return;
+
+    *(float*)(regs.edi + nPawnFovIronsightValue) = DegreesToRadians(fIronsightFieldOfView);
+}
+
+// The weapon and arms pass, its muzzle effects and the first person layer around a melee swing.
+static void InstallNearPassHooks()
+{
+    // Near pass for the weapon and arms, its own projection. ESI the camera.
+    auto viewmodelPattern = dunia_pattern("D9 86 28 02 00 00 D9 1C 24 E8 ? ? ? ? D9 45 14");
+    if (!viewmodelPattern.empty())
+    {
+        auto* pSite = viewmodelPattern.get_first(nViewmodelProjectionCall);
+        ViewmodelFovHook = safetyhook::create_mid(pSite, ApplyViewmodelFieldOfView);
+    }
+
+    // Off the anim notify spawner's own call: the target has no prologue to anchor on.
+    auto firstPersonMaskPattern = dunia_pattern("8B BF 2C 01 00 00 57 8D 4C 24 20 E8 ? ? ? ? 8B C8 E8");
+    if (!firstPersonMaskPattern.empty())
+    {
+        auto* pCall = firstPersonMaskPattern.get_first<uint8_t>(nFirstPersonMaskCall);
+        SetFirstPersonLayerMask = (tSetFirstPersonLayerMask)dunia_call_target(pCall);
+    }
+
+    // The two weapon effect spawners, differing in stack layout. Hooked on the MOV ECX,EAX before
+    // any emitter runs, EAX the system, EBX the component; the second needs a tail.
+    auto muzzleFirstPattern = dunia_pattern("84 C0 75 59 8D 54 24 20 52 8D 4C 24 1C E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8D 4C 24 18 E8 ? ? ? ? 8B C8 E8");
+    auto muzzleSecondPattern = dunia_pattern("84 C0 75 59 8D 44 24 10 50 8D 4C 24 10 E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8D 4C 24 0C E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8B 97 A0 00 00 00");
+
+    if (SetFirstPersonLayerMask != nullptr && !muzzleFirstPattern.empty())
+    {
+        auto* pSite = muzzleFirstPattern.get_first(nMuzzleSystemMove);
+        MuzzleFirstHook = safetyhook::create_mid(pSite, MuzzleFirstPersonMask);
+    }
+
+    if (SetFirstPersonLayerMask != nullptr && !muzzleSecondPattern.empty())
+    {
+        auto* pSite = muzzleSecondPattern.get_first(nMuzzleSystemMove);
+        MuzzleSecondHook = safetyhook::create_mid(pSite, MuzzleFirstPersonMask);
+    }
+
+    // The push half of the layer, for handing a withheld clear back to the engine.
+    auto layerPushPattern = dunia_pattern("56 8B F1 83 BE C0 01 00 00 00 57 75 25 8B 46 08");
+    if (!layerPushPattern.empty())
+    {
+        PushFirstPersonLayer = (tPushFirstPersonLayer)layerPushPattern.get_first<void>();
+
+        // The same entry, as a census of every component carrying a near pass mask.
+        LayerCensusHook = safetyhook::create_mid(layerPushPattern.get_first(), RememberFirstPersonComponent);
+    }
+
+    // The melee weapon's layer, held through the swing. ESI the component, bEnable [ESP+8].
+    auto layerTogglePattern = dunia_pattern("80 7C 24 08 00 56 8B F1 74 1E 8B 8E 30 01 00 00");
+    if (!layerTogglePattern.empty())
+        LayerToggleHook = safetyhook::create_mid(layerTogglePattern.get_first(), HoldFirstPersonLayer);
+
+    // Marker placement; bInVehicle at +0x28 read here.
+    auto compassMarkerPattern = dunia_pattern("55 8B EC 83 E4 F0 81 EC 84 00 00 00 53 56 57 8B 7D 10 8B 77 0C 8B D9");
+    if (!compassMarkerPattern.empty())
+        CompassMarkerHook = safetyhook::create_mid(compassMarkerPattern.get_first(), LatchMarkersInVehicle);
+}
+
+// The world camera: Field of View itself, and the narrow ceiling for cutscenes and ladders.
+static void InstallCameraHooks()
+{
+    // fFOV setter: MOVSS XMM0,[ESP+4] / MULSS deg to rad / MOVSS [ECX+0x70]
+    auto fieldOfViewPattern = dunia_pattern("F3 0F 10 44 24 04 F3 0F 59 05 ? ? ? ? F3 0F 11 41 70 C2 04 00");
+    if (!fieldOfViewPattern.empty())
+        FieldOfViewHook = safetyhook::create_mid(fieldOfViewPattern.get_first(), OverrideFieldOfView);
+
+    // The Widescreen option's blend weight can stick at zero after a toggle, leaving FOV unwidened.
+    auto widescreenPattern = dunia_pattern("8B 0D ? ? ? ? 83 79 40 00 0F 84 C4 00 00 00 E8 ? ? ? ? F3 0F 10 40 10");
+    if (!widescreenPattern.empty())
+    {
+        auto* pSite = widescreenPattern.get_first(nWidescreenBranch);
+        WidescreenFovHook = safetyhook::create_mid(pSite, ForceWidescreenBlend);
+    }
+
+    // Cutscenes. CCameraBoneComponent::Update stores fFOV into both world (+0x28) and model (+0x30)
+    // FOV, so rewriting it ahead of the first FLD covers both. +0x8C is Cinematic.
+    auto cinematicFovPattern = dunia_pattern("D9 47 6C 8B 54 24 40 D9 5E 28 D9 47 6C 52 D9 5E 30");
+    if (!cinematicFovPattern.empty())
+        CinematicFovHook = safetyhook::create_mid(cinematicFovPattern.get_first(), NarrowCinematicFieldOfView);
+
+    // Ladders and first person scenes carry no FOV to intercept, so the beautifier context is read
+    // at CPawnBeautifierComponent::Update's entry, one frame old.
+    auto beautifierUpdatePattern = dunia_pattern("55 56 8B E9 57 8B 7D 04 8B 77 0C 83 47 08 01 8B CE E8 ? ? ? ? 83 3D ? ? ? ? 00 75 07");
+    if (!beautifierUpdatePattern.empty())
+        BeautifierUpdateHook = safetyhook::create_mid(beautifierUpdatePattern.get_first(), UpdateNarrowContext);
+
+    // Field of View, live, at the head of the frame's FOV blend: ESI+70h is rebuilt every frame, the
+    // setter only seeding it. Anchored on the load.
+    auto cameraFovBlendPattern = dunia_pattern("F3 0F 10 4E 70 F3 0F 10 47 14 0F 57 D2 F3 0F 5C C1 F3 0F 59 47 10");
+    if (!cameraFovBlendPattern.empty())
+        CameraFovBlendHook = safetyhook::create_mid(cameraFovBlendPattern.get_first(), ApplyCameraFieldOfView);
+
+    // CCameraPawnComponent::Update for first person, both FOV stores landed and before the
+    // widescreen Hor+ transform. Past the FSTP; the blend is tied to the camera it raised.
+    auto pawnCameraFovPattern = dunia_pattern("D9 47 6C 8B 4C 24 3C D9 5E 30 8A 9E 80 00 00 00");
+    if (!pawnCameraFovPattern.empty())
+    {
+        auto* pSite = pawnCameraFovPattern.get_first(nPawnCameraFovStored);
+        NarrowFovHook = safetyhook::create_mid(pSite, NarrowCameraFieldOfView);
+    }
+}
+
+static void InstallSeatAndIronsightHooks()
+{
+    // Hang gliders: the camera FOV is the vehicle's fFOVAngle, pushed into the pawn's BaseFOV
+    // channel as a blend target. Degrees here; inlined twice, hence two patterns.
+    auto gliderFovPattern = dunia_pattern("8B CB E8 ? ? ? ? D9 86 30 02 00 00 D9 58 2C 8B 8E 54 02 00 00 89 48 3C F3 0F 10 86 34 02 00 00 F3 0F 59 05 ? ? ? ? F3 0F 11 40 38 C6 40 29 01");
+    if (!gliderFovPattern.empty())
+        GliderFovHook = safetyhook::create_mid(gliderFovPattern.get_first(nGliderFovPush), OnSeatFieldOfView);
+
+    auto gliderSeatFovPattern = dunia_pattern("8B 4C 24 08 74 ? E8 ? ? ? ? D9 86 30 02 00 00 D9 58 2C 8B 8E 54 02 00 00 89 48 3C F3 0F 10 86 34 02 00 00 F3 0F 59 05 ? ? ? ? F3 0F 11 40 38 C6 40 29 01");
+    if (!gliderSeatFovPattern.empty())
+    {
+        auto* pSite = gliderSeatFovPattern.get_first(nGliderSeatFovPush);
+        GliderSeatFovHook = safetyhook::create_mid(pSite, OnSeatFieldOfView);
+    }
+
+    // Ironsight FOV, taken where the weapon hands it to the pawn: property +0xE4 copied into the
+    // channel at +0x1C, both radians. Never the weapon's field, which broke it.
+    auto ironsightFovPattern = dunia_pattern("D9 80 E4 00 00 00 D9 5F 1C");
+    if (!ironsightFovPattern.empty())
+    {
+        auto* pSite = ironsightFovPattern.get_first(nIronsightFovCopied);
+        IronsightFovHook = safetyhook::create_mid(pSite, ApplyIronsightFieldOfView);
+    }
+}
+
 class FieldOfView
 {
 public:
@@ -883,325 +1277,17 @@ public:
     {
         JackalFix::onDuniaInitEvent() += []()
         {
-            // Image bounds for the beautifier name walk: everything past the instance is inside
-            // Dunia, so a stray pointer fails closed.
-            nDuniaBase = reinterpret_cast<uintptr_t>(hDunia);
-            if (nDuniaBase != 0)
-            {
-                auto pDos = (const IMAGE_DOS_HEADER*)nDuniaBase;
-                auto pNt = (const IMAGE_NT_HEADERS*)(nDuniaBase + pDos->e_lfanew);
-                nDuniaEnd = nDuniaBase + pNt->OptionalHeader.SizeOfImage;
-            }
+            LatchDuniaBounds();
 
-            static auto FieldOfViewCB = []()
-            {
-                fFieldOfView = JackalFixSettings.GetFloat(PREF_FIELDOFVIEW);
-                fViewmodelFieldOfView = JackalFixSettings.GetFloat(PREF_VIEWMODELFIELDOFVIEW);
-                fIronsightFieldOfView = JackalFixSettings.GetFloat(PREF_IRONSIGHTFIELDOFVIEW);
-                fVehicleFieldOfView = JackalFixSettings.GetFloat(PREF_VEHICLEFIELDOFVIEW);
-                fGliderFieldOfView = std::clamp(fFieldOfView, fFieldOfViewFloor, fGliderFieldOfViewMax);
-                fNarrowFieldOfView = std::clamp(fFieldOfView, fFieldOfViewFloor, fNarrowFieldOfViewMax);
-
-                // Straight into the pawn, not waiting for the next weapon setup or seat.
-                PushPawnFieldOfView();
-            };
-
-            FieldOfViewCB();
-
+            ApplyFieldOfViewSettings();
             JackalFix::onIniFileChange() += []()
             {
-                FieldOfViewCB();
+                ApplyFieldOfViewSettings();
             };
 
-            // fFOV setter: MOVSS XMM0,[ESP+4] / MULSS deg to rad / MOVSS [ECX+0x70]
-            auto fieldOfViewPattern = dunia_pattern("F3 0F 10 44 24 04 F3 0F 59 05 ? ? ? ? F3 0F 11 41 70 C2 04 00");
-            if (!fieldOfViewPattern.empty())
-            {
-                static auto FieldOfViewHook = safetyhook::create_mid(fieldOfViewPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    *(float*)(regs.esp + 4) = fFieldOfView;
-                });
-            }
-
-            // Near pass for the weapon and arms, its own projection. ESI the camera, aspect +0x18.
-            auto viewmodelPattern = dunia_pattern("D9 86 28 02 00 00 D9 1C 24 E8 ? ? ? ? D9 45 14");
-            if (!viewmodelPattern.empty())
-            {
-                static auto ViewmodelFovHook = safetyhook::create_mid(viewmodelPattern.get_first(9), [](SafetyHookContext& regs)
-                {
-                    ReleaseWithheldLayerIfStale();
-
-                    // Map open in a vehicle: NearPassFieldOfView hands the camera FOV back, so the
-                    // markers keep their alignment.
-                    auto pFov = (float*)regs.esp;
-                    auto fNear = NearPassFieldOfView(*pFov, *(float*)(regs.esi + 0x18));
-
-                    *pFov = fNear;
-                });
-            }
-
-            // Off the anim notify spawner's own call: the target has no prologue to anchor on.
-            auto firstPersonMaskPattern = dunia_pattern("8B BF 2C 01 00 00 57 8D 4C 24 20 E8 ? ? ? ? 8B C8 E8");
-            if (!firstPersonMaskPattern.empty())
-            {
-                auto pCall = firstPersonMaskPattern.get_first<uint8_t>(0x12);
-                SetFirstPersonLayerMask = (tSetFirstPersonLayerMask)(pCall + 5 + *(int32_t*)(pCall + 1));
-            }
-
-            // The two weapon effect spawners, differing in stack layout. Hooked on the MOV ECX,EAX
-            // before any emitter runs, EAX the system, EBX the component; the second needs a tail.
-            auto muzzleFirstPattern = dunia_pattern("84 C0 75 59 8D 54 24 20 52 8D 4C 24 1C E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8D 4C 24 18 E8 ? ? ? ? 8B C8 E8");
-            auto muzzleSecondPattern = dunia_pattern("84 C0 75 59 8D 44 24 10 50 8D 4C 24 10 E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8D 4C 24 0C E8 ? ? ? ? 8B C8 E8 ? ? ? ? 8B 97 A0 00 00 00");
-
-            if (SetFirstPersonLayerMask != nullptr && !muzzleFirstPattern.empty())
-            {
-                static auto MuzzleFirstHook = safetyhook::create_mid(muzzleFirstPattern.get_first(0x22), MuzzleFirstPersonMask);
-            }
-
-            if (SetFirstPersonLayerMask != nullptr && !muzzleSecondPattern.empty())
-            {
-                static auto MuzzleSecondHook = safetyhook::create_mid(muzzleSecondPattern.get_first(0x22), MuzzleFirstPersonMask);
-            }
-
-            // The push half of the layer, for handing a withheld clear back to the engine.
-            auto layerPushPattern = dunia_pattern("56 8B F1 83 BE C0 01 00 00 00 57 75 25 8B 46 08");
-            if (!layerPushPattern.empty())
-            {
-                PushFirstPersonLayer = (tPushFirstPersonLayer)layerPushPattern.get_first<void>();
-
-                // The same entry, as a census of every component carrying a near pass mask.
-                static auto LayerCensusHook = safetyhook::create_mid(layerPushPattern.get_first(), RememberFirstPersonComponent);
-            }
-
-            // The melee weapon's layer, held through the swing. ESI the component, bEnable [ESP+8].
-            auto layerTogglePattern = dunia_pattern("80 7C 24 08 00 56 8B F1 74 1E 8B 8E 30 01 00 00");
-            if (!layerTogglePattern.empty())
-            {
-                static auto LayerToggleHook = safetyhook::create_mid(layerTogglePattern.get_first(), HoldFirstPersonLayer);
-            }
-
-            // Marker placement, ECX the owning CCompassObjectives; bInVehicle at +0x28 read here.
-            auto compassMarkerPattern = dunia_pattern("55 8B EC 83 E4 F0 81 EC 84 00 00 00 53 56 57 8B 7D 10 8B 77 0C 8B D9");
-            if (!compassMarkerPattern.empty())
-            {
-                static auto CompassMarkerHook = safetyhook::create_mid(compassMarkerPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    bMarkersInVehicle.store(*(bool*)(regs.ecx + nCompassInVehicleOffset), std::memory_order_relaxed);
-                    nMarkersStamp.store(GetTickCount(), std::memory_order_relaxed);
-                });
-            }
-
-            // The Widescreen option's blend weight can stick at zero after a toggle, leaving FOV
-            // unwidened. Force the branch and pin the weight to 1.0; recomputed every frame.
-            auto widescreenPattern = dunia_pattern("8B 0D ? ? ? ? 83 79 40 00 0F 84 C4 00 00 00 E8 ? ? ? ? F3 0F 10 40 10");
-            if (!widescreenPattern.empty())
-            {
-                static auto WidescreenFovHook = safetyhook::create_mid(widescreenPattern.get_first(10), [](SafetyHookContext& regs)
-                {
-                    static constexpr uintptr_t nZeroFlag = 0x40;
-
-                    regs.eflags &= ~nZeroFlag;
-                    *(float*)(regs.edi + 0x58) = 1.0f;
-                });
-            }
-
-            // Cutscenes. CCameraBoneComponent::Update stores fFOV into both world (+0x28) and model
-            // (+0x30) FOV, so rewriting it ahead of the first FLD covers both. +0x8C is Cinematic.
-            auto cinematicFovPattern = dunia_pattern("D9 47 6C 8B 54 24 40 D9 5E 28 D9 47 6C 52 D9 5E 30");
-            if (!cinematicFovPattern.empty())
-            {
-                static auto CinematicFovHook = safetyhook::create_mid(cinematicFovPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    NarrowFieldOfView((float*)(regs.edi + nBoneCameraFieldOfView), DegreesToRadians(fNarrowFieldOfView));
-                });
-            }
-
-            // Ladders and first person scenes carry no FOV to intercept, so the beautifier context
-            // is read at CPawnBeautifierComponent::Update's entry, one frame old. ECX-4 is primary.
-            auto beautifierUpdatePattern = dunia_pattern("55 56 8B E9 57 8B 7D 04 8B 77 0C 83 47 08 01 8B CE E8 ? ? ? ? 83 3D ? ? ? ? 00 75 07");
-            if (!beautifierUpdatePattern.empty())
-            {
-                static auto BeautifierUpdateHook = safetyhook::create_mid(beautifierUpdatePattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    auto nComponent = regs.ecx - 4;
-
-                    // Every AI updates through here, so the type half is checked first.
-                    if (KindOf(*(uintptr_t*)(nComponent + nTypeBeautifier)) != KIND_PLAYER)
-                        return;
-
-                    auto nContext = NARROW_NONE;
-                    switch (KindOf(*(uintptr_t*)(nComponent + nContextBeautifier)))
-                    {
-                    case KIND_LADDER:   nContext = NARROW_LADDER; break;
-                    case KIND_CUTSCENE: nContext = NARROW_CUTSCENE; break;
-                    default: break;
-                    }
-
-                    nNarrowContext.store(nContext, std::memory_order_relaxed);
-                    nNarrowStamp.store(GetTickCount(), std::memory_order_relaxed);
-                });
-            }
-
-            // Field of View, live, at the head of the frame's FOV blend: ESI+70h is rebuilt every
-            // frame, the setter only seeding it. Anchored on the load: ESI camera, EAX CPawnFOV.
-            auto cameraFovBlendPattern = dunia_pattern("F3 0F 10 4E 70 F3 0F 10 47 14 0F 57 D2 F3 0F 5C C1 F3 0F 59 47 10");
-            if (!cameraFovBlendPattern.empty())
-            {
-                static auto CameraFovBlendHook = safetyhook::create_mid(cameraFovBlendPattern.get_first(), [](SafetyHookContext& regs)
-                {
-                    // Before the MOVSS this stands on, so the blend uses it on this frame.
-                    *(float*)(regs.esi + nPawnCameraFieldOfView) = DegreesToRadians(fFieldOfView);
-
-                    RememberPawnFieldOfView(regs.eax);
-                    fIronsightBlend.store(*(float*)(regs.eax + nPawnFovIronsightWeight), std::memory_order_relaxed);
-                    fVehicleFovWeight.store(*(float*)(regs.eax + nPawnFovBaseWeight), std::memory_order_relaxed);
-
-                    // The swing deadline: the one hook running every frame on the gameplay thread.
-                    ReleaseWithheldLayerIfStale();
-
-                    // Same reason, and required: moving the set allocates through a first-use
-                    // branch only reached from the gameplay tick; from the near pass hook it faulted.
-                    UpdateFirstPersonSetForScene();
-                });
-            }
-
-            // CCameraPawnComponent::Update for first person, both FOV stores landed and before the
-            // widescreen Hor+ transform. Past the FSTP; the blend is tied to the camera it raised.
-            auto pawnCameraFovPattern = dunia_pattern("D9 47 6C 8B 4C 24 3C D9 5E 30 8A 9E 80 00 00 00");
-            if (!pawnCameraFovPattern.empty())
-            {
-                static auto NarrowFovHook = safetyhook::create_mid(pawnCameraFovPattern.get_first(10), [](SafetyHookContext& regs)
-                {
-                    // Only the camera actually driving the view. An inactive one still updates.
-                    if (*(uint8_t*)(regs.edi + nCameraActive) == 0)
-                        return;
-
-                    // On the update's own delta, so a paused game does not age the hold.
-                    auto fFrame = *(float*)(regs.ebp + nCameraDeltaTime);
-
-                    StepWithheldLayer(std::clamp(fFrame, 0.0f, fNarrowBlendMaxStep));
-
-                    // The pawn that owned the state is gone: drop the clamp outright.
-                    if (NarrowStateIsStale())
-                    {
-                        fNarrowBlend = 0.0f;
-                        nNarrowBlendCamera = 0;
-                        nNarrowBlendContext = NARROW_NONE;
-                        ClearNarrowViewmodel();
-                        bNearPassFollowsCamera.store(false, std::memory_order_relaxed);
-                        return;
-                    }
-
-                    auto nContext = nNarrowContext.load(std::memory_order_relaxed);
-                    auto bNarrow = nContext != NARROW_NONE;
-
-                    // A different active camera: start again rather than carry a weight across
-                    // views, and never hold a pointer that is not coming back.
-                    if (nNarrowBlendCamera != regs.edi)
-                    {
-                        nNarrowBlendCamera = regs.edi;
-                        fNarrowBlend = 0.0f;
-                    }
-
-                    // So the near pass follows the camera on exactly the frames the world is
-                    // clamped. The blend out counts, or the viewmodel jumps out of every scene.
-                    if (nContext == NARROW_CUTSCENE)
-                        nNarrowBlendContext = NARROW_CUTSCENE;
-
-                    bNearPassFollowsCamera.store(
-                        nContext == NARROW_CUTSCENE
-                            || (fNarrowBlend > 0.0f && nNarrowBlendContext == NARROW_CUTSCENE),
-                        std::memory_order_relaxed);
-
-                    if (!bNarrow && fNarrowBlend <= 0.0f)
-                    {
-                        ClearNarrowViewmodel();
-                        return;
-                    }
-
-                    // Both contexts take the same ceiling; NarrowContext still tells them apart.
-                    if (bNarrow)
-                        fNarrowBlendCap = fNarrowFieldOfView;
-
-                    auto fDelta = std::clamp(*(float*)(regs.ebp + nCameraDeltaTime), 0.0f, fNarrowBlendMaxStep);
-                    auto fStep = fDelta / fNarrowBlendSeconds;
-
-                    fNarrowBlend = std::clamp(fNarrowBlend + (bNarrow ? fStep : -fStep), 0.0f, 1.0f);
-                    if (fNarrowBlend <= 0.0f)
-                    {
-                        nNarrowBlendContext = NARROW_NONE;
-                        ClearNarrowViewmodel();
-                        bNearPassFollowsCamera.store(false, std::memory_order_relaxed);
-                        return;
-                    }
-
-                    // Smoothstep, so the move leaves and arrives at rest.
-                    auto fWeight = fNarrowBlend * fNarrowBlend * (3.0f - 2.0f * fNarrowBlend);
-                    auto fFov = DegreesToRadians(fNarrowBlendCap);
-
-                    auto pWorldFov = (float*)(regs.esi + nCameraStateFieldOfView);
-                    auto fBefore = *pWorldFov;
-
-                    BlendFieldOfView(pWorldFov, fFov, fWeight);
-                    BlendFieldOfView((float*)(regs.esi + nCameraStateViewmodelFieldOfView), fFov, fWeight);
-
-                    // Off the world FOV, not the blend, so an unmoved frame carries a scale of one.
-                    auto fBeforeTan = std::tan(fBefore * 0.5f);
-                    fNarrowTangentScale.store(
-                        fBeforeTan > 0.0f ? std::tan(*pWorldFov * 0.5f) / fBeforeTan : 1.0f,
-                        std::memory_order_relaxed);
-
-                    fNarrowViewmodelCeiling.store(fFov, std::memory_order_relaxed);
-                });
-            }
-
-            // Hang gliders: the camera FOV is the vehicle's fFOVAngle, pushed into the pawn's
-            // BaseFOV channel as a blend target. Degrees here; inlined twice, hence two patterns.
-            auto gliderFovPattern = dunia_pattern("8B CB E8 ? ? ? ? D9 86 30 02 00 00 D9 58 2C 8B 8E 54 02 00 00 89 48 3C F3 0F 10 86 34 02 00 00 F3 0F 59 05 ? ? ? ? F3 0F 11 40 38 C6 40 29 01");
-            if (!gliderFovPattern.empty())
-            {
-                static auto GliderFovHook = safetyhook::create_mid(gliderFovPattern.get_first(0x19), OnSeatFieldOfView);
-            }
-
-            auto gliderSeatFovPattern = dunia_pattern("8B 4C 24 08 74 ? E8 ? ? ? ? D9 86 30 02 00 00 D9 58 2C 8B 8E 54 02 00 00 89 48 3C F3 0F 10 86 34 02 00 00 F3 0F 59 05 ? ? ? ? F3 0F 11 40 38 C6 40 29 01");
-            if (!gliderSeatFovPattern.empty())
-            {
-                static auto GliderSeatFovHook = safetyhook::create_mid(gliderSeatFovPattern.get_first(0x1D), OnSeatFieldOfView);
-            }
-
-            // Ironsight FOV, taken where the weapon hands it to the pawn: property +0xE4 copied
-            // into the channel at +0x1C, both radians. Never the weapon's field, which broke it.
-            auto ironsightFovPattern = dunia_pattern("D9 80 E4 00 00 00 D9 5F 1C");
-            if (!ironsightFovPattern.empty())
-            {
-                static auto IronsightFovHook = safetyhook::create_mid(ironsightFovPattern.get_first(nIronsightFovCopied), [](SafetyHookContext& regs)
-                {
-                    // Every pawn arms itself through here, so the player's channel is picked out
-                    // first. An unset handle is accepted, the session's first setup being his.
-                    const auto nPlayer = nPawnFieldOfView.load(std::memory_order_relaxed);
-                    if (nPlayer != 0 && regs.edi != nPlayer)
-                        return;
-
-                    // EDI is the pawn's FOV channels. Taken whether or not the setting is in use:
-                    // it is the handle a later change needs.
-                    RememberPawnFieldOfView(regs.edi);
-
-                    // The player's melee weapon, for the swing. EAX is the property object.
-                    RememberMeleeWeapon(*(uint32_t*)(regs.eax + nWeaponClass));
-
-                    // Degrees for the comparison, both ends of this path being radians. Decided
-                    // either way: the push needs the answer for whatever is in hand.
-                    const auto fWeapon = *(const float*)(regs.eax + nWeaponIronsightFieldOfView);
-                    const auto bOptic = RadiansToDegrees(fWeapon) < fMagnifiedOpticCutoff;
-
-                    bIronsightIsMagnifiedOptic.store(bOptic, std::memory_order_relaxed);
-
-                    if (fIronsightFieldOfView <= 0.0f || bOptic)
-                        return;
-
-                    *(float*)(regs.edi + nPawnFovIronsightValue) = DegreesToRadians(fIronsightFieldOfView);
-                });
-            }
+            InstallNearPassHooks();
+            InstallCameraHooks();
+            InstallSeatAndIronsightHooks();
         };
     }
 } FieldOfView;
