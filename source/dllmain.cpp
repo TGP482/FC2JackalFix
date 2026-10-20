@@ -19,6 +19,7 @@ import looksensitivity;
 import inputtoggles;
 import turretexitbind;
 import custombinds;
+import keylabels;
 import vibration;
 import controllerprompts;
 import loadingscreen;
