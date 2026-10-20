@@ -21,6 +21,7 @@ import turretexitbind;
 import custombinds;
 import keylabels;
 import vibration;
+import gamepads;
 import controllerprompts;
 import loadingscreen;
 import systemdetection;

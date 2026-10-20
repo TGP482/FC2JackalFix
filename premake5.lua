@@ -104,7 +104,26 @@ workspace "FC2JackalFix"
    }
    files { "data/bin/plugins/*.ini" }
 
+   -- SDL3 built static from the submodule, with the file list of its own Visual C++ project.
+   local sdlProject = io.readfile("external/SDL/VisualC/SDL/SDL.vcxproj")
+   if sdlProject then
+      for sdlFile in sdlProject:gmatch('ClCompile Include="%.%.\\%.%.\\([^"]+)"') do
+         if not sdlFile:find("pch", 1, true) then
+            files { "external/SDL/" .. (sdlFile:gsub("\\", "/")) }
+         end
+      end
+   end
+   includedirs { "external/SDL/include" }
+
+   filter "files:external/SDL/**"
+      includedirs { "external/SDL/include/build_config", "external/SDL/src" }
+      defines { "SDL_RENDER_DISABLED", "SDL_GPU_DISABLED", "SDL_CAMERA_DISABLED", "_WINDOWS" }
+      undefines { "UNICODE", "_UNICODE" }
+      buildoptions { "/utf-8" }
+   filter {}
+
    links { "winmm" } -- timeBeginPeriod, for loadingscreen.ixx
+   links { "setupapi", "imm32", "version" } -- SDL3
 
    characterset ("Unicode")
 

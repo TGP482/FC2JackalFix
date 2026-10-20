@@ -73,6 +73,7 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 - **Vehicle Field of View** - Adjusts the field of view while driving vehicles.
 
 ### Controller
+- **Controller** - Controller with SDL3 support and additional features.
 - **Controller Look Sensitivity** - Adjusts controller look sensitivity beyond the in-game slider.
 - **Aim Assist** - Enables or disables controller aim assist.
 - **Vibration** - Restores controller vibration support.
