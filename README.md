@@ -47,6 +47,18 @@ WINEDLLOVERRIDES="dinput8=n,b" %command%
 - **Saturation** - Adjust the saturation levels from the game's 0.5 default, range: 0.0 - 1.0.
 - **Volumetric Fog** - Adds volumetric height fog lit by the sun and moon, following the game's fog, weather and day and night cycle.
 - **Volumetric Clouds** - Adds ray marched volumetric clouds.
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/2589b734-f14b-47ae-83fa-23828b967887"></td>
+      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/9da9cd49-67fa-4040-bfdc-41f464db5535"></td>
+    </tr>
+    <tr>
+      <td align="center">Off</td>
+      <td align="center">Volumetric Fog + Clouds On</td>
+    </tr>
+  </table>
+</div>
 
 ### Beyond Ultra
 - **Beyond Ultra Geometry** - Increases past the Ultra High geometry values: (0) default, (1) 2x, (2) 4x, (3) 6x, (4) max draw distance.
