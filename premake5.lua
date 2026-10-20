@@ -116,10 +116,10 @@ workspace "FC2JackalFix"
    includedirs { "external/SDL/include" }
 
    filter "files:external/SDL/**"
-      includedirs { "external/SDL/include/build_config", "external/SDL/src" }
+      -- Per file includedirs never reach the vcxproj, options do.
+      buildoptions { "/I\"$(ProjectDir)..\\external\\SDL\\include\\build_config\"", "/I\"$(ProjectDir)..\\external\\SDL\\src\"", "/utf-8" }
       defines { "SDL_RENDER_DISABLED", "SDL_GPU_DISABLED", "SDL_CAMERA_DISABLED", "_WINDOWS" }
       undefines { "UNICODE", "_UNICODE" }
-      buildoptions { "/utf-8" }
    filter {}
 
    links { "winmm" } -- timeBeginPeriod, for loadingscreen.ixx
